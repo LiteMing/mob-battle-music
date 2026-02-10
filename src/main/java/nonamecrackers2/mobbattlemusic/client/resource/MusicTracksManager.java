@@ -37,142 +37,132 @@ import nonamecrackers2.mobbattlemusic.client.sound.track.TrackType;
 import nonamecrackers2.mobbattlemusic.client.util.MobBattleMusicUtils;
 import nonamecrackers2.mobbattlemusic.client.util.MobSelection;
 
-public class MusicTracksManager extends SimpleJsonResourceReloadListener
-{
+public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 	private static final Gson GSON = new GsonBuilder().create();
 	private static final MusicTracksManager INSTANCE = new MusicTracksManager();
 	private static final Logger LOGGER = LogManager.getLogger("mobbattlemusic/MusicTracksManager");
 	private List<TrackType> tracks;
-	
-	private MusicTracksManager()
-	{
+
+	private MusicTracksManager() {
 		super(GSON, "music_tracks");
 		this.tracks = ImmutableList.copyOf(applyDefaultTrackTypes());
 	}
-	
-	private static List<TrackType> applyDefaultTrackTypes()
-	{
+
+	private static List<TrackType> applyDefaultTrackTypes() {
 		return Lists.newArrayList(TrackType.PLAYER, TrackType.AGGRESSIVE, TrackType.AMBIENT);
 	}
-	
+
 	@Override
-	protected void apply(Map<ResourceLocation, JsonElement> files, ResourceManager manager, ProfilerFiller profiler)
-	{
+	protected void apply(Map<ResourceLocation, JsonElement> files, ResourceManager manager, ProfilerFiller profiler) {
 		Minecraft mc = Minecraft.getInstance();
 		List<TrackType> list = applyDefaultTrackTypes();
-		for (var entry : files.entrySet())
-		{
-			try
-			{
+		for (var entry : files.entrySet()) {
+			try {
 				JsonObject object = GsonHelper.convertToJsonObject(entry.getValue(), "file");
-				
+
 				String type = GsonHelper.getAsString(object, "type");
 				ResourceLocation track = new ResourceLocation(GsonHelper.getAsString(object, "sound"));
 				if (mc.getSoundManager().getSoundEvent(track) == null)
 					throw new NullPointerException("Unknown sound with id '" + track + "'");
 				int priority = GsonHelper.getAsInt(object, "priority");
-				
-				switch (type)
-				{
-				case "mob_specific":
-				{
-					insert(list, parseMobTrack(object, track, (t, f, g, s) -> {
-						return new MobSpecificTrack(parseEntityType(GsonHelper.getAsString(object, "mob")), t, f, g, s);
-					}), priority);
-					break;
+
+				switch (type) {
+					case "mob_specific": {
+						String matchMethod = object.has("match_method") ? GsonHelper.getAsString(object, "match_method")
+								: null;
+						String matchValue = object.has("match_value") ? GsonHelper.getAsString(object, "match_value")
+								: null;
+						final String mm = matchMethod;
+						final String mv = matchValue;
+						insert(list, parseMobTrack(object, track, (t, f, g, s) -> {
+							return new MobSpecificTrack(parseEntityType(GsonHelper.getAsString(object, "mob")), mm, mv,
+									t, f, g, s);
+						}), priority);
+						break;
+					}
+					case "mob_list": {
+						insert(list, parseMobTrack(object, track, (t, f, g, s) -> {
+							JsonArray array = GsonHelper.getAsJsonArray(object, "mobs");
+							List<EntityType<?>> entityTypes = Lists.newArrayList();
+							for (JsonElement element : array)
+								entityTypes.add(parseEntityType(GsonHelper.convertToString(element, "entity type")));
+							return new MobListTrack(entityTypes, t, f, g, s);
+						}), priority);
+						break;
+					}
+					case "mob_tag": {
+						insert(list, parseMobTrack(object, track, (t, f, g, s) -> {
+							TagKey<EntityType<?>> tag = TagKey.codec(Registries.ENTITY_TYPE)
+									.parse(JsonOps.INSTANCE, object.get("tag")).resultOrPartial(m -> {
+										throw new JsonSyntaxException(m);
+									}).get();
+							return new MobTagTrack(tag, t, f, g, s);
+						}), priority);
+						break;
+					}
+					case "player_specific": {
+						String name = GsonHelper.getAsString(object, "player_name");
+						int fadeTime = GsonHelper.getAsInt(object, "fade_time");
+						insert(list, new PlayerSpecificTrack(name, false, track, fadeTime), priority);
+						break;
+					}
+					case "player_specific_uuid": {
+						String uuid = GsonHelper.getAsString(object, "player_uuid");
+						UUID.fromString(uuid);
+						int fadeTime = GsonHelper.getAsInt(object, "fade_time");
+						insert(list, new PlayerSpecificTrack(uuid, true, track, fadeTime), priority);
+						break;
+					}
+					default:
+						throw new JsonSyntaxException("Unknown type '" + type + "'");
 				}
-				case "mob_list":
-				{
-					insert(list, parseMobTrack(object, track, (t, f, g, s) -> 
-					{
-						JsonArray array = GsonHelper.getAsJsonArray(object, "mobs");
-						List<EntityType<?>> entityTypes = Lists.newArrayList();
-						for (JsonElement element : array)
-							entityTypes.add(parseEntityType(GsonHelper.convertToString(element, "entity type")));
-						return new MobListTrack(entityTypes, t, f, g, s);
-					}), priority);
-					break;
-				}
-				case "mob_tag":
-				{
-					insert(list, parseMobTrack(object, track, (t, f, g, s) -> 
-					{
-						TagKey<EntityType<?>> tag = TagKey.codec(Registries.ENTITY_TYPE).parse(JsonOps.INSTANCE, object.get("tag")).resultOrPartial(m -> {
-							throw new JsonSyntaxException(m);
-						}).get();
-						return new MobTagTrack(tag, t, f, g, s);
-					}), priority);
-					break;
-				}
-				case "player_specific":
-				{
-					String name = GsonHelper.getAsString(object, "player_name");
-					int fadeTime = GsonHelper.getAsInt(object, "fade_time");
-					insert(list, new PlayerSpecificTrack(name, false, track, fadeTime), priority);
-					break;
-				}
-				case "player_specific_uuid":
-				{
-					String uuid = GsonHelper.getAsString(object, "player_uuid");
-					UUID.fromString(uuid);
-					int fadeTime = GsonHelper.getAsInt(object, "fade_time");
-					insert(list, new PlayerSpecificTrack(uuid, true, track, fadeTime), priority);
-					break;
-				}
-				default:
-					throw new JsonSyntaxException("Unknown type '" + type + "'");
-				}
-			}
-			catch (Exception e)
-			{
+			} catch (Exception e) {
 				LOGGER.debug("Failed to generate track for file '" + entry.getKey() + "': ", e);
 			}
 		}
 		this.tracks = ImmutableList.copyOf(list);
 	}
-	
-	private static void insert(List<TrackType> list, TrackType track, int index)
-	{
+
+	private static void insert(List<TrackType> list, TrackType track, int index) {
 		if (index >= list.size())
 			list.add(track);
 		else
 			list.add(index, track);
 	}
-	
-	public List<TrackType> getTracks()
-	{
+
+	public List<TrackType> getTracks() {
 		return this.tracks;
 	}
-	
-	private static <T extends MobTrack> T parseMobTrack(JsonObject object, ResourceLocation track, MusicTracksManager.MobTrackBuilder<T> builder)
-	{
+
+	private static <T extends MobTrack> T parseMobTrack(JsonObject object, ResourceLocation track,
+			MusicTracksManager.MobTrackBuilder<T> builder) {
 		int fadeTime = GsonHelper.getAsInt(object, "fade_time");
-		MobSelection.GroupType group = MobBattleMusicUtils.parseEnum(MobSelection.GroupType.class, GsonHelper.getAsString(object, "group")).resultOrPartial(m -> {
-			throw new NoSuchElementException(m);
-		}).get();
-		MobSelection.Selector selector = MobBattleMusicUtils.parseEnum(MobSelection.Selector.class, GsonHelper.getAsString(object, "selector")).resultOrPartial(m -> {
-			throw new NoSuchElementException(m);
-		}).get();
+		MobSelection.GroupType group = MobBattleMusicUtils
+				.parseEnum(MobSelection.GroupType.class, GsonHelper.getAsString(object, "group")).resultOrPartial(m -> {
+					throw new NoSuchElementException(m);
+				}).get();
+		MobSelection.Selector selector = MobBattleMusicUtils
+				.parseEnum(MobSelection.Selector.class, GsonHelper.getAsString(object, "selector"))
+				.resultOrPartial(m -> {
+					throw new NoSuchElementException(m);
+				}).get();
 		return builder.make(track, fadeTime, group, selector);
 	}
-	
-	private static EntityType<?> parseEntityType(String rawId)
-	{
+
+	private static EntityType<?> parseEntityType(String rawId) {
 		ResourceLocation id = new ResourceLocation(rawId);
 		EntityType<?> entityType = ForgeRegistries.ENTITY_TYPES.getValue(id);
 		if (entityType == null)
 			throw new NullPointerException("Unknown entity with id: '" + id + "'");
 		return entityType;
 	}
-	
-	public static MusicTracksManager getInstance()
-	{
+
+	public static MusicTracksManager getInstance() {
 		return INSTANCE;
 	}
-	
+
 	@FunctionalInterface
-	public static interface MobTrackBuilder<T extends MobTrack>
-	{
+	public static interface MobTrackBuilder<T extends MobTrack> {
 		T make(ResourceLocation track, int fadeTime, MobSelection.GroupType group, MobSelection.Selector selector);
 	}
 }
