@@ -1,0 +1,41 @@
+{
+  "_comment": "Example showing how to mix traditional OGG files with external URL music",
+  
+  "tracks": [
+    {
+      "_comment": "Traditional OGG file from resource pack",
+      "type": "mob_specific",
+      "mob": "minecraft:creeper",
+      "sound": "mobbattlemusic:aggro_track",
+      "priority": 5,
+      "fade_time": 40,
+      "group": "HOSTILE",
+      "selector": "NEAREST"
+    },
+    {
+      "_comment": "External URL MP3 file",
+      "type": "mob_specific",
+      "mob": "minecraft:skeleton",
+      "external_url": "https://example.com/skeleton_battle.mp3",
+      "priority": 10,
+      "fade_time": 40,
+      "group": "HOSTILE",
+      "selector": "NEAREST"
+    },
+    {
+      "_comment": "Player-specific track with external URL",
+      "type": "player_specific",
+      "player_name": "PlayerName",
+      "external_url": "https://example.com/player_battle.mp3",
+      "priority": 15,
+      "fade_time": 20
+    }
+  ],
+  
+  "_notes": [
+    "You can mix OGG files (using 'sound' field) and external URLs (using 'external_url' field) in the same resource pack",
+    "The priority system works the same for both types",
+    "External URL tracks are downloaded and cached on first use",
+    "Backward compatibility is maintained - existing resource packs continue to work without modification"
+  ]
+}

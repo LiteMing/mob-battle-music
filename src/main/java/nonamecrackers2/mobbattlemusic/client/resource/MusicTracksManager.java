@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -28,6 +29,7 @@ import net.minecraft.util.GsonHelper;
 import net.minecraft.util.profiling.ProfilerFiller;
 import net.minecraft.world.entity.EntityType;
 import net.minecraftforge.registries.ForgeRegistries;
+import nonamecrackers2.mobbattlemusic.client.music.ExternalMusicHandler;
 import nonamecrackers2.mobbattlemusic.client.sound.track.MobListTrack;
 import nonamecrackers2.mobbattlemusic.client.sound.track.MobSpecificTrack;
 import nonamecrackers2.mobbattlemusic.client.sound.track.MobTagTrack;
@@ -42,10 +44,14 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 	private static final MusicTracksManager INSTANCE = new MusicTracksManager();
 	private static final Logger LOGGER = LogManager.getLogger("mobbattlemusic/MusicTracksManager");
 	private List<TrackType> tracks;
+	private final ExternalMusicHandler externalMusicHandler;
+	private final Map<ResourceLocation, String> externalUrlMap; // Maps ResourceLocation to URL
 
 	private MusicTracksManager() {
 		super(GSON, "music_tracks");
 		this.tracks = ImmutableList.copyOf(applyDefaultTrackTypes());
+		this.externalMusicHandler = ExternalMusicHandler.getInstance();
+		this.externalUrlMap = new java.util.concurrent.ConcurrentHashMap<>();
 	}
 
 	private static List<TrackType> applyDefaultTrackTypes() {
@@ -61,9 +67,25 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 				JsonObject object = GsonHelper.convertToJsonObject(entry.getValue(), "file");
 
 				String type = GsonHelper.getAsString(object, "type");
-				ResourceLocation track = new ResourceLocation(GsonHelper.getAsString(object, "sound"));
-				if (mc.getSoundManager().getSoundEvent(track) == null)
-					throw new NullPointerException("Unknown sound with id '" + track + "'");
+				
+				// Check for external_url field
+				ResourceLocation track;
+				if (object.has("external_url")) {
+					String externalUrl = GsonHelper.getAsString(object, "external_url");
+					track = parseExternalUrlTrack(externalUrl, entry.getKey());
+					if (track == null) {
+						// If external URL parsing failed, skip this track
+						continue;
+					}
+				} else if (object.has("sound")) {
+					track = new ResourceLocation(GsonHelper.getAsString(object, "sound"));
+					if (mc.getSoundManager().getSoundEvent(track) == null)
+						throw new NullPointerException("Unknown sound with id '" + track + "'");
+				} else {
+					LOGGER.error("Track configuration '{}' missing both 'sound' and 'external_url' fields", entry.getKey());
+					continue;
+				}
+				
 				int priority = GsonHelper.getAsInt(object, "priority");
 
 				switch (type) {
@@ -159,6 +181,83 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 
 	public static MusicTracksManager getInstance() {
 		return INSTANCE;
+	}
+	
+	/**
+	 * Parse and prepare an external URL track
+	 * @param url The external URL
+	 * @param configLocation The configuration file location (for logging)
+	 * @return The ResourceLocation for the track, or null if failed
+	 */
+	private ResourceLocation parseExternalUrlTrack(String url, ResourceLocation configLocation) {
+		// Resolve URL (e.g., convert Netease Cloud Music song page to direct audio URL)
+		String resolvedUrl = nonamecrackers2.mobbattlemusic.client.music.UrlResolver.resolveUrl(url);
+		
+		// Validate URL format
+		if (!isValidUrl(resolvedUrl)) {
+			LOGGER.error("Invalid external_url in '{}': '{}'. Must be HTTP or HTTPS.", configLocation, url);
+			return null;
+		}
+		
+		try {
+			// Start async download and preparation
+			LOGGER.info("Preparing external music for '{}': {} (resolved: {})", configLocation, url, resolvedUrl);
+			
+			// Prepare the music file (download and cache MP3)
+			externalMusicHandler.prepareMusicFile(resolvedUrl).thenAccept(cachedPath -> {
+				if (cachedPath != null) {
+					LOGGER.info("Successfully prepared external music: {} -> {}", url, cachedPath);
+				} else {
+					LOGGER.error("Failed to prepare external music from URL: {}", url);
+				}
+			});
+			
+			// Create a ResourceLocation for this external URL
+			String hash = externalMusicHandler.getCache().hashUrl(resolvedUrl);
+			ResourceLocation location = new ResourceLocation("mobbattlemusic", "external/" + hash);
+			
+			// Store the URL mapping
+			externalUrlMap.put(location, resolvedUrl);
+			LOGGER.debug("Mapped ResourceLocation {} to URL {}", location, resolvedUrl);
+			
+			return location;
+			
+		} catch (Exception e) {
+			LOGGER.error("Error preparing external music from URL '{}': {}", url, e.getMessage());
+			return null;
+		}
+	}
+	
+	/**
+	 * Check if a ResourceLocation is an external URL track
+	 * @param location The ResourceLocation to check
+	 * @return true if this is an external URL track
+	 */
+	public boolean isExternalUrl(ResourceLocation location) {
+		return externalUrlMap.containsKey(location);
+	}
+	
+	/**
+	 * Get the external URL for a ResourceLocation
+	 * @param location The ResourceLocation
+	 * @return The URL, or null if not an external URL track
+	 */
+	public String getExternalUrl(ResourceLocation location) {
+		return externalUrlMap.get(location);
+	}
+	
+	/**
+	 * Validate if a URL is valid HTTP or HTTPS
+	 * @param url The URL to validate
+	 * @return true if valid
+	 */
+	private boolean isValidUrl(String url) {
+		if (url == null || url.isEmpty()) {
+			return false;
+		}
+		
+		String lowerUrl = url.toLowerCase();
+		return lowerUrl.startsWith("http://") || lowerUrl.startsWith("https://");
 	}
 
 	@FunctionalInterface

@@ -43,7 +43,33 @@ public class MobBattleMusicMod
 		forgeBus.register(MobBattleMusicClientEvents.class);
 		event.enqueueWork(() -> {
 			MobBattleMusicCompat.checkModCompat();
+			// Initialize external music cache
+			initializeExternalMusicCache();
 		});
+	}
+	
+	private void initializeExternalMusicCache()
+	{
+		try {
+			// Run audio system diagnostics
+			nonamecrackers2.mobbattlemusic.client.music.AudioSystemDiagnostics.runDiagnostics();
+			
+			nonamecrackers2.mobbattlemusic.client.music.ExternalMusicHandler handler = 
+				nonamecrackers2.mobbattlemusic.client.music.ExternalMusicHandler.getInstance();
+			nonamecrackers2.mobbattlemusic.client.music.MusicCache cache = handler.getCache();
+			
+			// Validate cache on startup
+			cache.validateCache();
+			
+			// Mark old files (older than 30 days)
+			cache.markOldFiles(30);
+			
+			// Log cache size
+			cache.logCacheSize();
+		} catch (Exception e) {
+			// Log error but don't crash
+			org.apache.logging.log4j.LogManager.getLogger("mobbattlemusic").error("Failed to initialize external music cache", e);
+		}
 	}
 	
 	public static ResourceLocation id(String path)

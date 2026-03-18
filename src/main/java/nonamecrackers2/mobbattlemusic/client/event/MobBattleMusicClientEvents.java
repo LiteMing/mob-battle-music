@@ -20,11 +20,13 @@ import nonamecrackers2.mobbattlemusic.MobBattleMusicMod;
 import nonamecrackers2.mobbattlemusic.client.config.MobBattleMusicConfig;
 import nonamecrackers2.mobbattlemusic.client.init.MobBattleMusicClientCapabilities;
 import nonamecrackers2.mobbattlemusic.client.manager.BattleMusicManager;
+import nonamecrackers2.mobbattlemusic.client.music.ExternalMusicHandler;
 import nonamecrackers2.mobbattlemusic.client.resource.MusicTracksManager;
 import nonamecrackers2.mobbattlemusic.client.sound.track.TrackType;
 
 public class MobBattleMusicClientEvents
 {
+	private static boolean wasGamePaused = false;
 	public static void registerConfigScreen(RegisterConfigScreensEvent event)
 	{
 		event.builder(ConfigHomeScreen.builder(ImageTitle.ofMod(MobBattleMusicMod.MODID, 512, 256, 0.5F))
@@ -53,8 +55,30 @@ public class MobBattleMusicClientEvents
 	public static void onClientTick(TickEvent.ClientTickEvent event)
 	{
 		Minecraft mc = Minecraft.getInstance();
-		if (event.phase == TickEvent.Phase.END && mc.level != null && !mc.isPaused())
-			mc.level.getCapability(MobBattleMusicClientCapabilities.MUSIC_MANAGER).ifPresent(BattleMusicManager::tick);
+		if (event.phase == TickEvent.Phase.END && mc.level != null)
+		{
+			// Check for game pause state changes
+			boolean isGamePaused = mc.isPaused();
+			if (isGamePaused != wasGamePaused)
+			{
+				wasGamePaused = isGamePaused;
+				
+				// Handle external music player pause/resume
+				ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
+				if (isGamePaused)
+				{
+					handler.getPlayer().pauseForGame();
+				}
+				else
+				{
+					handler.getPlayer().resumeFromGame();
+				}
+			}
+			
+			// Only tick the music manager when not paused
+			if (!mc.isPaused())
+				mc.level.getCapability(MobBattleMusicClientCapabilities.MUSIC_MANAGER).ifPresent(BattleMusicManager::tick);
+		}
 	}
 	
 	@SubscribeEvent

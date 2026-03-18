@@ -41,6 +41,12 @@ public class MobBattleMusicConfig
 		public final ForgeConfigSpec.ConfigValue<Integer> calmDownTime;
 		public final ForgeConfigSpec.ConfigValue<Boolean> punchingCountsAsViolence;
 		
+		// External Music Config
+		public final ForgeConfigSpec.IntValue downloadTimeout;
+		public final ForgeConfigSpec.IntValue maxRetries;
+		public final ForgeConfigSpec.BooleanValue useCacheOnError;
+		public final ForgeConfigSpec.BooleanValue showErrorNotifications;
+		
 		public ClientConfig(ForgeConfigSpec.Builder builder)
 		{
 			super(builder, MobBattleMusicMod.MODID);
@@ -92,6 +98,26 @@ public class MobBattleMusicConfig
 			this.playerReevaluationCooldown = this.createRangedIntValue(20, 1, 300, "playerReevaluationCooldown", false, "Specifies the time (in seconds) for the current player threat that is causing the player music track to play to be reevaluated. Will cause the player track to stop playing if the player is no longer attacking or being a threat");
 			
 			this.punchingCountsAsViolence = this.createValue(false, "punchingCountsAsViolence", false, "Specifies if punching a player should count towards the player track playing");
+			
+			builder.pop();
+			
+			builder.comment("External music playback settings").push("external_music");
+			
+			this.downloadTimeout = builder
+				.comment("Download timeout in seconds")
+				.defineInRange("downloadTimeout", 30, 5, 120);
+			
+			this.maxRetries = builder
+				.comment("Maximum number of download retries")
+				.defineInRange("maxRetries", 3, 0, 10);
+			
+			this.useCacheOnError = builder
+				.comment("Use cached file when download fails")
+				.define("useCacheOnError", true);
+			
+			this.showErrorNotifications = builder
+				.comment("Show error notifications in-game (debug mode)")
+				.define("showErrorNotifications", false);
 			
 			builder.pop();
 		}

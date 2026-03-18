@@ -1,0 +1,36 @@
+{
+  "_comment": "Example configuration for using Netease Cloud Music with mob-battle-music",
+  "_comment2": "You can use either the song page URL or the direct audio URL",
+  
+  "type": "mob_specific",
+  "mob": "minecraft:zombie",
+  "external_url": "https://music.163.com/song?id=29497060",
+  "priority": 10,
+  "fade_time": 40,
+  "group": "HOSTILE",
+  "selector": "NEAREST",
+  
+  "_field_descriptions": {
+    "external_url": "Can be either a Netease Cloud Music song page URL (https://music.163.com/song?id=XXXXX) or a direct audio URL",
+    "type": "The type of track (mob_specific, mob_list, mob_tag, player_specific, player_specific_uuid)",
+    "mob": "The entity type this music should play for",
+    "priority": "Priority for this track (higher priority tracks play first)",
+    "fade_time": "Time in ticks for the music to fade in/out (20 ticks = 1 second)",
+    "group": "Mob group type (HOSTILE, NEUTRAL, PASSIVE)",
+    "selector": "How to select mobs (NEAREST, RANDOM, ALL)"
+  },
+  
+  "_notes": [
+    "Netease Cloud Music URLs are automatically resolved to direct audio URLs",
+    "Format: https://music.163.com/song?id={SONG_ID}",
+    "The system will convert this to: http://music.163.com/song/media/outer/url?id={SONG_ID}",
+    "Downloaded files are cached locally to avoid repeated downloads",
+    "Example song ID from your URL: 29497060"
+  ],
+  
+  "_alternative_formats": {
+    "direct_url": "http://music.163.com/song/media/outer/url?id=29497060",
+    "song_page_url": "https://music.163.com/song?id=29497060",
+    "with_params": "https://music.163.com/song?id=29497060&uct2=U2FsdGVkX1/LJW2KGu9uUfPNLoA+/6NQ6mpGFtw5tv8="
+  }
+}

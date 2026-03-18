@@ -20,6 +20,7 @@ import net.minecraft.client.resources.sounds.SoundInstance;
 import net.minecraft.client.sounds.MusicManager;
 import net.minecraft.client.sounds.SoundEngine;
 import net.minecraft.client.sounds.SoundManager;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.Entity;
@@ -31,6 +32,7 @@ import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.item.TieredItem;
 import nonamecrackers2.mobbattlemusic.client.config.MobBattleMusicConfig;
 import nonamecrackers2.mobbattlemusic.client.resource.MusicTracksManager;
+import nonamecrackers2.mobbattlemusic.client.sound.ExternalUrlMusicTrack;
 import nonamecrackers2.mobbattlemusic.client.sound.MobBattleTrack;
 import nonamecrackers2.mobbattlemusic.client.sound.track.TrackType;
 import nonamecrackers2.mobbattlemusic.client.util.MobBattleMusicCompat;
@@ -40,8 +42,7 @@ import nonamecrackers2.mobbattlemusic.mixin.MixinMusicManagerAccessor;
 import nonamecrackers2.mobbattlemusic.mixin.MixinSoundEngineAccessor;
 import nonamecrackers2.mobbattlemusic.mixin.MixinSoundManagerAccessor;
 
-public class BattleMusicManager
-{
+public class BattleMusicManager {
 	private static final Logger LOGGER = LogManager.getLogger("mobbattlemusic/BattleMusicManager");
 	public static final SoundSource DEFAULT_SOUND_SOURCE = SoundSource.RECORDS;
 	private static final Predicate<LivingEntity> COUNTS_TOWARDS_MOB_COUNT = e -> {
@@ -57,25 +58,23 @@ public class BattleMusicManager
 	private final Minecraft minecraft;
 	private final ClientLevel level;
 	private final Map<TrackType, MobBattleTrack> tracks = Maps.newHashMap();
+	private final Map<TrackType, ExternalUrlMusicTrack> externalTracks = Maps.newHashMap(); // For external URL tracks
 	private @Nullable TrackType priorityTrack;
 	private int maxThreatRefreshTime;
 	private int threatRefreshTimer;
 	private int threatRemovalTimer;
 	private @Nullable LivingEntity panickingFrom;
 
-	public BattleMusicManager(Minecraft mc, ClientLevel level)
-	{
+	public BattleMusicManager(Minecraft mc, ClientLevel level) {
 		this.minecraft = mc;
 		this.level = level;
 	}
 
-	private static boolean blacklist(LivingEntity e)
-	{
+	private static boolean blacklist(LivingEntity e) {
 		return MobBattleMusicConfig.CLIENT.ignoredMobs.get().stream().anyMatch(s -> s.equals(e.getEncodeId()));
 	}
 
-	private boolean isMobAggressive(Mob mob)
-	{
+	private boolean isMobAggressive(Mob mob) {
 		// 检查 mob 是否有目标且目标不是玩家
 		if (mob.getTarget() != null && mob.getTarget() != minecraft.player)
 			return true;
@@ -89,8 +88,7 @@ public class BattleMusicManager
 	}
 
 	// 此方法用于确定是否应该触发战斗音乐
-	private boolean shouldTriggerCombatMusic(MobSelection selection)
-	{
+	private boolean shouldTriggerCombatMusic(MobSelection selection) {
 		// 检查是否有任何生物处于战斗状态
 		return selection.group(MobSelection.GroupType.ENEMIES)
 				.forSelector(MobSelection.Selector.LINE_OF_SIGHT)
@@ -98,31 +96,24 @@ public class BattleMusicManager
 				.anyMatch(mob -> isMobAggressive(mob));
 	}
 
-	public void tick()
-	{
+	public void tick() {
 		// Handle threat timers
 		boolean flag = true;
-		if (this.panickingFrom != null)
-		{
+		if (this.panickingFrom != null) {
 			if (this.panickingFrom.isAlive() && this.panicConditions.test(this.minecraft.player, this.panickingFrom)
 					&& this.minecraft.player.hasLineOfSight(this.panickingFrom))
 				flag = false;
 		}
 
-		if (flag)
-		{
-			if (this.threatRemovalTimer++ > MobBattleMusicConfig.CLIENT.calmDownTime.get() * 20)
-			{
+		if (flag) {
+			if (this.threatRemovalTimer++ > MobBattleMusicConfig.CLIENT.calmDownTime.get() * 20) {
 				this.threatRemovalTimer = 0;
 				this.panickingFrom = null;
 			}
 			this.threatRefreshTimer = this.maxThreatRefreshTime;
-		}
-		else
-		{
+		} else {
 			this.threatRemovalTimer = 0;
-			if (this.threatRefreshTimer > 0)
-			{
+			if (this.threatRefreshTimer > 0) {
 				this.threatRefreshTimer--;
 				if (this.threatRefreshTimer == 0)
 					this.panickingFrom = null;
@@ -132,19 +123,16 @@ public class BattleMusicManager
 		MobSelection.Builder builder = MobSelection.builder();
 
 		for (Mob mob : this.level.getNearbyEntities(Mob.class, this.targetingConditions, this.minecraft.player,
-				this.minecraft.player.getBoundingBox().inflate(MobBattleMusicConfig.CLIENT.maxMobSearchRadius.get())))
-		{
-			if (COUNTS_TOWARDS_MOB_COUNT.test(mob))
-			{
-				boolean viewable = this.minecraft.levelRenderer.getFrustum().isVisible(mob.getBoundingBox());
+				this.minecraft.player.getBoundingBox().inflate(MobBattleMusicConfig.CLIENT.maxMobSearchRadius.get()))) {
+			if (COUNTS_TOWARDS_MOB_COUNT.test(mob)) {
+				var frustum = this.minecraft.levelRenderer.getFrustum();
+				boolean viewable = frustum != null && frustum.isVisible(mob.getBoundingBox());
 				boolean lineOfSight = this.minecraft.player.hasLineOfSight(mob);
 
 				// 如果是战斗状态，添加到 ATTACKING 组
-				if (isMobAggressive(mob))
-				{
+				if (isMobAggressive(mob)) {
 					builder.addToGroup(MobSelection.GroupType.ATTACKING, MobSelection.Selector.ANY, mob);
-					if (lineOfSight)
-					{
+					if (lineOfSight) {
 						builder.addToGroup(MobSelection.GroupType.ATTACKING, MobSelection.Selector.LINE_OF_SIGHT, mob);
 						if (viewable)
 							builder.addToGroup(MobSelection.GroupType.ATTACKING, MobSelection.Selector.ON_SCREEN, mob);
@@ -153,8 +141,7 @@ public class BattleMusicManager
 
 				// 所有生物都添加到 ENEMIES 组
 				builder.addToGroup(MobSelection.GroupType.ENEMIES, MobSelection.Selector.ANY, mob);
-				if (lineOfSight)
-				{
+				if (lineOfSight) {
 					builder.addToGroup(MobSelection.GroupType.ENEMIES, MobSelection.Selector.LINE_OF_SIGHT, mob);
 					if (viewable)
 						builder.addToGroup(MobSelection.GroupType.ENEMIES, MobSelection.Selector.ON_SCREEN, mob);
@@ -167,11 +154,9 @@ public class BattleMusicManager
 		// Update panic state
 		Mob closestAggressor = null;
 		double distance = -1.0D;
-		for (Mob mob : selection.group(MobSelection.GroupType.ATTACKING).forSelector(MobSelection.defaultSelector()))
-		{
+		for (Mob mob : selection.group(MobSelection.GroupType.ATTACKING).forSelector(MobSelection.defaultSelector())) {
 			double d = mob.distanceTo(this.minecraft.player);
-			if (distance == -1.0D || distance > d)
-			{
+			if (distance == -1.0D || distance > d) {
 				closestAggressor = mob;
 				distance = d;
 			}
@@ -179,93 +164,123 @@ public class BattleMusicManager
 
 		if (closestAggressor != null && this.panickingFrom != closestAggressor &&
 				this.panicConditions.test(this.minecraft.player, closestAggressor) &&
-				!(this.panickingFrom instanceof Player))
-		{
+				!(this.panickingFrom instanceof Player)) {
 			this.panic(closestAggressor, MobBattleMusicConfig.CLIENT.threatReevaluationCooldown.get() * 20);
 		}
 
 		// Handle track cleanup
 		var iterator = this.tracks.entrySet().iterator();
-		while (iterator.hasNext())
-		{
+		while (iterator.hasNext()) {
 			var entry = iterator.next();
 			MobBattleTrack track = entry.getValue();
-			if (track.isStopped() || !this.minecraft.getSoundManager().isActive(track))
-			{
+			if (track.isStopped() || !this.minecraft.getSoundManager().isActive(track)) {
 				LOGGER.debug("Removing track {}, it is no longer playing", track);
 				iterator.remove();
 			}
 		}
 
-
 		// 更新音轨
 		List<TrackType> tracks = MusicTracksManager.getInstance().getTracks();
 
 		TrackType priority = null;
-		for (TrackType type : tracks)
-		{
-			if (type.canPlay(selection))
-			{
+		for (TrackType type : tracks) {
+			if (type.canPlay(selection)) {
 				priority = type;
 				break;
 			}
 		}
 		this.priorityTrack = priority;
 
-		for (TrackType type : tracks)
-		{
-			float trackDesiredVolume = shouldStopTracksForModCompat(this.minecraft.getSoundManager()) ? 0.0F : type.getVolume(selection);
+		for (TrackType type : tracks) {
+			float trackDesiredVolume = shouldStopTracksForModCompat(this.minecraft.getSoundManager()) ? 0.0F
+					: type.getVolume(selection);
 			boolean canPlay = priority == type;
 			this.initiateAndOrUpdateTrack(type, canPlay && trackDesiredVolume > 0.0F, track -> {
-				if (canPlay)
-				{
+				if (canPlay) {
 					track.setTargetedVolume(trackDesiredVolume);
-				}
-				else
-				{
+				} else {
 					track.setTargetedVolume(0.0F);
 				}
 			});
 		}
 	}
 
-	private void initiateAndOrUpdateTrack(TrackType type, boolean allowNewTracks, Consumer<MobBattleTrack> consumer)
-	{
-		MobBattleTrack track = null;
-		if (allowNewTracks && this.minecraft.options.getSoundSourceVolume(BattleMusicManager.DEFAULT_SOUND_SOURCE) > 0.0F
-				&& this.minecraft.options.getSoundSourceVolume(SoundSource.MASTER) > 0.0F)
-		{
-			track = this.tracks.computeIfAbsent(type, t -> {
-				MobBattleTrack newTrack = new MobBattleTrack(type.getTrack(), type.getFadeTime());
-				this.minecraft.getSoundManager().play(newTrack);
-				LOGGER.debug("Beginning track {}", type);
-				return newTrack;
-			});
-		}
-		else
-		{
-			track = this.tracks.get(type);
-		}
+	private void initiateAndOrUpdateTrack(TrackType type, boolean allowNewTracks, Consumer<MobBattleTrack> consumer) {
+		// Check if this is an external URL track
+		ResourceLocation trackLocation = type.getTrack();
+		MusicTracksManager tracksManager = MusicTracksManager.getInstance();
 
-		if (track != null)
-		{
-			consumer.accept(track);
+		if (tracksManager.isExternalUrl(trackLocation)) {
+			// Handle external URL track
+			String url = tracksManager.getExternalUrl(trackLocation);
+			if (url != null) {
+				ExternalUrlMusicTrack externalTrack = this.externalTracks.get(type);
+
+				if (allowNewTracks
+						&& this.minecraft.options.getSoundSourceVolume(BattleMusicManager.DEFAULT_SOUND_SOURCE) > 0.0F
+						&& this.minecraft.options.getSoundSourceVolume(SoundSource.MASTER) > 0.0F) {
+					// Only create new track if it doesn't exist or has stopped
+					if (externalTrack == null || externalTrack.isStopped()) {
+						externalTrack = new ExternalUrlMusicTrack(url, type.getFadeTime());
+						externalTrack.play();
+						this.externalTracks.put(type, externalTrack);
+						LOGGER.info("Beginning external URL track with fade time {}: {}", type.getFadeTime(), url);
+					}
+				}
+
+				// Handle volume changes for external tracks
+				if (externalTrack != null) {
+					// Update target volume based on whether this track should be playing
+					if (allowNewTracks) {
+						// Track should be playing - set target volume to 1.0
+						externalTrack.setTargetVolume(1.0f);
+					} else {
+						// Track should fade out - set target volume to 0.0
+						externalTrack.setTargetVolume(0.0f);
+
+						// If volume has reached 0, stop and remove the track
+						if (externalTrack.getCurrentVolume() <= 0.01f) {
+							externalTrack.stop();
+							this.externalTracks.remove(type);
+							LOGGER.debug("Stopped and removed external URL track: {}", url);
+						}
+					}
+				}
+			}
+		} else {
+			// Handle normal Minecraft sound track
+			MobBattleTrack track = null;
+			if (allowNewTracks
+					&& this.minecraft.options.getSoundSourceVolume(BattleMusicManager.DEFAULT_SOUND_SOURCE) > 0.0F
+					&& this.minecraft.options.getSoundSourceVolume(SoundSource.MASTER) > 0.0F) {
+				track = this.tracks.computeIfAbsent(type, t -> {
+					MobBattleTrack newTrack = new MobBattleTrack(type.getTrack(), type.getFadeTime());
+					this.minecraft.getSoundManager().play(newTrack);
+					LOGGER.debug("Beginning track {}", type);
+					return newTrack;
+				});
+			} else {
+				track = this.tracks.get(type);
+			}
+
+			if (track != null) {
+				consumer.accept(track);
+			}
 		}
 	}
 
-	public void wasAttacked(DamageSource source)
-	{
+	public void wasAttacked(DamageSource source) {
 		Entity entity = source.getEntity();
 		if (entity instanceof Mob mob && !(this.panickingFrom instanceof Player))
 			this.panic(mob, MobBattleMusicConfig.CLIENT.threatReevaluationCooldown.get() * 20);
 		else if (entity instanceof Player player && player != this.minecraft.player &&
 				(MobBattleMusicConfig.CLIENT.punchingCountsAsViolence.get() ||
-						(player.getMainHandItem().getItem() instanceof TieredItem || source.getDirectEntity() instanceof Projectile)))
+						(player.getMainHandItem().getItem() instanceof TieredItem
+								|| source.getDirectEntity() instanceof Projectile)))
 			this.panic(player, MobBattleMusicConfig.CLIENT.playerReevaluationCooldown.get() * 20);
 	}
 
-	public void onAttack(Entity entity)
-	{
+	public void onAttack(Entity entity) {
 		if (entity instanceof Mob mob && !(this.panickingFrom instanceof Player))
 			this.panic(mob, MobBattleMusicConfig.CLIENT.threatReevaluationCooldown.get() * 20);
 		else if (entity instanceof Player player && !player.isCreative() && player != this.minecraft.player &&
@@ -274,64 +289,64 @@ public class BattleMusicManager
 			this.panic(player, MobBattleMusicConfig.CLIENT.playerReevaluationCooldown.get() * 20);
 	}
 
-	private void panic(LivingEntity mob, int time)
-	{
+	private void panic(LivingEntity mob, int time) {
 		this.panickingFrom = mob;
 		this.threatRefreshTimer = time;
 		this.maxThreatRefreshTime = time;
 	}
 
-	public void reload()
-	{
+	public void reload() {
+		// Stop and remove normal tracks
 		var iterator = this.tracks.values().iterator();
-		while (iterator.hasNext())
-		{
+		while (iterator.hasNext()) {
 			var track = iterator.next();
 			track.stop();
 			iterator.remove();
-			LOGGER.debug("Reloading mob battle music");
 		}
+
+		// Stop and remove external URL tracks
+		var externalIterator = this.externalTracks.values().iterator();
+		while (externalIterator.hasNext()) {
+			var track = externalIterator.next();
+			track.stop();
+			externalIterator.remove();
+		}
+
+		LOGGER.debug("Reloading mob battle music");
 	}
 
-	public boolean isPlaying()
-	{
+	public boolean isPlaying() {
 		return !this.tracks.isEmpty();
 	}
 
-	public @Nullable TrackType getPriorityTrack()
-	{
+	public @Nullable TrackType getPriorityTrack() {
 		return this.priorityTrack;
 	}
 
-	public List<TrackType> getPlayingTracks()
-	{
+	public List<TrackType> getPlayingTracks() {
 		return ImmutableList.copyOf(this.tracks.keySet());
 	}
 
-	public @Nullable LivingEntity getPanicTarget()
-	{
+	public @Nullable LivingEntity getPanicTarget() {
 		return this.panickingFrom;
-	}  private static void fadeAndStopMinecraftMusic(MusicManager manager)
-{
-	SoundInstance currentMusic = ((MixinMusicManagerAccessor)manager).mobbattlemusic$getCurrentMusic();
-	if (currentMusic instanceof AbstractSoundInstance)
-	{
-		MixinAbstractSoundInstance mixinCurrentMusic = (MixinAbstractSoundInstance)currentMusic;
-		if (currentMusic.getVolume() > 0.0F)
-		{
-			mixinCurrentMusic.mobbattlemusic$setVolume(mixinCurrentMusic.mobbattlemusic$getVolume() - 0.01F);
-			if (currentMusic.getVolume() <= 0.0F)
-				manager.stopPlaying();
+	}
+
+	private static void fadeAndStopMinecraftMusic(MusicManager manager) {
+		SoundInstance currentMusic = ((MixinMusicManagerAccessor) manager).mobbattlemusic$getCurrentMusic();
+		if (currentMusic instanceof AbstractSoundInstance) {
+			MixinAbstractSoundInstance mixinCurrentMusic = (MixinAbstractSoundInstance) currentMusic;
+			if (currentMusic.getVolume() > 0.0F) {
+				mixinCurrentMusic.mobbattlemusic$setVolume(mixinCurrentMusic.mobbattlemusic$getVolume() - 0.01F);
+				if (currentMusic.getVolume() <= 0.0F)
+					manager.stopPlaying();
+			}
 		}
 	}
-}
 
-	private static boolean shouldStopTracksForModCompat(SoundManager manager)
-	{
-		SoundEngine engine = ((MixinSoundManagerAccessor)manager).mobbattlemusic$getSoundEngine();
-		MixinSoundEngineAccessor accessor = (MixinSoundEngineAccessor)engine;
-		for (SoundInstance sound : accessor.mobbattlemusic$getInstanceToChannel().keySet())
-		{
+	private static boolean shouldStopTracksForModCompat(SoundManager manager) {
+		SoundEngine engine = ((MixinSoundManagerAccessor) manager).mobbattlemusic$getSoundEngine();
+		MixinSoundEngineAccessor accessor = (MixinSoundEngineAccessor) engine;
+		for (SoundInstance sound : accessor.mobbattlemusic$getInstanceToChannel().keySet()) {
 			var clazz = MobBattleMusicCompat.getWitherStormModBossThemeLoopClass();
 			if (clazz != null && clazz.isAssignableFrom(sound.getClass()))
 				return true;
