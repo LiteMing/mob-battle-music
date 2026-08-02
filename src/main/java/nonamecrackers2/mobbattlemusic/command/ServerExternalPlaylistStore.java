@@ -200,6 +200,54 @@ public class ServerExternalPlaylistStore
 		return 1;
 	}
 
+	public static int move(CommandSourceStack source, String scene, int from, int to)
+	{
+		Binding binding = Binding.scene(scene);
+		return binding == null ? 0 : move(source, binding, from, to);
+	}
+
+	public static int moveEntityType(CommandSourceStack source, String scene, ResourceLocation entityType, int from, int to)
+	{
+		Binding binding = Binding.entityType(scene, entityType);
+		return binding == null ? 0 : move(source, binding, from, to);
+	}
+
+	public static int moveEntityUuid(CommandSourceStack source, String scene, String uuid, int from, int to)
+	{
+		Binding binding = Binding.entityUuid(scene, uuid);
+		return binding == null ? 0 : move(source, binding, from, to);
+	}
+
+	public static int moveIdleRule(CommandSourceStack source, String ruleId, int from, int to)
+	{
+		Binding binding = Binding.idleRule(ruleId);
+		return binding == null ? 0 : move(source, binding, from, to);
+	}
+
+	private static int move(CommandSourceStack source, Binding binding, int from, int to)
+	{
+		load(source.getServer());
+		List<String> urls = urls(binding.kind()).get(binding.storageKey());
+		if (urls == null || from < 0 || to < 0 || from >= urls.size() || to >= urls.size()) {
+			source.sendFailure(Component.literal("Music entry index out of range for server " + binding.displayName()));
+			return 0;
+		}
+		if (from != to) {
+			String value = urls.remove(from);
+			urls.add(to, value);
+			List<List<IdleCondition>> conditions = ENTRY_CONDITIONS.get(binding.serializedKey());
+			if (conditions != null && from < conditions.size() && to < conditions.size()) {
+				List<IdleCondition> condition = conditions.remove(from);
+				conditions.add(to, condition);
+			}
+			save(source.getServer());
+			syncAll(source.getServer());
+		}
+		MobBattleMusicCommandFeedback.success(source, Component.literal("Moved server " + binding.displayName() +
+				" entry to #" + (to + 1)));
+		return 1;
+	}
+
 	public static int setSelectionMode(CommandSourceStack source, String scene, String selectionMode)
 	{
 		Binding binding = Binding.scene(scene);

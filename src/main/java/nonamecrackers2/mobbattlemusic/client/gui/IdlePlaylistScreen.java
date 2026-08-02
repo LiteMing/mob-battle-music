@@ -20,11 +20,13 @@ import nonamecrackers2.mobbattlemusic.client.music.ExternalMusicHandler;
 import nonamecrackers2.mobbattlemusic.client.music.IdleConditionStateClient;
 import nonamecrackers2.mobbattlemusic.client.music.MusicMetadata;
 import nonamecrackers2.mobbattlemusic.client.music.MusicMetadataCache;
+import nonamecrackers2.mobbattlemusic.client.music.TimelineMarkerStore;
 import nonamecrackers2.mobbattlemusic.client.resource.MusicTracksManager;
 import nonamecrackers2.mobbattlemusic.client.sound.MobBattleTrack;
 import nonamecrackers2.mobbattlemusic.network.MobBattleMusicNetwork;
 import nonamecrackers2.mobbattlemusic.playlist.IdleCondition;
 import nonamecrackers2.mobbattlemusic.playlist.IdleConditionRegistry;
+import nonamecrackers2.mobbattlemusic.playlist.TimelineMarker;
 
 final class IdlePlaylistScreen extends Screen
 {
@@ -39,22 +41,30 @@ final class IdlePlaylistScreen extends Screen
 	private final Screen parent;
 	private final MusicPlaylistScreen.EditMode editMode;
 	private final List<Rule> rules = new ArrayList<>();
+	private PlaylistScreenLayout layout;
+	private PlaylistSelectionList<Rule> ruleList;
+	private PlaylistSelectionList<Integer> trackList;
+	private InspectorPage inspectorPage = InspectorPage.DETAILS;
+	private boolean draftDirty;
 	private final PlaylistDropdown orderDropdown = new PlaylistDropdown(PlaylistDropdown.Mode.FIXED, 18, 4);
 	private final PlaylistDropdown conditionTypeDropdown = new PlaylistDropdown(PlaylistDropdown.Mode.FIXED, 18, 8);
 	private final PlaylistDropdown argumentDropdown = new PlaylistDropdown(PlaylistDropdown.Mode.FILTERED, 18, 8);
+	private final PlaylistDropdown modeDropdown = new PlaylistDropdown(PlaylistDropdown.Mode.FIXED, 18, 2);
 	private Button modeButton;
 	private Button orderButton;
-	private Button priorityApplyButton;
-	private Button intervalApplyButton;
 	private Button previewButton;
 	private Button stopButton;
-	private Button entryEnabledButton;
-	private Button deleteTrackButton;
+	private Button refreshButton;
 	private Button conditionTypeButton;
 	private Button conditionInvertButton;
 	private Button conditionAddButton;
 	private Button conditionDeleteButton;
 	private Button addTrackButton;
+	private Button inspectorDetailsButton;
+	private Button inspectorBindingButton;
+	private Button inspectorConditionsButton;
+	private Button saveButton;
+	private Button cancelButton;
 	private EditBox priorityBox;
 	private EditBox intervalBox;
 	private EditBox conditionArgumentBox;
@@ -62,13 +72,18 @@ final class IdlePlaylistScreen extends Screen
 	private int selectedRule;
 	private int selectedTrack;
 	private int selectedCondition;
-	private int ruleScroll;
-	private int trackScroll;
-	private int conditionScroll;
 	private int syncRefreshCooldown;
 	private String conditionType;
 	private boolean conditionInverted;
 	private MobBattleTrack previewTrack;
+	private String lastPreviewUrl = "";
+
+	private enum InspectorPage
+	{
+		DETAILS,
+		BINDING,
+		CONDITIONS
+	}
 
 	IdlePlaylistScreen(Screen parent, MusicPlaylistScreen.EditMode editMode)
 	{
@@ -87,70 +102,67 @@ final class IdlePlaylistScreen extends Screen
 	@Override
 	protected void init()
 	{
+		super.init();
+		this.layout = PlaylistScreenLayout.calculate(this.width, this.height);
 		State state = state();
 		this.selectedRule = state.selectedRule;
 		this.selectedTrack = state.selectedTrack;
 		this.selectedCondition = state.selectedCondition;
-		this.ruleScroll = state.ruleScroll;
-		this.trackScroll = state.trackScroll;
-		this.conditionScroll = state.conditionScroll;
 		this.conditionType = state.conditionType;
 		this.conditionInverted = state.conditionInverted;
 		this.rebuildRules();
 
-		for (Button tab : PlaylistTabs.create(this.width, PlaylistTabs.Tab.IDLE, this::navigateTo))
+		for (Button tab : PlaylistTabs.create(this.layout.tabBar(), PlaylistTabs.Tab.IDLE, this::navigateTo))
 			this.addRenderableWidget(tab);
-		this.modeButton = this.addRenderableWidget(Button.builder(modeLabel(), button -> switchMode())
-				.bounds(this.width - 112, 6, 100, 20).build());
+		this.modeButton = this.addRenderableWidget(Button.builder(modeLabel(), button -> toggleModeDropdown())
+				.bounds(this.layout.titleBar().right() - 106, this.layout.titleBar().y(), 100, 20).build());
+		this.modeButton.active = this.editMode == MusicPlaylistScreen.EditMode.SERVER || canEditServer();
+		this.modeButton.setTooltip(net.minecraft.client.gui.components.Tooltip.create(
+				this.modeButton.active ? text("mode.tooltip") : text("mode.no_permission")));
 
-		int leftWidth = leftWidth();
-		int detailX = 12 + leftWidth + 8;
-		int detailWidth = Math.max(180, this.width - detailX - 12);
-		boolean compact = detailWidth < 420;
-		int settingsY = 58;
-		int orderWidth = compact ? 86 : Math.min(126, Math.max(92, detailWidth / 4));
+		PlaylistScreenLayout.Rect sidebar = this.layout.sidebar();
+		PlaylistScreenLayout.Rect main = this.layout.main();
+		PlaylistScreenLayout.Rect inspector = this.layout.inspector();
+		int ix = inspector.innerX();
+		int iy = inspector.innerY();
+		int iw = inspector.innerWidth();
+		int half = Math.max(24, (iw - PlaylistScreenLayout.GAP) / 2);
+		int inspectorTabWidth = Math.max(24, (iw - PlaylistScreenLayout.GAP * 2) / 3);
+		this.inspectorDetailsButton = this.addRenderableWidget(Button.builder(text("inspector.details"), b -> selectInspectorPage(InspectorPage.DETAILS))
+				.bounds(ix, iy, inspectorTabWidth, 18).build());
+		this.inspectorBindingButton = this.addRenderableWidget(Button.builder(text("inspector.binding"), b -> selectInspectorPage(InspectorPage.BINDING))
+				.bounds(ix + inspectorTabWidth + PlaylistScreenLayout.GAP, iy, inspectorTabWidth, 18).build());
+		this.inspectorConditionsButton = this.addRenderableWidget(Button.builder(text("inspector.conditions"), b -> selectInspectorPage(InspectorPage.CONDITIONS))
+				.bounds(ix + (inspectorTabWidth + PlaylistScreenLayout.GAP) * 2, iy,
+						Math.max(24, iw - (inspectorTabWidth + PlaylistScreenLayout.GAP) * 2), 18).build());
+		this.inspectorDetailsButton.setTooltip(net.minecraft.client.gui.components.Tooltip.create(text("inspector.details")));
+		this.inspectorBindingButton.setTooltip(net.minecraft.client.gui.components.Tooltip.create(text("inspector.binding")));
+		this.inspectorConditionsButton.setTooltip(net.minecraft.client.gui.components.Tooltip.create(text("inspector.conditions")));
 		this.orderButton = this.addRenderableWidget(Button.builder(Component.empty(), button -> toggleOrderDropdown())
-				.bounds(detailX, settingsY, orderWidth, 20).build());
-		int priorityWidth = compact ? 38 : 44;
-		int applyWidth = compact ? 36 : 42;
-		this.priorityBox = this.addRenderableWidget(new EditBox(this.font, detailX + orderWidth + 4, settingsY + 1,
-				priorityWidth, 18, text("field.priority")));
+				.bounds(ix, detailActionY(), half, 20).build());
+		this.priorityBox = this.addRenderableWidget(new EditBox(this.font, ix, detailFieldsY(), half, 18,
+				text("field.priority")));
 		this.priorityBox.setMaxLength(5);
 		this.priorityBox.setFilter(value -> value.isEmpty() || value.equals("-") || value.matches("-?[0-9]{0,4}"));
 		this.priorityBox.setHint(text("field.priority"));
-		this.priorityApplyButton = this.addRenderableWidget(Button.builder(text("button.apply"), button -> applyPriority())
-				.bounds(this.priorityBox.getX() + priorityWidth + 4, settingsY, applyWidth, 20).build());
-		this.intervalBox = this.addRenderableWidget(new EditBox(this.font,
-				this.priorityApplyButton.getX() + applyWidth + 4, settingsY + 1, compact ? 44 : 54, 18,
+		this.intervalBox = this.addRenderableWidget(new EditBox(this.font, ix + half + 4, detailFieldsY(), half, 18,
 				text("field.interval")));
 		this.intervalBox.setMaxLength(5);
 		this.intervalBox.setFilter(value -> value.matches("[0-9]{0,5}"));
 		this.intervalBox.setHint(text("field.interval"));
-		this.intervalApplyButton = this.addRenderableWidget(Button.builder(text("button.apply"), button -> applyInterval())
-				.bounds(this.intervalBox.getX() + this.intervalBox.getWidth() + 4, settingsY, applyWidth, 20).build());
-
-		int trackActionY = 84;
+		PlaylistScreenLayout.ActionMetrics actions = this.layout.actionMetrics();
 		this.previewButton = this.addRenderableWidget(Button.builder(text("button.preview"), button -> previewSelected())
-				.bounds(detailX, trackActionY, 62, 20).build());
+				.bounds(actions.previewX(), actions.y(), actions.previewWidth(), 20).build());
 		this.stopButton = this.addRenderableWidget(Button.builder(text("button.stop"), button -> stopPreview())
-				.bounds(detailX + 66, trackActionY, 52, 20).build());
-		this.entryEnabledButton = this.addRenderableWidget(Button.builder(entryEnabledLabel(), button -> toggleSelectedEntry())
-				.bounds(detailX + 122, trackActionY, 76, 20).build());
-		this.deleteTrackButton = this.addRenderableWidget(Button.builder(text("button.delete"), button -> deleteTrack())
-				.bounds(detailX + 202, trackActionY, 56, 20).build());
-
-		int conditionY = this.height - 76;
-		int conditionTypeWidth = compact ? 84 : Math.min(150, Math.max(104, detailWidth / 4));
+				.bounds(actions.stopX(), actions.y(), actions.stopWidth(), 20).build());
+		this.refreshButton = this.addRenderableWidget(Button.builder(text("button.refresh"), button -> refreshRules())
+				.bounds(actions.refreshX(), actions.y(), actions.refreshWidth(), 20).build());
+		int editorY = conditionEditorY();
 		this.conditionTypeButton = this.addRenderableWidget(Button.builder(Component.empty(), button -> toggleConditionTypeDropdown())
-				.bounds(detailX, conditionY, conditionTypeWidth, 20).build());
-		int invertWidth = compact ? 32 : 44;
-		int conditionAddWidth = compact ? 34 : 44;
-		int conditionDeleteWidth = compact ? 40 : 48;
-		int conditionArgumentWidth = compact
-				? Math.max(42, detailWidth - conditionTypeWidth - invertWidth - conditionAddWidth - conditionDeleteWidth - 20)
-				: Math.max(70, detailWidth - conditionTypeWidth - 154);
+				.bounds(ix, editorY, Math.max(36, (iw - 4) / 2), 20).build());
+		int conditionArgumentWidth = Math.max(36, iw - this.conditionTypeButton.getWidth() - 4);
 		this.conditionArgumentBox = this.addRenderableWidget(new EditBox(this.font,
-				detailX + conditionTypeWidth + 4, conditionY + 1, conditionArgumentWidth, 18,
+				ix + this.conditionTypeButton.getWidth() + 4, editorY + 1, conditionArgumentWidth, 18,
 				text("field.condition_argument")));
 		this.conditionArgumentBox.setMaxLength(512);
 		this.conditionArgumentBox.setHint(text("field.condition_argument"));
@@ -160,167 +172,198 @@ final class IdlePlaylistScreen extends Screen
 			this.argumentDropdown.setFilter(value);
 			this.updateButtonState();
 		});
-		int conditionActionsX = this.conditionArgumentBox.getX() + this.conditionArgumentBox.getWidth() + 4;
+		int conditionActionY = editorY + 25;
+		int actionWidth = Math.max(28, (iw - 12) / 4);
 		this.conditionInvertButton = this.addRenderableWidget(Button.builder(invertLabel(), button -> toggleInverted())
-				.bounds(conditionActionsX, conditionY, invertWidth, 20).build());
+				.bounds(ix, conditionActionY, actionWidth, 20).build());
 		this.conditionAddButton = this.addRenderableWidget(Button.builder(text("button.condition_add"), button -> addCondition())
-				.bounds(conditionActionsX + invertWidth + 4, conditionY, conditionAddWidth, 20).build());
+				.bounds(ix + actionWidth + 4, conditionActionY, actionWidth, 20).build());
 		this.conditionDeleteButton = this.addRenderableWidget(Button.builder(text("button.condition_delete"), button -> deleteCondition())
-				.bounds(conditionActionsX + invertWidth + conditionAddWidth + 8, conditionY,
-						conditionDeleteWidth, 20).build());
-
-		int addY = this.height - 52;
-		int addWidth = compact ? 72 : 92;
-		int doneWidth = 54;
-		int ruleWidth = Math.max(80, detailWidth - addWidth - doneWidth - 12);
-		this.ruleBox = this.addRenderableWidget(new EditBox(this.font, detailX, addY + 1, ruleWidth, 18,
+				.bounds(ix + (actionWidth + 4) * 2, conditionActionY,
+						Math.max(20, iw - (actionWidth + 4) * 2), 20).build());
+		int ruleY = sidebar.innerY();
+		this.ruleBox = this.addRenderableWidget(new EditBox(this.font, sidebar.innerX(), ruleY + 18, sidebar.innerWidth(), 18,
 				text("idle.field.rule")));
 		this.ruleBox.setMaxLength(128);
 		this.ruleBox.setHint(text("idle.field.rule"));
 		this.ruleBox.setValue(state.ruleId);
-		this.ruleBox.setResponder(value -> state().ruleId = value);
+		this.ruleBox.setResponder(value -> {
+			state().ruleId = value;
+			this.addTrackButton.active = ResourceLocation.tryParse(value.trim()) != null;
+		});
 		this.addTrackButton = this.addRenderableWidget(Button.builder(text("idle.button.choose_track"), button -> addTrack())
-				.bounds(this.ruleBox.getX() + this.ruleBox.getWidth() + 4, addY, addWidth, 20).build());
-		this.addRenderableWidget(Button.builder(text("button.done"), button -> closeToParent())
-				.bounds(this.width - 66, addY, doneWidth, 20).build());
+				.bounds(sidebar.innerX(), ruleY + 41, sidebar.innerWidth(), 20).build());
+		this.cancelButton = this.addRenderableWidget(Button.builder(text("button.cancel"), button -> requestClose())
+				.bounds(actions.cancelX(), actions.y(), actions.cancelWidth(), 20).build());
+		this.saveButton = this.addRenderableWidget(Button.builder(text("button.save"), button -> saveInspector())
+				.bounds(actions.saveX(), actions.y(), actions.saveWidth(), 20).build());
 
 		this.orderDropdown.setItems(List.of(
 				orderItem(MusicTracksManager.ExternalSelectionMode.RANDOM),
 				orderItem(MusicTracksManager.ExternalSelectionMode.SEQUENTIAL),
 				orderItem(MusicTracksManager.ExternalSelectionMode.FIRST)));
-		this.orderDropdown.setBounds(detailX, settingsY + 20, Math.max(orderWidth, 126), this.height - 8);
+		this.orderDropdown.setBounds(ix, detailActionY() + 20, iw, inspector.bottom());
+		this.modeDropdown.setItems(List.of(
+				new PlaylistDropdown.Item("local", text("mode.local")),
+				new PlaylistDropdown.Item("server", text("mode.server"))));
+		this.modeDropdown.setBounds(this.modeButton.getX(), this.modeButton.getY() + 20,
+				this.modeButton.getWidth(), this.layout.frame().bottom());
 		this.conditionTypeDropdown.setItems(IdleConditionStateClient.descriptors().stream()
 				.map(descriptor -> new PlaylistDropdown.Item(descriptor.id().toString(),
 						Component.literal(descriptor.displayName()), Component.literal(descriptor.id().toString()), false))
 				.toList());
-		this.conditionTypeDropdown.setBounds(detailX, conditionY + 20, Math.max(conditionTypeWidth, 180), this.height - 8);
+		this.conditionTypeDropdown.setBounds(ix, editorY + 20, iw, inspector.bottom());
 		this.rebuildArgumentDropdown();
-		this.argumentDropdown.setBounds(this.conditionArgumentBox.getX(), conditionY + 20,
-				Math.max(this.conditionArgumentBox.getWidth(), 180), this.height - 8);
+		this.argumentDropdown.setBounds(ix, editorY + 20, iw, inspector.bottom());
 		this.argumentDropdown.setFilter(this.conditionArgumentBox.getValue());
+		this.ruleList = this.addRenderableWidget(new PlaylistSelectionList<>(this.minecraft, this.font,
+				sidebar.width(), this.height, sidebar.y() + 59, sidebar.bottom() - 6,
+				this::selectRule, value -> {}, value -> {}, move -> {}));
+		this.trackList = this.addRenderableWidget(new PlaylistSelectionList<>(this.minecraft, this.font,
+				main.width(), this.height, main.y() + 22, main.bottom() - 6,
+				this::selectTrack, this::toggleTrack, this::deleteTrackRow, this::moveTrack));
+		this.ruleList.setBounds(new PlaylistScreenLayout.Rect(sidebar.x(), sidebar.y() + 82,
+				sidebar.width(), Math.max(1, sidebar.height() - 88)));
+		this.trackList.setBounds(new PlaylistScreenLayout.Rect(main.x(), main.y() + 22,
+				main.width(), Math.max(1, main.height() - 56)));
+		this.priorityBox.setResponder(value -> this.draftDirty = true);
+		this.intervalBox.setResponder(value -> this.draftDirty = true);
 		this.loadSelectedRule(true);
+		this.refreshSelectionLists();
+		this.updateButtonState();
 	}
 
 	@Override
 	public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick)
 	{
 		this.renderBackground(graphics);
-		graphics.drawString(this.font, this.title, 12, 10, 0xFFFFFF, false);
-		renderRuleList(graphics, mouseX, mouseY);
-		renderRuleDetails(graphics, mouseX, mouseY);
+		this.layout.render(graphics);
+		int headerX = this.layout.titleBar().innerX();
+		int headerRight = this.modeButton == null ? this.layout.titleBar().right() : this.modeButton.getX() - 6;
+		String headerTitle = trimPixels(this.title.getString(), Math.max(60, Math.min(150, headerRight - headerX - 24)));
+		graphics.drawString(this.font, headerTitle, headerX, this.layout.titleBar().y() + 6, 0xFFF0F1F2, false);
+		Component summary = text("summary", this.rules.size(), this.rules.stream()
+				.mapToInt(rule -> rule.playlist().entries().size()).sum());
+		int summaryX = headerX + this.font.width(headerTitle) + 8;
+		if (summaryX < headerRight - 20)
+			graphics.drawString(this.font, trimPixels(summary.getString(), headerRight - summaryX), summaryX,
+					this.layout.titleBar().y() + 6, 0xFF9AA2AD, false);
+		graphics.drawString(this.font, text("idle.field.rule"), this.layout.sidebar().innerX(),
+				this.layout.sidebar().y() + 8, 0xFF9AA2AD, false);
+		graphics.drawString(this.font, text("section.rules"), this.layout.sidebar().innerX(),
+				this.layout.sidebar().y() + 70, 0xFFB8C0CA, false);
+		Rule rule = selectedRule();
+		graphics.drawString(this.font, text("section.tracks"), this.layout.main().innerX(),
+				this.layout.main().y() + 7, 0xFFB8C0CA, false);
+		if (rule != null)
+			graphics.drawString(this.font, trimPixels(rule.binding().target(), this.layout.main().innerWidth()),
+					this.layout.main().innerX() + 54, this.layout.main().y() + 7, 0xFF9AA2AD, false);
+		else
+			graphics.drawString(this.font, text("idle.select_rule"), this.layout.main().innerX(),
+					this.layout.main().innerY() + 24, 0xFF9AA2AD, false);
+		Component legend = text("status.legend");
+		int legendWidth = this.font.width(legend);
+		if (this.layout.main().innerWidth() > legendWidth + 70)
+			graphics.drawString(this.font, legend, this.layout.main().right() - legendWidth - 6,
+					this.layout.main().y() + 7, 0xFF7F8791, false);
+		this.renderInspector(graphics, mouseX, mouseY);
+		this.renderPreviewProgress(graphics);
 		super.render(graphics, mouseX, mouseY, partialTick);
+		if (this.priorityBox != null && this.priorityBox.visible && parseInteger(this.priorityBox.getValue(), -1000, 1000) == null)
+			graphics.renderOutline(this.priorityBox.getX() - 1, this.priorityBox.getY() - 1,
+					this.priorityBox.getWidth() + 2, this.priorityBox.getHeight() + 2, 0xFFE06C75);
+		if (this.intervalBox != null && this.intervalBox.visible && parseInteger(this.intervalBox.getValue(), 0, 86400) == null)
+			graphics.renderOutline(this.intervalBox.getX() - 1, this.intervalBox.getY() - 1,
+					this.intervalBox.getWidth() + 2, this.intervalBox.getHeight() + 2, 0xFFE06C75);
 		this.orderDropdown.render(graphics, this.font, mouseX, mouseY);
 		this.conditionTypeDropdown.render(graphics, this.font, mouseX, mouseY);
 		this.argumentDropdown.render(graphics, this.font, mouseX, mouseY);
+		this.modeDropdown.render(graphics, this.font, mouseX, mouseY);
+		PlaylistSelectionList<?> active = mouseX < this.layout.main().x() ? this.ruleList : this.trackList;
+		Component tooltip = active == null ? null : active.tooltipAt(mouseX, mouseY);
+		if (tooltip != null)
+			this.setTooltipForNextRenderPass(tooltip);
 	}
 
-	private void renderRuleList(GuiGraphics graphics, int mouseX, int mouseY)
+	private void renderInspector(GuiGraphics graphics, int mouseX, int mouseY)
 	{
-		int x = 12;
-		int y = 56;
-		int width = leftWidth();
-		int bottom = this.height - 32;
-		graphics.fill(x - 2, y - 2, x + width + 2, bottom + 2, 0x90000000);
-		int rowHeight = 32;
-		int visible = Math.max(1, (bottom - y) / rowHeight);
-		this.ruleScroll = clamp(this.ruleScroll, 0, Math.max(0, this.rules.size() - visible));
-		for (int row = 0; row < visible; row++) {
-			int index = this.ruleScroll + row;
-			if (index >= this.rules.size())
-				break;
-			Rule rule = this.rules.get(index);
-			int rowY = y + row * rowHeight;
-			boolean hovered = mouseX >= x && mouseX < x + width && mouseY >= rowY && mouseY < rowY + rowHeight;
-			graphics.fill(x, rowY, x + width, rowY + rowHeight - 2,
-					index == this.selectedRule ? 0xAA38546E : hovered ? 0x70405058 : 0x40202020);
-			graphics.drawString(this.font, trim(rule.binding().target(), Math.max(12, width / 6)), x + 6, rowY + 5,
-					0xFFFFFF, false);
-			boolean active = isActive(rule);
-			Component detail = text("idle.rule_summary", rule.playlist().entries().size(),
-					active ? text("idle.active") : text("idle.inactive"));
-			graphics.drawString(this.font, trim(detail.getString(), Math.max(12, width / 6)), x + 6, rowY + 18,
-					active ? 0x84D49A : 0xA0A0A0, false);
-		}
-		if (this.rules.isEmpty())
-			graphics.drawString(this.font, text("idle.empty"), x + 8, y + 8, 0xA0A0A0, false);
-	}
-
-	private void renderRuleDetails(GuiGraphics graphics, int mouseX, int mouseY)
-	{
-		int x = detailX();
-		int right = this.width - 12;
-		int top = 56;
-		int bottom = this.height - 80;
-		graphics.fill(x - 2, top - 2, right, bottom + 2, 0x90000000);
+		PlaylistScreenLayout.Rect inspector = this.layout.inspector();
+		int x = inspector.innerX();
+		int y = inspector.innerY();
+		int width = inspector.innerWidth();
 		Rule rule = selectedRule();
 		if (rule == null) {
-			graphics.drawString(this.font, text("idle.select_rule"), x + 8, 112, 0xA0A0A0, false);
+			graphics.drawString(this.font, text("idle.select_rule"), x, y + 28, 0xFF9AA2AD, false);
 			return;
 		}
-		graphics.drawString(this.font, rule.binding().target(), x + 184, 90, 0xD8D8D8, false);
-		int trackTop = 108;
-		int split = idleSplit(top, bottom, trackTop);
-		graphics.drawString(this.font, text("idle.tracks", rule.playlist().entries().size()), x + 2, trackTop - 12,
-				0xA0A0A0, false);
-		renderTracks(graphics, rule, mouseX, mouseY, x, trackTop, right - x, split - trackTop);
-		List<IdleCondition> conditions = selectedTrackConditions();
-		graphics.drawString(this.font, text("idle.conditions", conditions.size()), x + 2, split + 4,
-				0xA0A0A0, false);
-		renderConditions(graphics, conditions, mouseX, mouseY, x, split + 17, right - x,
-				Math.max(0, bottom - split - 20));
-	}
-
-	private void renderTracks(GuiGraphics graphics, Rule rule, int mouseX, int mouseY, int x, int y, int width, int height)
-	{
-		int rowHeight = 18;
-		int visible = Math.max(1, height / rowHeight);
-		this.trackScroll = clamp(this.trackScroll, 0, Math.max(0, rule.playlist().entries().size() - visible));
-		for (int row = 0; row < visible; row++) {
-			int index = this.trackScroll + row;
-			if (index >= rule.playlist().entries().size())
-				break;
-			MusicTracksManager.ExternalPlaylistEntry entry = rule.playlist().entries().get(index);
-			int rowY = y + row * rowHeight;
-			boolean hovered = mouseX >= x && mouseX < x + width && mouseY >= rowY && mouseY < rowY + rowHeight;
-			if (index == this.selectedTrack || hovered)
-				graphics.fill(x, rowY, x + width, rowY + rowHeight - 1,
-						index == this.selectedTrack ? 0x8038546E : 0x50405058);
-			MusicMetadata metadata = MusicMetadataCache.getInstance().get(entry.url()).orElse(null);
-			String title = metadata == null ? entry.name() : metadata.displayTitle(entry.name());
-			boolean enabled = MusicTracksManager.getInstance().isMusicEntryEnabled(rule.playlist().configLocation(), entry);
-			graphics.drawString(this.font, (index + 1) + ". " + trim(title, Math.max(12, (width - 28) / 6)), x + 4,
-					rowY + 5, enabled ? 0xD8D8D8 : 0x777F89, false);
-			graphics.fill(x + width - 15, rowY + 4, x + width - 4, rowY + 15,
-					enabled ? 0xFF76D18B : 0xFF666666);
+		if (this.inspectorPage == InspectorPage.DETAILS) {
+			graphics.drawString(this.font, trimPixels(rule.binding().target(), width), x, y + 24, 0xFFF0F1F2, false);
+			graphics.drawString(this.font, text("idle.rule_summary", rule.playlist().entries().size(),
+					isActive(rule) ? text("idle.active") : text("idle.inactive")), x, y + 38, 0xFFB8C0CA, false);
+			Component source = text("detail.source_value", sourceMatchesMode(rule.source)
+					? text("source." + rule.source.name().toLowerCase(Locale.ROOT)) : text("source.resource_pack"));
+			graphics.drawString(this.font, trimPixels(source.getString(), width), x, y + 52, 0xFF9AA2AD, false);
+			graphics.drawString(this.font, text("field.priority"), x, detailFieldsY() - 12, 0xFF9AA2AD, false);
+			graphics.drawString(this.font, text("field.interval"), x + width / 2 + 2,
+					detailFieldsY() - 12, 0xFF9AA2AD, false);
+		} else if (this.inspectorPage == InspectorPage.BINDING) {
+			graphics.drawString(this.font, text("binding.rule_key"), x, y + 24, 0xFF9AA2AD, false);
+			graphics.drawString(this.font, trimPixels(rule.binding().serializedKey(), width), x, y + 40, 0xFFD6D9DE, false);
+			graphics.drawString(this.font, text("binding.read_only"), x, y + 64, 0xFF9AA2AD, false);
+			graphics.drawString(this.font, text("binding.help"), x, y + 86, 0xFF7F8791, false);
+		} else {
+			List<IdleCondition> conditions = selectedTrackConditions();
+			int editorY = conditionEditorY();
+			graphics.drawString(this.font, text("detail.conditions"), x, y + 22, 0xFFB8C0CA, false);
+			int rowY = y + 34;
+			int visible = Math.min(conditions.size(), Math.max(0, (editorY - rowY - 3) / 18));
+			for (int i = 0; i < visible; i++) {
+				IdleCondition condition = conditions.get(i);
+				boolean hovered = mouseX >= x && mouseX < x + width && mouseY >= rowY + i * 18 && mouseY < rowY + i * 18 + 18;
+				if (i == this.selectedCondition || hovered)
+					graphics.fill(x, rowY + i * 18, x + width, rowY + i * 18 + 17,
+						i == this.selectedCondition ? 0xFF293B4A : 0xFF252A30);
+				String value = (condition.inverted() ? "NOT " : "") + condition.type();
+				if (!condition.argument().isBlank())
+					value += "  " + condition.argument();
+				graphics.drawString(this.font, trimPixels(value, width - 14), x + 3, rowY + i * 18 + 4,
+						0xFFD6D9DE, false);
+				graphics.drawString(this.font, "x", x + width - 9, rowY + i * 18 + 4, 0xFFE06C75, false);
+			}
+			graphics.drawString(this.font, text("field.condition_type"), x, editorY - 12, 0xFF9AA2AD, false);
+			graphics.drawString(this.font, text("field.condition_argument"), x + this.conditionTypeButton.getWidth() + 4,
+					editorY - 12, 0xFF9AA2AD, false);
 		}
 	}
 
-	private void renderConditions(GuiGraphics graphics, List<IdleCondition> conditions, int mouseX, int mouseY,
-			int x, int y, int width, int height)
+	private int detailFieldsY()
 	{
-		int rowHeight = 18;
-		int visible = Math.max(1, height / rowHeight);
-		this.conditionScroll = clamp(this.conditionScroll, 0, Math.max(0, conditions.size() - visible));
-		for (int row = 0; row < visible; row++) {
-			int index = this.conditionScroll + row;
-			if (index >= conditions.size())
-				break;
-			IdleCondition condition = conditions.get(index);
-			int rowY = y + row * rowHeight;
-			boolean hovered = mouseX >= x && mouseX < x + width && mouseY >= rowY && mouseY < rowY + rowHeight;
-			if (index == this.selectedCondition || hovered)
-				graphics.fill(x, rowY, x + width, rowY + rowHeight - 1,
-						index == this.selectedCondition ? 0x8038546E : 0x50405058);
-			String value = (index + 1) + ". " + (condition.inverted() ? "NOT " : "") + condition.type() +
-					(condition.argument().isBlank() ? "" : "  " + condition.argument());
-			graphics.drawString(this.font, trim(value, Math.max(12, width / 6)), x + 4, rowY + 5,
-					0xD8D8D8, false);
-		}
+		return this.layout.inspector().innerY() + 90;
+	}
+
+	private int detailActionY()
+	{
+		return this.layout.inspector().innerY() + 112;
+	}
+
+	private int conditionEditorY()
+	{
+		return Math.max(this.layout.inspector().innerY() + 70, this.layout.inspector().bottom() - 48);
+	}
+
+	private String trimPixels(String value, int width)
+	{
+		if (this.font.width(value) <= width)
+			return value;
+		String suffix = "...";
+		return this.font.plainSubstrByWidth(value, Math.max(0, width - this.font.width(suffix))) + suffix;
 	}
 
 	@Override
 	public boolean mouseClicked(double mouseX, double mouseY, int button)
 	{
+		if (handleDropdownClick(this.modeDropdown, mouseX, mouseY, button, item -> selectMode(item.id())))
+			return true;
 		if (handleDropdownClick(this.orderDropdown, mouseX, mouseY, button, item -> selectOrder(item.id())) ||
 				handleDropdownClick(this.conditionTypeDropdown, mouseX, mouseY, button,
 						item -> selectConditionType(item.id())) ||
@@ -329,55 +372,31 @@ final class IdlePlaylistScreen extends Screen
 			return true;
 		if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT && this.conditionArgumentBox.isMouseOver(mouseX, mouseY))
 			openArgumentDropdown();
-		if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT && selectListRow(mouseX, mouseY))
+		if (seekPreview(mouseX, mouseY))
+			return true;
+		if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT && clickConditionRow(mouseX, mouseY))
 			return true;
 		return super.mouseClicked(mouseX, mouseY, button);
 	}
 
-	private boolean selectListRow(double mouseX, double mouseY)
+	private boolean clickConditionRow(double mouseX, double mouseY)
 	{
-		int left = 12;
-		int top = 56;
-		int bottom = this.height - 32;
-		if (mouseX >= left && mouseX < left + leftWidth() && mouseY >= top && mouseY < bottom) {
-			int index = this.ruleScroll + (int)((mouseY - top) / 32);
-			if (index >= 0 && index < this.rules.size()) {
-				this.selectedRule = index;
-				this.selectedTrack = 0;
-				this.selectedCondition = 0;
-				this.trackScroll = 0;
-				this.conditionScroll = 0;
-				this.loadSelectedRule(true);
-				return true;
-			}
-		}
-		Rule rule = selectedRule();
-		if (rule == null)
+		if (this.inspectorPage != InspectorPage.CONDITIONS || selectedRule() == null)
 			return false;
-		int x = detailX();
-		int detailBottom = this.height - 80;
-		int trackTop = 108;
-		int split = idleSplit(56, detailBottom, trackTop);
-		if (mouseX >= x && mouseX < this.width - 12 && mouseY >= trackTop && mouseY < split) {
-			int index = this.trackScroll + (int)((mouseY - trackTop) / 18);
-			if (index >= 0 && index < rule.playlist().entries().size()) {
-				this.selectedTrack = index;
-				if (mouseX >= this.width - 38) {
-					toggleSelectedEntry();
-					return true;
-				}
+		int x = this.layout.inspector().innerX();
+		int y = this.layout.inspector().innerY() + 34;
+		int width = this.layout.inspector().innerWidth();
+		List<IdleCondition> conditions = selectedTrackConditions();
+		int visible = Math.min(conditions.size(), Math.max(0, (conditionEditorY() - y - 3) / 18));
+		for (int i = 0; i < visible; i++) {
+			if (mouseX < x || mouseX >= x + width || mouseY < y + i * 18 || mouseY >= y + i * 18 + 18)
+				continue;
+			this.selectedCondition = i;
+			if (mouseX >= x + width - 16)
+				deleteCondition();
+			else
 				this.updateButtonState();
-				return true;
-			}
-		}
-		int conditionTop = split + 17;
-		if (mouseX >= x && mouseX < this.width - 12 && mouseY >= conditionTop && mouseY < detailBottom) {
-			int index = this.conditionScroll + (int)((mouseY - conditionTop) / 18);
-			if (index >= 0 && index < selectedTrackConditions().size()) {
-				this.selectedCondition = index;
-				this.updateButtonState();
-				return true;
-			}
+			return true;
 		}
 		return false;
 	}
@@ -385,22 +404,17 @@ final class IdlePlaylistScreen extends Screen
 	@Override
 	public boolean mouseScrolled(double mouseX, double mouseY, double delta)
 	{
-		if (this.orderDropdown.mouseScrolled(delta) || this.conditionTypeDropdown.mouseScrolled(delta) ||
+		if (this.modeDropdown.mouseScrolled(delta) || this.orderDropdown.mouseScrolled(delta) || this.conditionTypeDropdown.mouseScrolled(delta) ||
 				this.argumentDropdown.mouseScrolled(delta))
 			return true;
-		if (mouseX < detailX())
-			this.ruleScroll = Math.max(0, this.ruleScroll - (int)Math.signum(delta));
-		else if (mouseY < 56 + (this.height - 136) / 2)
-			this.trackScroll = Math.max(0, this.trackScroll - (int)Math.signum(delta));
-		else
-			this.conditionScroll = Math.max(0, this.conditionScroll - (int)Math.signum(delta));
-		return true;
+		return super.mouseScrolled(mouseX, mouseY, delta);
 	}
 
 	@Override
 	public boolean keyPressed(int keyCode, int scanCode, int modifiers)
 	{
-		if (handleDropdownKey(this.orderDropdown, keyCode, item -> selectOrder(item.id())) ||
+		if (handleDropdownKey(this.modeDropdown, keyCode, item -> selectMode(item.id())) ||
+				handleDropdownKey(this.orderDropdown, keyCode, item -> selectOrder(item.id())) ||
 				handleDropdownKey(this.conditionTypeDropdown, keyCode, item -> selectConditionType(item.id())) ||
 				handleDropdownKey(this.argumentDropdown, keyCode, item -> selectArgument(item.id())))
 			return true;
@@ -412,6 +426,14 @@ final class IdlePlaylistScreen extends Screen
 				selectArgument(item.id());
 			return true;
 		}
+		if ((modifiers & GLFW.GLFW_MOD_CONTROL) != 0 && keyCode == GLFW.GLFW_KEY_UP)
+			return this.trackList != null && this.trackList.moveSelected(-1);
+		if ((modifiers & GLFW.GLFW_MOD_CONTROL) != 0 && keyCode == GLFW.GLFW_KEY_DOWN)
+			return this.trackList != null && this.trackList.moveSelected(1);
+		if (keyCode == GLFW.GLFW_KEY_ESCAPE && this.draftDirty) {
+			requestClose();
+			return true;
+		}
 		return super.keyPressed(keyCode, scanCode, modifiers);
 	}
 
@@ -419,6 +441,11 @@ final class IdlePlaylistScreen extends Screen
 	public void tick()
 	{
 		super.tick();
+		String previewUrl = java.util.Objects.toString(ExternalMusicHandler.getInstance().getPreviewUrl(), "");
+		if (!previewUrl.equals(this.lastPreviewUrl)) {
+			this.lastPreviewUrl = previewUrl;
+			this.refreshSelectionLists();
+		}
 		if (this.syncRefreshCooldown > 0 && --this.syncRefreshCooldown == 0)
 			MobBattleMusicNetwork.requestServerExternalPlaylistSync();
 	}
@@ -426,8 +453,7 @@ final class IdlePlaylistScreen extends Screen
 	@Override
 	public void onClose()
 	{
-		stopPreview();
-		closeToParent();
+		requestClose();
 	}
 
 	@Override
@@ -463,6 +489,137 @@ final class IdlePlaylistScreen extends Screen
 		this.selectedRule = clamp(this.selectedRule, 0, Math.max(0, this.rules.size() - 1));
 		if (this.rules.isEmpty())
 			this.selectedRule = -1;
+		if (this.ruleList != null)
+			this.refreshSelectionLists();
+	}
+
+	private void refreshSelectionLists()
+	{
+		if (this.ruleList == null)
+			return;
+		List<PlaylistSelectionList.Model<Rule>> ruleModels = new ArrayList<>();
+		for (Rule rule : this.rules) {
+			ruleModels.add(new PlaylistSelectionList.Model<>(rule.binding().serializedKey(), rule,
+					Component.literal(rule.binding().target()),
+					text("idle.rule_summary", rule.playlist().entries().size(),
+							isActive(rule) ? text("idle.active") : text("idle.inactive")),
+					isActive(rule) ? PlaylistSelectionList.Status.MATCHED : PlaylistSelectionList.Status.UNMATCHED,
+					false, false));
+		}
+		Rule current = selectedRule();
+		this.ruleList.setItems(ruleModels, current == null ? null : current.binding().serializedKey());
+		List<PlaylistSelectionList.Model<Integer>> trackModels = new ArrayList<>();
+		if (current != null) {
+			MusicTracksManager manager = MusicTracksManager.getInstance();
+			for (int i = 0; i < current.playlist().entries().size(); i++) {
+				MusicTracksManager.ExternalPlaylistEntry entry = current.playlist().entries().get(i);
+				MusicMetadata metadata = MusicMetadataCache.getInstance().get(entry.url()).orElse(null);
+				String title = metadata == null ? entry.name() : metadata.displayTitle(entry.name());
+				PlaylistSelectionList.Status status = !manager.isMusicEntryEnabled(current.playlist().configLocation(), entry)
+						? PlaylistSelectionList.Status.DISABLED
+						: isPlaying(entry) ? PlaylistSelectionList.Status.PLAYING
+						: !entry.conditions().isEmpty() && !IdleConditionStateClient.isEntryActive(current.playlist().configLocation(), i)
+								? PlaylistSelectionList.Status.UNMATCHED : PlaylistSelectionList.Status.MATCHED;
+				trackModels.add(new PlaylistSelectionList.Model<>(current.binding().serializedKey() + "#" + i, i,
+						Component.literal(title), Component.literal("#" + (i + 1) + "  " + current.binding().scene()), status,
+						selectedRuleEditable(), selectedRuleEditable()));
+			}
+		}
+		this.trackList.setItems(trackModels, current == null ? null
+				: current.binding().serializedKey() + "#" + this.selectedTrack);
+	}
+
+	private boolean isPlaying(MusicTracksManager.ExternalPlaylistEntry entry)
+	{
+		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
+		return entry.url().equals(handler.getPreviewUrl()) || entry.url().equals(handler.getCurrentlyPlayingUrl())
+				|| this.previewTrack != null && entry.equals(selectedTrackEntry());
+	}
+
+	private boolean selectedRuleEditable()
+	{
+		Rule rule = selectedRule();
+		return rule != null && (this.editMode == MusicPlaylistScreen.EditMode.SERVER
+				? rule.source() == MusicTracksManager.DynamicSource.SERVER
+				: rule.source() == MusicTracksManager.DynamicSource.LOCAL);
+	}
+
+	private void selectRule(Rule rule)
+	{
+		this.selectedRule = this.rules.indexOf(rule);
+		this.selectedTrack = 0;
+		this.selectedCondition = 0;
+		this.loadSelectedRule(true);
+		this.refreshSelectionLists();
+	}
+
+	private void selectTrack(Integer index)
+	{
+		this.selectedTrack = index == null ? 0 : index;
+		this.selectedCondition = 0;
+		this.updateButtonState();
+	}
+
+	private void toggleTrack(Integer index)
+	{
+		this.selectedTrack = index == null ? 0 : index;
+		toggleSelectedEntry();
+		this.refreshSelectionLists();
+	}
+
+	private void deleteTrackRow(Integer index)
+	{
+		this.selectedTrack = index == null ? 0 : index;
+		deleteTrack();
+		this.refreshSelectionLists();
+	}
+
+	private void moveTrack(PlaylistSelectionList.Move<Integer> move)
+	{
+		if (!selectedRuleEditable() || move.from() == move.to())
+			return;
+		Rule rule = selectedRule();
+		if (rule == null)
+			return;
+		this.selectedTrack = move.to();
+		if (this.editMode == MusicPlaylistScreen.EditMode.SERVER)
+			runServerCommand("mobbattlemusic idle rule " + rule.binding().target() + " move " +
+					(move.from() + 1) + " " + (move.to() + 1));
+		else {
+			message(MusicTracksManager.getInstance().moveLocalEntry(rule.binding(), move.from(), move.to()).message());
+			refreshRules();
+		}
+	}
+
+	private void selectInspectorPage(InspectorPage page)
+	{
+		this.inspectorPage = page;
+		this.updateButtonState();
+	}
+
+	private void saveInspector()
+	{
+		if (selectedRule() == null || !selectedRuleEditable())
+			return;
+		if (parseInteger(this.priorityBox.getValue(), -1000, 1000) == null) {
+			message(text("message.invalid_priority"));
+			return;
+		}
+		if (parseInteger(this.intervalBox.getValue(), 0, 86400) == null) {
+			message(text("message.invalid_interval"));
+			return;
+		}
+		applyPriority();
+		applyInterval();
+		this.draftDirty = false;
+		this.saveState();
+		message(text("message.saved"));
+	}
+
+	private boolean canEditServer()
+	{
+		return this.minecraft.hasSingleplayerServer()
+				|| this.minecraft.player != null && this.minecraft.player.getPermissionLevel() >= 2;
 	}
 
 	private void refreshRules()
@@ -499,6 +656,7 @@ final class IdlePlaylistScreen extends Screen
 		}
 		this.conditionTypeButton.setMessage(conditionTypeLabel());
 		this.conditionInvertButton.setMessage(invertLabel());
+		this.draftDirty = false;
 		this.updateButtonState();
 	}
 
@@ -506,21 +664,44 @@ final class IdlePlaylistScreen extends Screen
 	{
 		Rule rule = selectedRule();
 		boolean selected = rule != null;
-		this.orderButton.active = selected;
-		this.priorityBox.active = selected;
-		this.priorityApplyButton.active = selected;
-		this.intervalBox.active = selected;
-		this.intervalApplyButton.active = selected;
+		boolean editable = selectedRuleEditable();
+		boolean details = this.inspectorPage == InspectorPage.DETAILS;
+		boolean conditions = this.inspectorPage == InspectorPage.CONDITIONS;
+		this.orderButton.visible = details && editable;
+		this.orderButton.active = editable;
+		this.priorityBox.visible = details && editable;
+		this.priorityBox.active = editable;
+		this.intervalBox.visible = details && editable;
+		this.intervalBox.active = editable;
 		this.previewButton.active = selected && selectedTrackEntry() != null;
-		this.entryEnabledButton.active = selected && selectedTrackEntry() != null;
-		this.entryEnabledButton.setMessage(entryEnabledLabel());
-		this.deleteTrackButton.active = selected && selectedTrackEntry() != null;
-		this.conditionTypeButton.active = selected;
-		this.conditionArgumentBox.active = selected;
-		this.conditionInvertButton.active = selected;
-		this.conditionAddButton.active = selected && ResourceLocation.tryParse(this.conditionType) != null;
-		this.conditionDeleteButton.active = selected && !selectedTrackConditions().isEmpty();
+		this.conditionTypeButton.visible = conditions && editable;
+		this.conditionTypeButton.active = this.conditionTypeButton.visible;
+		this.conditionArgumentBox.visible = conditions && editable;
+		this.conditionArgumentBox.active = this.conditionArgumentBox.visible;
+		this.conditionInvertButton.visible = conditions && editable;
+		this.conditionInvertButton.active = this.conditionInvertButton.visible;
+		this.conditionAddButton.visible = conditions && editable;
+		this.conditionAddButton.active = this.conditionAddButton.visible && ResourceLocation.tryParse(this.conditionType) != null;
+		this.conditionDeleteButton.visible = conditions && editable;
+		this.conditionDeleteButton.active = this.conditionDeleteButton.visible && selected && !selectedTrackConditions().isEmpty();
+		int editorY = conditionEditorY();
+		this.conditionTypeButton.setY(editorY);
+		this.conditionArgumentBox.setY(editorY + 1);
+		this.conditionInvertButton.setY(editorY + 25);
+		this.conditionAddButton.setY(editorY + 25);
+		this.conditionDeleteButton.setY(editorY + 25);
+		this.conditionTypeDropdown.setBounds(this.layout.inspector().innerX(), editorY + 20,
+				this.layout.inspector().innerWidth(), this.layout.inspector().bottom());
+		this.argumentDropdown.setBounds(this.layout.inspector().innerX(), editorY + 20,
+				this.layout.inspector().innerWidth(), this.layout.inspector().bottom());
 		this.addTrackButton.active = ResourceLocation.tryParse(this.ruleBox.getValue().trim()) != null;
+		this.saveButton.active = editable
+				&& parseInteger(this.priorityBox.getValue(), -1000, 1000) != null
+				&& parseInteger(this.intervalBox.getValue(), 0, 86400) != null;
+		this.inspectorDetailsButton.active = this.inspectorPage != InspectorPage.DETAILS;
+		this.inspectorBindingButton.active = this.inspectorPage != InspectorPage.BINDING;
+		this.inspectorConditionsButton.active = this.inspectorPage != InspectorPage.CONDITIONS;
+		this.modeButton.active = this.editMode == MusicPlaylistScreen.EditMode.SERVER || canEditServer();
 	}
 
 	private void addTrack()
@@ -594,6 +775,54 @@ final class IdlePlaylistScreen extends Screen
 			this.previewTrack.stop();
 			this.previewTrack = null;
 		}
+	}
+
+	private void renderPreviewProgress(GuiGraphics graphics)
+	{
+		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
+		if (!handler.isPreviewing())
+			return;
+		int left = this.layout.main().innerX();
+		int right = this.layout.main().right() - PlaylistScreenLayout.PADDING;
+		int y = this.layout.main().bottom() - 12;
+		long position = handler.getPreviewPositionMillis();
+		long duration = handler.getPreviewDurationMillis();
+		String time = formatDuration(position) + " / " + (duration > 0L ? formatDuration(duration) : "--:--");
+		graphics.drawString(this.font, text("preview.progress", time), left, y - 11, 0xFFD8D8D8, false);
+		graphics.fill(left, y, right, y + 7, 0xFF202328);
+		int filled = duration <= 0L ? 0 : (int)Math.round((right - left) * Math.min(1.0D,
+				position / (double)duration));
+		graphics.fill(left, y, left + filled, y + 7, 0xFF5AA7C4);
+		Rule rule = selectedRule();
+		MusicTracksManager.ExternalPlaylistEntry entry = selectedTrackEntry();
+		if (rule != null && entry != null && duration > 0L) {
+			for (TimelineMarker marker : TimelineMarkerStore.markers(rule.playlist().configLocation(), entry.url(), this.selectedTrack)) {
+				int markerX = left + (int)Math.round((right - left) * Math.min(1.0D,
+						marker.timeMillis() / (double)duration));
+				graphics.fill(markerX, y - 3, markerX + 1, y + 9, 0xFFFFC857);
+			}
+		}
+		graphics.fill(left + Math.max(0, filled - 1), y - 1, left + filled + 1, y + 8, 0xFFE8F4F8);
+	}
+
+	private boolean seekPreview(double mouseX, double mouseY)
+	{
+		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
+		long duration = handler.getPreviewDurationMillis();
+		int left = this.layout.main().innerX();
+		int right = this.layout.main().right() - PlaylistScreenLayout.PADDING;
+		int y = this.layout.main().bottom() - 12;
+		if (!handler.isPreviewing() || duration <= 0L || mouseX < left || mouseX > right ||
+				mouseY < y - 3 || mouseY > y + 10)
+			return false;
+		double progress = (mouseX - left) / Math.max(1.0D, right - left);
+		return handler.seekPreviewMusic(Math.round(duration * Math.max(0.0D, Math.min(1.0D, progress))));
+	}
+
+	private static String formatDuration(long durationMillis)
+	{
+		long totalSeconds = Math.max(0L, durationMillis / 1000L);
+		return String.format(Locale.ROOT, "%d:%02d", totalSeconds / 60L, totalSeconds % 60L);
 	}
 
 	private void navigateTo(PlaylistTabs.Tab tab)
@@ -817,11 +1046,35 @@ final class IdlePlaylistScreen extends Screen
 
 	private void switchMode()
 	{
+		if (this.editMode == MusicPlaylistScreen.EditMode.LOCAL && !canEditServer()) {
+			message(text("mode.no_permission"));
+			return;
+		}
 		saveState();
 		stopPreview();
 		MusicPlaylistScreen.EditMode next = this.editMode == MusicPlaylistScreen.EditMode.LOCAL
 				? MusicPlaylistScreen.EditMode.SERVER : MusicPlaylistScreen.EditMode.LOCAL;
 		this.minecraft.setScreen(new IdlePlaylistScreen(this.parent, next));
+	}
+
+	private void toggleModeDropdown()
+	{
+		if (this.editMode == MusicPlaylistScreen.EditMode.LOCAL && !canEditServer())
+			return;
+		closeDropdowns(this.modeDropdown);
+		if (this.modeDropdown.isOpen())
+			this.modeDropdown.close();
+		else
+			this.modeDropdown.open(this.editMode.name().toLowerCase(Locale.ROOT));
+	}
+
+	private void selectMode(String id)
+	{
+		MusicPlaylistScreen.EditMode selected = "server".equals(id)
+				? MusicPlaylistScreen.EditMode.SERVER : MusicPlaylistScreen.EditMode.LOCAL;
+		this.modeDropdown.close();
+		if (selected != this.editMode)
+			switchMode();
 	}
 
 	private void closeToParent()
@@ -830,15 +1083,36 @@ final class IdlePlaylistScreen extends Screen
 		this.minecraft.setScreen(this.parent);
 	}
 
+	private void requestClose()
+	{
+		if (!this.draftDirty) {
+			stopPreview();
+			closeToParent();
+			return;
+		}
+		String priorityDraft = this.priorityBox == null ? "" : this.priorityBox.getValue();
+		String intervalDraft = this.intervalBox == null ? "" : this.intervalBox.getValue();
+		this.minecraft.setScreen(new net.minecraft.client.gui.screens.ConfirmScreen(confirmed -> {
+			if (confirmed) {
+				this.draftDirty = false;
+				stopPreview();
+				closeToParent();
+			} else {
+				this.minecraft.setScreen(this);
+				this.priorityBox.setValue(priorityDraft);
+				this.intervalBox.setValue(intervalDraft);
+				this.draftDirty = true;
+				this.updateButtonState();
+			}
+		}, text("confirm.title"), text("confirm.message")));
+	}
+
 	private void saveState()
 	{
 		State state = state();
 		state.selectedRule = this.selectedRule;
 		state.selectedTrack = this.selectedTrack;
 		state.selectedCondition = this.selectedCondition;
-		state.ruleScroll = this.ruleScroll;
-		state.trackScroll = this.trackScroll;
-		state.conditionScroll = this.conditionScroll;
 		state.conditionType = this.conditionType;
 		state.conditionInverted = this.conditionInverted;
 		if (this.ruleBox != null)
@@ -852,26 +1126,9 @@ final class IdlePlaylistScreen extends Screen
 		return STATES.get(this.editMode);
 	}
 
-	private int leftWidth()
-	{
-		return this.width < 600 ? Math.max(110, Math.min(140, this.width / 4))
-				: Math.max(130, Math.min(230, this.width / 3));
-	}
-
-	private int detailX()
-	{
-		return 20 + leftWidth();
-	}
-
-	private int idleSplit(int top, int bottom, int trackTop)
-	{
-		return this.height < 320 ? Math.min(bottom - 32, trackTop + 20)
-				: Math.max(trackTop + 42, top + (bottom - top) / 2);
-	}
-
 	private Component modeLabel()
 	{
-		return text("mode_button", text("mode." + this.editMode.name().toLowerCase(Locale.ROOT)));
+		return text("mode_button", text("mode." + this.editMode.name().toLowerCase(Locale.ROOT))).copy().append(" v");
 	}
 
 	private Component orderLabel(MusicTracksManager.ExternalSelectionMode mode)
@@ -901,6 +1158,8 @@ final class IdlePlaylistScreen extends Screen
 
 	private void closeDropdowns(PlaylistDropdown except)
 	{
+		if (this.modeDropdown != except)
+			this.modeDropdown.close();
 		if (this.orderDropdown != except)
 			this.orderDropdown.close();
 		if (this.conditionTypeDropdown != except)
@@ -965,11 +1224,6 @@ final class IdlePlaylistScreen extends Screen
 		return Math.max(min, Math.min(max, value));
 	}
 
-	private static String trim(String value, int length)
-	{
-		return value.length() <= length ? value : value.substring(0, Math.max(0, length - 3)) + "...";
-	}
-
 	private static Component text(String path, Object... args)
 	{
 		return Component.translatable("gui.mobbattlemusic.playlist." + path, args);
@@ -993,9 +1247,6 @@ final class IdlePlaylistScreen extends Screen
 		private int selectedRule = -1;
 		private int selectedTrack;
 		private int selectedCondition;
-		private int ruleScroll;
-		private int trackScroll;
-		private int conditionScroll;
 		private String ruleId = "mobbattlemusic:default";
 		private String conditionType = "mobbattlemusic:dimension";
 		private String conditionArgument = "";

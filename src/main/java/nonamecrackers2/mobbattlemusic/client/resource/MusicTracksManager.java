@@ -666,6 +666,27 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		return PlaylistControlResult.success("Deleted local " + binding.displayName() + " URL #" + (index + 1) + ": " + removed);
 	}
 
+	public PlaylistControlResult moveLocalEntry(DynamicBinding binding, int from, int to)
+	{
+		if (!hasLocalPlaylist(binding))
+			return PlaylistControlResult.failure("No local playlist exists for " +
+					(binding == null ? "unknown binding" : binding.displayName()));
+		List<String> urls = this.localUrls(binding.kind()).get(binding.storageKey());
+		if (from < 0 || to < 0 || from >= urls.size() || to >= urls.size())
+			return PlaylistControlResult.failure("Music entry index out of range");
+		if (from == to)
+			return PlaylistControlResult.success("Music entry order unchanged");
+		String value = urls.remove(from);
+		urls.add(to, value);
+		List<List<IdleCondition>> conditions = entryConditions(binding, true);
+		if (from < conditions.size() && to < conditions.size()) {
+			List<IdleCondition> condition = conditions.remove(from);
+			conditions.add(to, condition);
+		}
+		saveAndRefreshLocalTracks();
+		return PlaylistControlResult.success("Moved local " + binding.displayName() + " entry to #" + (to + 1));
+	}
+
 	public PlaylistControlResult setLocalSelectionMode(DynamicBinding binding, ExternalSelectionMode selectionMode) {
 		if (binding == null || selectionMode == null)
 			return PlaylistControlResult.failure("Invalid playlist or playback order");

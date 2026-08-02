@@ -205,6 +205,12 @@ public class MobBattleMusicCommands
 				.then(Commands.argument("index", IntegerArgumentType.integer(1))
 						.executes(context -> ServerExternalPlaylistStore.delete(context.getSource(), scene,
 								IntegerArgumentType.getInteger(context, "index") - 1)));
+		LiteralArgumentBuilder<CommandSourceStack> move = Commands.literal("move")
+				.then(Commands.argument("from", IntegerArgumentType.integer(1))
+						.then(Commands.argument("to", IntegerArgumentType.integer(1))
+								.executes(context -> ServerExternalPlaylistStore.move(context.getSource(), scene,
+										IntegerArgumentType.getInteger(context, "from") - 1,
+										IntegerArgumentType.getInteger(context, "to") - 1))));
 		if ("aggressive".equals(scene) || "ambient".equals(scene))
 			delete.then(sceneDeleteTypeArgument(scene))
 					.then(sceneDeleteUuidArgument(scene))
@@ -215,6 +221,7 @@ public class MobBattleMusicCommands
 								.executes(context -> ServerExternalPlaylistStore.add(context.getSource(), scene,
 										StringArgumentType.getString(context, "url")))))
 				.then(delete)
+				.then(move)
 				.then(Commands.literal("list")
 						.executes(context -> ServerExternalPlaylistStore.list(context.getSource(), scene)))
 				.then(Commands.literal("order")
@@ -249,6 +256,13 @@ public class MobBattleMusicCommands
 										.executes(context -> ServerExternalPlaylistStore.deleteEntityType(context.getSource(), scene,
 												ResourceLocationArgument.getId(context, "entity_type"),
 												IntegerArgumentType.getInteger(context, "index") - 1))))
+						.then(Commands.literal("move")
+								.then(Commands.argument("from", IntegerArgumentType.integer(1))
+										.then(Commands.argument("to", IntegerArgumentType.integer(1))
+												.executes(context -> ServerExternalPlaylistStore.moveEntityType(context.getSource(), scene,
+														ResourceLocationArgument.getId(context, "entity_type"),
+														IntegerArgumentType.getInteger(context, "from") - 1,
+														IntegerArgumentType.getInteger(context, "to") - 1)))))
 						.then(Commands.literal("list")
 								.executes(context -> ServerExternalPlaylistStore.listEntityType(context.getSource(), scene,
 										ResourceLocationArgument.getId(context, "entity_type"))))
@@ -281,6 +295,13 @@ public class MobBattleMusicCommands
 										.executes(context -> ServerExternalPlaylistStore.deleteEntityUuid(context.getSource(), scene,
 												StringArgumentType.getString(context, "uuid"),
 												IntegerArgumentType.getInteger(context, "index") - 1))))
+						.then(Commands.literal("move")
+								.then(Commands.argument("from", IntegerArgumentType.integer(1))
+										.then(Commands.argument("to", IntegerArgumentType.integer(1))
+												.executes(context -> ServerExternalPlaylistStore.moveEntityUuid(context.getSource(), scene,
+														StringArgumentType.getString(context, "uuid"),
+														IntegerArgumentType.getInteger(context, "from") - 1,
+														IntegerArgumentType.getInteger(context, "to") - 1)))))
 						.then(Commands.literal("list")
 								.executes(context -> ServerExternalPlaylistStore.listEntityUuid(context.getSource(), scene,
 										StringArgumentType.getString(context, "uuid"))))
@@ -311,8 +332,15 @@ public class MobBattleMusicCommands
 						.then(Commands.literal("delete")
 								.then(Commands.argument("index", IntegerArgumentType.integer(1))
 										.executes(context -> ServerExternalPlaylistStore.deleteIdleRule(context.getSource(),
-												ResourceLocationArgument.getId(context, "rule_id").toString(),
-												IntegerArgumentType.getInteger(context, "index") - 1))))
+													ResourceLocationArgument.getId(context, "rule_id").toString(),
+													IntegerArgumentType.getInteger(context, "index") - 1))))
+						.then(Commands.literal("move")
+								.then(Commands.argument("from", IntegerArgumentType.integer(1))
+										.then(Commands.argument("to", IntegerArgumentType.integer(1))
+												.executes(context -> ServerExternalPlaylistStore.moveIdleRule(context.getSource(),
+														ResourceLocationArgument.getId(context, "rule_id").toString(),
+														IntegerArgumentType.getInteger(context, "from") - 1,
+														IntegerArgumentType.getInteger(context, "to") - 1)))))
 						.then(Commands.literal("list")
 								.executes(context -> ServerExternalPlaylistStore.listIdleRule(context.getSource(),
 										ResourceLocationArgument.getId(context, "rule_id").toString())))
