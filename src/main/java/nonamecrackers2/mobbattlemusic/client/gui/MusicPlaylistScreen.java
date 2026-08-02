@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.Consumer;
 
 import com.mojang.blaze3d.platform.NativeImage;
 
@@ -79,6 +80,9 @@ public class MusicPlaylistScreen extends Screen
 	private Button useSelectedButton;
 	private Button deleteButton;
 	private Button libraryTabButton;
+	private Button idleTabButton;
+	private Button timelineTabButton;
+	private Button filtersTabButton;
 	private Button searchTabButton;
 	private Button modeButton;
 	private Button searchButton;
@@ -109,6 +113,8 @@ public class MusicPlaylistScreen extends Screen
 	private int syncRefreshCooldown;
 	private ResourceLocation settingsPlaylist;
 	private boolean conditionInverted;
+	private final PlaylistDropdown kindDropdown = new PlaylistDropdown(PlaylistDropdown.Mode.FIXED, 18, 6);
+	private final PlaylistDropdown orderDropdown = new PlaylistDropdown(PlaylistDropdown.Mode.FIXED, 18, 4);
 	
 	public MusicPlaylistScreen(Screen parent)
 	{
@@ -117,9 +123,28 @@ public class MusicPlaylistScreen extends Screen
 	
 	public MusicPlaylistScreen(Screen parent, EditMode editMode)
 	{
+		this(parent, editMode, null);
+	}
+
+	private MusicPlaylistScreen(Screen parent, EditMode editMode, ViewMode initialView)
+	{
 		super(text("title"));
 		this.parent = parent;
 		this.editMode = editMode;
+		if (initialView != null)
+			STATES.get(editMode).viewMode = initialView;
+	}
+
+	static void openTab(Screen parent, EditMode editMode, PlaylistTabs.Tab tab)
+	{
+		Minecraft mc = Minecraft.getInstance();
+		switch (tab) {
+			case LIBRARY -> mc.setScreen(new MusicPlaylistScreen(parent, editMode, ViewMode.LIBRARY));
+			case IDLE -> mc.setScreen(new IdlePlaylistScreen(parent, editMode));
+			case TIMELINE -> mc.setScreen(new TimelineMarkerScreen(parent, editMode));
+			case FILTERS -> mc.setScreen(new AudioFilterScreen(parent, editMode));
+			case NETEASE -> mc.setScreen(new MusicPlaylistScreen(parent, editMode, ViewMode.NETEASE));
+		}
 	}
 
 	public static void openServerEditor()
@@ -137,6 +162,8 @@ public class MusicPlaylistScreen extends Screen
 			screen.loadSelectedSettings(true);
 			screen.updateButtonState();
 		}
+		IdlePlaylistScreen.refreshIfOpen();
+		TimelineMarkerScreen.refreshIfOpen();
 	}
 	
 	@Override
@@ -144,6 +171,8 @@ public class MusicPlaylistScreen extends Screen
 	{
 		EditorState state = state();
 		this.addKind = state.kind;
+		if ("idle_rule".equals(this.addKind))
+			this.addKind = "scene";
 		this.viewMode = state.viewMode;
 		this.scroll = state.scroll;
 		this.selected = state.selected;
@@ -154,16 +183,20 @@ public class MusicPlaylistScreen extends Screen
 		this.searchRows.clear();
 		this.searchRows.addAll(state.searchRows);
 		this.rebuildRows();
-		this.libraryTabButton = this.addRenderableWidget(Button.builder(text("tab.library"), button -> changeView(ViewMode.LIBRARY))
-				.bounds(12, 28, 72, 20).build());
-		this.searchTabButton = this.addRenderableWidget(Button.builder(text("tab.netease"), button -> changeView(ViewMode.NETEASE))
-				.bounds(88, 28, 78, 20).build());
+		List<Button> tabs = PlaylistTabs.create(this.width,
+				this.viewMode == ViewMode.LIBRARY ? PlaylistTabs.Tab.LIBRARY : PlaylistTabs.Tab.NETEASE,
+				this::navigateTo);
+		this.libraryTabButton = this.addRenderableWidget(tabs.get(0));
+		this.idleTabButton = this.addRenderableWidget(tabs.get(1));
+		this.timelineTabButton = this.addRenderableWidget(tabs.get(2));
+		this.filtersTabButton = this.addRenderableWidget(tabs.get(3));
+		this.searchTabButton = this.addRenderableWidget(tabs.get(4));
 		this.modeButton = this.addRenderableWidget(Button.builder(modeLabel(), button -> switchEditMode())
 				.bounds(this.width - 112, 6, 100, 20).build());
 		this.searchButton = this.addRenderableWidget(Button.builder(text("button.search"), button -> startSearch(0))
-				.bounds(this.width - 76, 28, 64, 20).build());
-		this.searchBox = this.addRenderableWidget(new EditBox(this.font, 174, 29,
-				Math.max(60, this.width - 258), 18, text("field.search")));
+				.bounds(this.width - 76, 53, 64, 20).build());
+		this.searchBox = this.addRenderableWidget(new EditBox(this.font, 12, 54,
+				Math.max(60, this.width - 92), 18, text("field.search")));
 		this.searchBox.setMaxLength(160);
 		this.searchBox.setHint(text("field.search"));
 		this.searchBox.setValue(state.searchQuery);
@@ -174,19 +207,30 @@ public class MusicPlaylistScreen extends Screen
 		int inputY = this.height - 56;
 		int conditionY = this.height - 80;
 		int settingsY = this.height - 104;
+		boolean compact = this.width < 600;
 		int gap = 4;
-		int sceneWidth = 78;
-		int kindWidth = 72;
+		int sceneWidth = compact ? 70 : 78;
+		int kindWidth = compact ? 68 : 72;
 		int addButtonWidth = 72;
 		int addButtonX = this.width - 12 - addButtonWidth;
-		int usableInputWidth = Math.max(260, addButtonX - gap - 12);
-		int remaining = Math.max(120, usableInputWidth - sceneWidth - kindWidth - gap * 3);
-		int musicWidth = clamp(remaining / 3, 120, 280);
-		int targetWidth = Math.max(120, remaining - musicWidth);
 		int sceneX = 12;
 		int kindX = sceneX + sceneWidth + gap;
 		int targetX = kindX + kindWidth + gap;
-		int musicX = targetX + targetWidth + gap;
+		int sceneY = compact ? conditionY : inputY;
+		int targetWidth;
+		int musicWidth;
+		int musicX;
+		if (compact) {
+			targetWidth = Math.max(70, this.width - targetX - 12);
+			musicX = 12;
+			musicWidth = Math.max(80, addButtonX - gap - musicX);
+		} else {
+			int usableInputWidth = Math.max(260, addButtonX - gap - 12);
+			int remaining = Math.max(120, usableInputWidth - sceneWidth - kindWidth - gap * 3);
+			musicWidth = clamp(remaining / 3, 120, 280);
+			targetWidth = Math.max(120, remaining - musicWidth);
+			musicX = targetX + targetWidth + gap;
+		}
 		int y = this.height - 28;
 		this.previewButton = this.addRenderableWidget(Button.builder(text("button.preview"), button -> previewSelected())
 				.bounds(12, y, 72, 20).build());
@@ -207,15 +251,15 @@ public class MusicPlaylistScreen extends Screen
 				.bounds(276, y, 56, 20).build());
 		this.addRenderableWidget(Button.builder(text("button.done"), button -> closeToParent())
 				.bounds(this.width - 76, y, 64, 20).build());
-		this.sceneBox = this.addRenderableWidget(new EditBox(this.font, sceneX, inputY, sceneWidth, 18,
+		this.sceneBox = this.addRenderableWidget(new EditBox(this.font, sceneX, sceneY, sceneWidth, 18,
 				text("field.scene")));
 		this.sceneBox.setMaxLength(MAX_SCENE_LENGTH);
 		this.sceneBox.setHint(text("field.scene"));
 		this.sceneBox.setValue(state.scene);
 		this.sceneBox.setResponder(value -> state().scene = value);
-		this.kindButton = this.addRenderableWidget(Button.builder(kindLabel(), button -> cycleKind())
-				.bounds(kindX, inputY - 1, kindWidth, 20).build());
-		this.targetBox = this.addRenderableWidget(new EditBox(this.font, targetX, inputY, targetWidth, 18,
+		this.kindButton = this.addRenderableWidget(Button.builder(kindLabel(), button -> toggleKindDropdown())
+				.bounds(kindX, sceneY - 1, kindWidth, 20).build());
+		this.targetBox = this.addRenderableWidget(new EditBox(this.font, targetX, sceneY, targetWidth, 18,
 				text("field.target")));
 		this.targetBox.setMaxLength(MAX_TARGET_LENGTH);
 		this.targetBox.setHint(text("field.target"));
@@ -229,7 +273,7 @@ public class MusicPlaylistScreen extends Screen
 		this.musicBox.setResponder(value -> state().music = value);
 		this.addButton = this.addRenderableWidget(Button.builder(text("button.add_bind"), button -> addBinding())
 				.bounds(addButtonX, inputY - 1, addButtonWidth, 20).build());
-		this.orderButton = this.addRenderableWidget(Button.builder(text("button.order", "random"), button -> cycleOrder())
+		this.orderButton = this.addRenderableWidget(Button.builder(text("button.order", "random"), button -> toggleOrderDropdown())
 				.bounds(12, settingsY, 108, 20).build());
 		this.priorityBox = this.addRenderableWidget(new EditBox(this.font, 124, settingsY + 1, 52, 18,
 				text("field.priority")));
@@ -314,6 +358,17 @@ public class MusicPlaylistScreen extends Screen
 			state().markerIndex = value;
 			updateSettingsVisibility();
 		});
+		this.kindDropdown.setItems(List.of(
+				new PlaylistDropdown.Item("scene", text("kind.scene")),
+				new PlaylistDropdown.Item("type", text("kind.type")),
+				new PlaylistDropdown.Item("uuid", text("kind.uuid")),
+				new PlaylistDropdown.Item("player", text("kind.player"))));
+		this.kindDropdown.setBounds(kindX, sceneY + 20, Math.max(kindWidth, 112), this.height - 8);
+		this.orderDropdown.setItems(List.of(
+				orderItem(MusicTracksManager.ExternalSelectionMode.RANDOM),
+				orderItem(MusicTracksManager.ExternalSelectionMode.SEQUENTIAL),
+				orderItem(MusicTracksManager.ExternalSelectionMode.FIRST)));
+		this.orderDropdown.setBounds(12, settingsY + 20, 128, this.height - 8);
 		loadSelectedSettings(true);
 		updateKindState();
 		updateViewState();
@@ -327,6 +382,8 @@ public class MusicPlaylistScreen extends Screen
 		for (MusicTracksManager.ExternalPlaylist playlist : manager.getSelectablePlaylists()) {
 			String context = manager.describeTrackContext(playlist.configLocation());
 			MusicTracksManager.DynamicBinding binding = manager.editableBinding(playlist.configLocation());
+			if (binding != null && binding.kind() == MusicTracksManager.DynamicBinding.Kind.IDLE_RULE)
+				continue;
 			MusicTracksManager.DynamicSource source = manager.dynamicSource(playlist.configLocation());
 			for (int i = 0; i < playlist.entries().size(); i++) {
 				MusicTracksManager.ExternalPlaylistEntry entry = playlist.entries().get(i);
@@ -347,26 +404,30 @@ public class MusicPlaylistScreen extends Screen
 		this.renderBackground(graphics);
 		graphics.drawString(this.font, this.title, 12, 10, 0xFFFFFF, false);
 		if (this.viewMode == ViewMode.LIBRARY) {
-			graphics.drawString(this.font, text("summary", this.rows.stream().map(Row::playlist).distinct().count(),
-					this.rows.size(), text("mode." + this.editMode.name().toLowerCase(Locale.ROOT))), 174, 34,
-					0xA0A0A0, false);
+			if (this.width >= 600)
+				graphics.drawString(this.font, text("summary", this.rows.stream().map(Row::playlist).distinct().count(),
+						this.rows.size(), text("mode." + this.editMode.name().toLowerCase(Locale.ROOT))), 174, 12,
+						0xA0A0A0, false);
 			renderRows(graphics, mouseX, mouseY);
 			renderDetails(graphics);
 		} else {
 			renderSearchRows(graphics, mouseX, mouseY);
 			renderSearchDetails(graphics);
-			graphics.drawString(this.font, text("search.page", this.searchPage + 1), 340, this.height - 22,
-					0xA0A0A0, false);
+			if (this.width >= 600)
+				graphics.drawString(this.font, text("search.page", this.searchPage + 1), 340, this.height - 22,
+						0xA0A0A0, false);
 		}
 		renderPreviewProgress(graphics);
 		super.render(graphics, mouseX, mouseY, partialTick);
 		renderCompletions(graphics);
+		this.kindDropdown.render(graphics, this.font, mouseX, mouseY);
+		this.orderDropdown.render(graphics, this.font, mouseX, mouseY);
 	}
 	
 	private void renderRows(GuiGraphics graphics, int mouseX, int mouseY)
 	{
 		int left = 12;
-		int top = 56;
+		int top = listTop();
 		int width = Math.max(160, this.width / 2 - 20);
 		int bottom = this.height - 110;
 		graphics.fill(left - 2, top - 2, left + width + 2, bottom + 2, 0x90000000);
@@ -393,7 +454,7 @@ public class MusicPlaylistScreen extends Screen
 	private void renderDetails(GuiGraphics graphics)
 	{
 		int left = Math.max(210, this.width / 2 + 8);
-		int top = 56;
+		int top = listTop();
 		int right = this.width - 12;
 		graphics.fill(left - 2, top - 2, right, this.height - 110, 0x90000000);
 		if (this.selected < 0 || this.selected >= this.rows.size()) {
@@ -404,6 +465,19 @@ public class MusicPlaylistScreen extends Screen
 		graphics.drawString(this.font, trim(row.title(), 48), left + 8, top + 8, 0xFFFFFF, false);
 		if (!row.artist().isBlank())
 			graphics.drawString(this.font, trim(row.artist(), 48), left + 8, top + 21, 0xC8D6E5, false);
+		if (this.height < 320) {
+			graphics.drawString(this.font, text("detail.context", row.context()), left + 8, top + 38,
+					0xA0A0A0, false);
+			graphics.drawString(this.font, text("detail.editable", editableLabel(row)), left + 8, top + 51,
+					0xA0A0A0, false);
+			MusicTracksManager.DynamicPlaylistSettings compactSettings =
+					MusicTracksManager.getInstance().dynamicSettings(row.playlist());
+			if (compactSettings != null)
+				graphics.drawString(this.font, text("detail.settings",
+						text("order." + compactSettings.selectionMode().getSerializedName()), compactSettings.priority()),
+						left + 8, top + 64, 0xA0A0A0, false);
+			return;
+		}
 		graphics.drawString(this.font, text("detail.playlist", row.playlist()), left + 8, top + 42, 0xA0A0A0, false);
 		graphics.drawString(this.font, text("detail.context", row.context()), left + 8, top + 55, 0xA0A0A0, false);
 		graphics.drawString(this.font, text("detail.editable", editableLabel(row)), left + 8, top + 68, 0xA0A0A0, false);
@@ -438,7 +512,7 @@ public class MusicPlaylistScreen extends Screen
 	private void renderSearchRows(GuiGraphics graphics, int mouseX, int mouseY)
 	{
 		int left = 12;
-		int top = 56;
+		int top = listTop();
 		int width = Math.max(160, this.width / 2 - 20);
 		int bottom = this.height - 34;
 		graphics.fill(left - 2, top - 2, left + width + 2, bottom + 2, 0x90000000);
@@ -475,7 +549,7 @@ public class MusicPlaylistScreen extends Screen
 	private void renderSearchDetails(GuiGraphics graphics)
 	{
 		int left = Math.max(210, this.width / 2 + 8);
-		int top = 56;
+		int top = listTop();
 		int right = this.width - 12;
 		graphics.fill(left - 2, top - 2, right, this.height - 34, 0x90000000);
 		if (this.searchSelected < 0 || this.searchSelected >= this.searchRows.size()) {
@@ -491,6 +565,8 @@ public class MusicPlaylistScreen extends Screen
 				left + 8, top + 70, 0xA0A0A0, false);
 		graphics.drawString(this.font, text("detail.source"), left + 8, top + 86, 0xA0A0A0, false);
 		drawWrapped(graphics, song.url(), left + 8, top + 100, right - left - 16, 0xD8D8D8);
+		if (this.height < 320)
+			return;
 		MusicMetadataCache.getInstance().get(song.url())
 				.ifPresent(metadata -> renderCover(graphics, metadata, left + 8, Math.min(this.height - 118, top + 145)));
 	}
@@ -629,14 +705,35 @@ public class MusicPlaylistScreen extends Screen
 	{
 		return this.height - 124;
 	}
+
+	private int listTop()
+	{
+		return this.viewMode == ViewMode.LIBRARY ? 56 : 80;
+	}
 	
 	@Override
 	public boolean mouseClicked(double mouseX, double mouseY, int button)
 	{
+		if (this.kindDropdown.isOpen()) {
+			PlaylistDropdown.Item item = this.kindDropdown.itemAt(mouseX, mouseY);
+			if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT && item != null)
+				selectKind(item.id());
+			else
+				this.kindDropdown.close();
+			return true;
+		}
+		if (this.orderDropdown.isOpen()) {
+			PlaylistDropdown.Item item = this.orderDropdown.itemAt(mouseX, mouseY);
+			if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT && item != null)
+				selectOrder(item.id());
+			else
+				this.orderDropdown.close();
+			return true;
+		}
 		if (seekPreview(mouseX, mouseY))
 			return true;
 		int left = 12;
-		int top = 56;
+		int top = listTop();
 		int width = Math.max(160, this.width / 2 - 20);
 		int rowHeight = this.viewMode == ViewMode.NETEASE ? 36 : 32;
 		int bottom = this.viewMode == ViewMode.NETEASE ? this.height - 34 : this.height - 110;
@@ -667,6 +764,8 @@ public class MusicPlaylistScreen extends Screen
 	@Override
 	public boolean mouseScrolled(double mouseX, double mouseY, double delta)
 	{
+		if (this.kindDropdown.mouseScrolled(delta) || this.orderDropdown.mouseScrolled(delta))
+			return true;
 		if (this.viewMode == ViewMode.NETEASE) {
 			this.searchScroll = Math.max(0, this.searchScroll - (int)Math.signum(delta));
 			state().searchScroll = this.searchScroll;
@@ -693,6 +792,9 @@ public class MusicPlaylistScreen extends Screen
 	@Override
 	public boolean keyPressed(int keyCode, int scanCode, int modifiers)
 	{
+		if (handleDropdownKey(this.kindDropdown, keyCode, item -> selectKind(item.id())) ||
+				handleDropdownKey(this.orderDropdown, keyCode, item -> selectOrder(item.id())))
+			return true;
 		if ((keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) &&
 				this.searchBox != null && this.searchBox.isFocused()) {
 			startSearch(0);
@@ -736,6 +838,21 @@ public class MusicPlaylistScreen extends Screen
 			this.setFocused(this.searchBox);
 	}
 
+	private void navigateTo(PlaylistTabs.Tab tab)
+	{
+		if (tab == PlaylistTabs.Tab.LIBRARY) {
+			changeView(ViewMode.LIBRARY);
+			return;
+		}
+		if (tab == PlaylistTabs.Tab.NETEASE) {
+			changeView(ViewMode.NETEASE);
+			return;
+		}
+		saveState();
+		stopPreview();
+		openTab(this.parent, this.editMode, tab);
+	}
+
 	private void switchEditMode()
 	{
 		saveState();
@@ -754,6 +871,12 @@ public class MusicPlaylistScreen extends Screen
 		boolean library = this.viewMode == ViewMode.LIBRARY;
 		if (this.libraryTabButton != null)
 			this.libraryTabButton.active = !library;
+		if (this.idleTabButton != null)
+			this.idleTabButton.active = true;
+		if (this.timelineTabButton != null)
+			this.timelineTabButton.active = true;
+		if (this.filtersTabButton != null)
+			this.filtersTabButton.active = true;
 		if (this.searchTabButton != null)
 			this.searchTabButton.active = library;
 		if (this.searchBox != null)
@@ -786,8 +909,7 @@ public class MusicPlaylistScreen extends Screen
 	private void updateSettingsVisibility()
 	{
 		boolean editable = this.viewMode == ViewMode.LIBRARY && selectedRowEditable();
-		boolean idle = editable && selectedBinding() != null &&
-				selectedBinding().kind() == MusicTracksManager.DynamicBinding.Kind.IDLE_RULE;
+		boolean idle = false;
 		if (this.orderButton != null) {
 			this.orderButton.visible = editable;
 			this.orderButton.active = editable;
@@ -832,7 +954,7 @@ public class MusicPlaylistScreen extends Screen
 			this.conditionDeleteButton.visible = idle;
 			this.conditionDeleteButton.active = idle && !this.conditionIndexBox.getValue().isBlank();
 		}
-		boolean markerEditable = editable && selectedRow() != null && soundLocation(selectedRow().entry().url()) == null;
+		boolean markerEditable = false;
 		if (this.markerTimeBox != null) {
 			this.markerTimeBox.visible = markerEditable;
 			this.markerTimeBox.active = markerEditable;
@@ -894,7 +1016,12 @@ public class MusicPlaylistScreen extends Screen
 
 	private Component orderLabel(MusicTracksManager.ExternalSelectionMode mode)
 	{
-		return text("button.order", text("order." + mode.getSerializedName()));
+		return text("button.order", text("order." + mode.getSerializedName())).copy().append(" v");
+	}
+
+	private PlaylistDropdown.Item orderItem(MusicTracksManager.ExternalSelectionMode mode)
+	{
+		return new PlaylistDropdown.Item(mode.getSerializedName(), text("order." + mode.getSerializedName()));
 	}
 
 	private Component conditionInvertLabel()
@@ -902,7 +1029,7 @@ public class MusicPlaylistScreen extends Screen
 		return text(this.conditionInverted ? "button.not" : "button.match");
 	}
 
-	private void cycleOrder()
+	private void toggleOrderDropdown()
 	{
 		Row row = selectedRow();
 		if (row == null || row.binding() == null)
@@ -910,7 +1037,25 @@ public class MusicPlaylistScreen extends Screen
 		MusicTracksManager.DynamicPlaylistSettings settings = MusicTracksManager.getInstance().dynamicSettings(row.playlist());
 		if (settings == null)
 			return;
-		MusicTracksManager.ExternalSelectionMode next = settings.selectionMode().next();
+		this.kindDropdown.close();
+		if (this.orderDropdown.isOpen())
+			this.orderDropdown.close();
+		else
+			this.orderDropdown.open(settings.selectionMode().getSerializedName());
+	}
+
+	private void selectOrder(String id)
+	{
+		Row row = selectedRow();
+		if (row == null || row.binding() == null)
+			return;
+		MusicTracksManager.ExternalSelectionMode next;
+		try {
+			next = MusicTracksManager.ExternalSelectionMode.fromSerializedName(id);
+		} catch (Exception e) {
+			return;
+		}
+		this.orderDropdown.close();
 		if (this.editMode == EditMode.SERVER) {
 			runServerCommand(bindingCommand(row.binding()) + " order " + next.getSerializedName());
 		} else {
@@ -1313,15 +1458,21 @@ public class MusicPlaylistScreen extends Screen
 		updateSettingsVisibility();
 	}
 
-	private void cycleKind()
+	private void toggleKindDropdown()
 	{
-		this.addKind = switch (this.addKind) {
-			case "scene" -> "idle_rule";
-			case "idle_rule" -> "type";
-			case "type" -> "uuid";
-			case "uuid" -> "player";
-			default -> "scene";
-		};
+		this.orderDropdown.close();
+		if (this.kindDropdown.isOpen())
+			this.kindDropdown.close();
+		else
+			this.kindDropdown.open(this.addKind);
+	}
+
+	private void selectKind(String kind)
+	{
+		if (!List.of("scene", "type", "uuid", "player").contains(kind))
+			return;
+		this.kindDropdown.close();
+		this.addKind = kind;
 		state().kind = this.addKind;
 		updateKindState();
 	}
@@ -1338,7 +1489,29 @@ public class MusicPlaylistScreen extends Screen
 
 	private Component kindLabel()
 	{
-		return text("kind." + this.addKind);
+		return text("kind." + this.addKind).copy().append(" v");
+	}
+
+	private boolean handleDropdownKey(PlaylistDropdown dropdown, int keyCode,
+			Consumer<PlaylistDropdown.Item> onSelected)
+	{
+		if (!dropdown.isOpen())
+			return false;
+		if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
+			dropdown.close();
+			return true;
+		}
+		if (keyCode == GLFW.GLFW_KEY_UP || keyCode == GLFW.GLFW_KEY_DOWN) {
+			dropdown.move(keyCode == GLFW.GLFW_KEY_UP ? -1 : 1);
+			return true;
+		}
+		if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
+			PlaylistDropdown.Item item = dropdown.highlightedItem();
+			if (item != null)
+				onSelected.accept(item);
+			return true;
+		}
+		return true;
 	}
 
 	private void useSelectedSource()

@@ -273,7 +273,7 @@ public class BattleMusicManager {
 							externalTrack.getUrl(), marker);
 					int targetId = this.panickingFrom == null ? -1 : this.panickingFrom.getId();
 					if (serverTrack)
-						MobBattleMusicNetwork.sendTimelineMarkerHit(new TimelineMarkerHitPacket(track,
+						MobBattleMusicNetwork.sendTimelineMarkerHit(new TimelineMarkerHitPacket(track, selectedIndex,
 								externalTrack.getUrl(), marker, targetId));
 				}
 			}

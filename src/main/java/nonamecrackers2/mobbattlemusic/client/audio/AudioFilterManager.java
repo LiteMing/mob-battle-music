@@ -41,6 +41,41 @@ public final class AudioFilterManager
 		RUNTIME_DEFINITIONS.put(definition.id(), definition);
 	}
 
+	public static synchronized boolean configEnabled()
+	{
+		return configEnabled;
+	}
+
+	public static synchronized List<AudioFilterDefinition> configDefinitions()
+	{
+		return List.copyOf(CONFIG_DEFINITIONS.values());
+	}
+
+	public static synchronized List<AudioFilterDefinition> runtimeDefinitions()
+	{
+		return List.copyOf(RUNTIME_DEFINITIONS.values());
+	}
+
+	public static synchronized void setConfigEnabled(boolean enabled)
+	{
+		configEnabled = enabled;
+		saveConfig();
+	}
+
+	public static synchronized void putConfigDefinition(AudioFilterDefinition definition)
+	{
+		CONFIG_DEFINITIONS.put(definition.id(), definition);
+		saveConfig();
+	}
+
+	public static synchronized boolean removeConfigDefinition(ResourceLocation id)
+	{
+		if (CONFIG_DEFINITIONS.remove(id) == null)
+			return false;
+		saveConfig();
+		return true;
+	}
+
 	public static synchronized boolean remove(String id)
 	{
 		ResourceLocation location = ResourceLocation.tryParse(id);
@@ -93,16 +128,12 @@ public final class AudioFilterManager
 	{
 		Path path = configPath();
 		CONFIG_DEFINITIONS.clear();
-		if (!Files.isRegularFile(path)) {
+		configEnabled = false;
+		if (!Files.isRegularFile(path))
 			writeDefault(path);
-			configEnabled = false;
-			return;
-		}
 		try {
 			JsonObject root = GsonHelper.parse(Files.readString(path, StandardCharsets.UTF_8));
 			configEnabled = GsonHelper.getAsBoolean(root, "enabled", false);
-			if (!configEnabled)
-				return;
 			JsonArray filters = GsonHelper.getAsJsonArray(root, "filters", new JsonArray());
 			for (JsonElement element : filters) {
 				if (!element.isJsonObject())
@@ -113,6 +144,43 @@ public final class AudioFilterManager
 			}
 		} catch (Exception e) {
 			LOGGER.error("Failed to load audio filters from {}", path, e);
+		}
+	}
+
+	private static void saveConfig()
+	{
+		JsonObject root = new JsonObject();
+		root.addProperty("enabled", configEnabled);
+		JsonArray filters = new JsonArray();
+		for (AudioFilterDefinition definition : CONFIG_DEFINITIONS.values()) {
+			JsonObject object = new JsonObject();
+			object.addProperty("id", definition.id().toString());
+			object.addProperty("scope", definition.scope().getSerializedName());
+			object.addProperty("type", definition.type().getSerializedName());
+			object.addProperty("frequency_hz", definition.frequencyHz());
+			object.addProperty("q", definition.q());
+			object.addProperty("gain_db", definition.gainDb());
+			object.addProperty("bit_depth", definition.bitDepth());
+			object.addProperty("sample_rate_hz", definition.sampleRateHz());
+			JsonArray conditions = new JsonArray();
+			for (IdleCondition condition : definition.conditions()) {
+				JsonObject conditionObject = new JsonObject();
+				conditionObject.addProperty("type", condition.type());
+				conditionObject.addProperty("argument", condition.argument());
+				conditionObject.addProperty("inverted", condition.inverted());
+				conditions.add(conditionObject);
+			}
+			object.add("conditions", conditions);
+			filters.add(object);
+		}
+		root.add("filters", filters);
+		Path path = configPath();
+		try {
+			Files.createDirectories(path.getParent());
+			Files.writeString(path, new GsonBuilder().setPrettyPrinting().create().toJson(root),
+					StandardCharsets.UTF_8);
+		} catch (IOException e) {
+			LOGGER.error("Failed to save audio filters to {}", path, e);
 		}
 	}
 

@@ -20,6 +20,7 @@ import net.minecraft.client.sounds.ChannelAccess;
 import net.minecraft.client.sounds.SoundEngine;
 import net.minecraft.sounds.SoundSource;
 import nonamecrackers2.mobbattlemusic.client.init.MobBattleMusicClientCapabilities;
+import nonamecrackers2.mobbattlemusic.client.audio.GlobalAudioFilterManager;
 import nonamecrackers2.mobbattlemusic.client.sound.MobBattleTrack;
 
 @Mixin(SoundEngine.class)
@@ -54,6 +55,7 @@ public abstract class MixinSoundEngine
 	@Inject(method = "tickNonPaused", at = @At("TAIL"))
 	public void mobbattlemusic$tail_tickNonPaused(CallbackInfo ci)
 	{
+		GlobalAudioFilterManager.refreshMbmChannels(this.instanceToChannel);
 		Minecraft mc = Minecraft.getInstance();
 		if (mc.level != null)
 		{

@@ -12,7 +12,7 @@ import nonamecrackers2.mobbattlemusic.MobBattleMusicMod;
 
 public class MobBattleMusicNetwork
 {
-	private static final String PROTOCOL_VERSION = "9";
+	private static final String PROTOCOL_VERSION = "10";
 	private static int nextId;
 	private static final SimpleChannel CHANNEL = NetworkRegistry.ChannelBuilder
 			.named(MobBattleMusicMod.id("main"))

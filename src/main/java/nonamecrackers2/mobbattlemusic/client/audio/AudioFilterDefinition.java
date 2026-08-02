@@ -29,6 +29,11 @@ public record AudioFilterDefinition(ResourceLocation id, Scope scope, Type type,
 		MBM,
 		GLOBAL;
 
+		public String getSerializedName()
+		{
+			return this.name().toLowerCase(Locale.ROOT);
+		}
+
 		public static Scope parse(String value)
 		{
 			return "global".equalsIgnoreCase(value) ? GLOBAL : MBM;
@@ -41,6 +46,11 @@ public record AudioFilterDefinition(ResourceLocation id, Scope scope, Type type,
 		HIGH_PASS,
 		PEAK_EQ,
 		LOFI;
+
+		public String getSerializedName()
+		{
+			return this.name().toLowerCase(Locale.ROOT);
+		}
 
 		public static Type parse(String value)
 		{
