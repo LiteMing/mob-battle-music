@@ -12,12 +12,13 @@ import net.minecraftforge.network.NetworkEvent;
 import nonamecrackers2.mobbattlemusic.client.music.IdleConditionStateClient;
 import nonamecrackers2.mobbattlemusic.playlist.IdleConditionRegistry;
 
-public record IdleConditionStatePacket(List<ResourceLocation> activeRules,
+public record IdleConditionStatePacket(List<ResourceLocation> activeRules, List<String> activeEntries,
 		List<IdleConditionRegistry.Descriptor> descriptors)
 {
 	public IdleConditionStatePacket
 	{
 		activeRules = List.copyOf(activeRules);
+		activeEntries = List.copyOf(activeEntries);
 		descriptors = List.copyOf(descriptors);
 	}
 
@@ -25,6 +26,8 @@ public record IdleConditionStatePacket(List<ResourceLocation> activeRules,
 	{
 		buffer.writeVarInt(this.activeRules.size());
 		this.activeRules.forEach(buffer::writeResourceLocation);
+		buffer.writeVarInt(this.activeEntries.size());
+		this.activeEntries.forEach(buffer::writeUtf);
 		buffer.writeVarInt(this.descriptors.size());
 		for (IdleConditionRegistry.Descriptor descriptor : this.descriptors) {
 			buffer.writeResourceLocation(descriptor.id());
@@ -38,17 +41,21 @@ public record IdleConditionStatePacket(List<ResourceLocation> activeRules,
 		List<ResourceLocation> active = new ArrayList<>(activeCount);
 		for (int i = 0; i < activeCount; i++)
 			active.add(buffer.readResourceLocation());
+		int activeEntryCount = buffer.readVarInt();
+		List<String> activeEntries = new ArrayList<>(activeEntryCount);
+		for (int i = 0; i < activeEntryCount; i++)
+			activeEntries.add(buffer.readUtf());
 		int descriptorCount = buffer.readVarInt();
 		List<IdleConditionRegistry.Descriptor> descriptors = new ArrayList<>(descriptorCount);
 		for (int i = 0; i < descriptorCount; i++)
 			descriptors.add(new IdleConditionRegistry.Descriptor(buffer.readResourceLocation(), buffer.readUtf()));
-		return new IdleConditionStatePacket(active, descriptors);
+		return new IdleConditionStatePacket(active, activeEntries, descriptors);
 	}
 
 	public void handle(Supplier<NetworkEvent.Context> context)
 	{
 		context.get().enqueueWork(() -> DistExecutor.unsafeRunWhenOn(Dist.CLIENT,
-				() -> () -> IdleConditionStateClient.update(this.activeRules, this.descriptors)));
+				() -> () -> IdleConditionStateClient.update(this.activeRules, this.activeEntries, this.descriptors)));
 		context.get().setPacketHandled(true);
 	}
 }

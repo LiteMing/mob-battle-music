@@ -111,11 +111,20 @@ public class MobBattleMusicCompat
 	
 	private static @Nullable LivingEntity findSessionTarget(Object capability, Player player) throws ReflectiveOperationException
 	{
-		if (YOUKAI_GRAZE_FIND_ANY == null)
-			return null;
-		Object value = YOUKAI_GRAZE_FIND_ANY.invoke(capability, player);
-		if (value instanceof Optional<?> optional && optional.orElse(null) instanceof LivingEntity target)
-			return target;
+		if (YOUKAI_GRAZE_FIND_ANY != null) {
+			Object value = YOUKAI_GRAZE_FIND_ANY.invoke(capability, player);
+			if (value instanceof Optional<?> optional && optional.orElse(null) instanceof LivingEntity target)
+				return target;
+		}
+		if (YOUKAI_GRAZE_PLAYER_OPPONENTS != null && YOUKAI_GRAZE_PLAYER_OPPONENTS.get(capability) instanceof Set<?> set) {
+			for (Object value : set) {
+				if (value instanceof java.util.UUID uuid) {
+					Player target = player.level().getPlayerByUUID(uuid);
+					if (target != null)
+						return target;
+				}
+			}
+		}
 		return null;
 	}
 

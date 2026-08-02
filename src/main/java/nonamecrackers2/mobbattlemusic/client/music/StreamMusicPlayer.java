@@ -4,6 +4,7 @@ import java.io.BufferedInputStream;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -36,6 +37,7 @@ public class StreamMusicPlayer {
     private volatile boolean playing = false;
     private volatile boolean paused = false;
     private volatile boolean gamePaused = false; // Track game pause state
+    private volatile boolean gameMuted = false;
     private volatile float targetVolume = 1.0f;
     private volatile float currentVolume = 0.0f;
     private volatile int fadeTime = 0; // Fade time in ticks (20 ticks = 1 second)
@@ -126,7 +128,9 @@ public class StreamMusicPlayer {
                                     baseFormat.getFrameRate());
                         }
 
-                        long targetBytes = millisToPcmBytes(startPositionMillis, decodedFormat);
+                        long effectiveStartMillis = totalDurationMillis > 0L
+                                ? Math.floorMod(startPositionMillis, totalDurationMillis) : startPositionMillis;
+                        long targetBytes = millisToPcmBytes(effectiveStartMillis, decodedFormat);
                         playedPcmBytes = skipDecodedBytes(decodedStream, targetBytes, decodedFormat.getFrameSize());
 
                         // Get a line to play the audio
@@ -184,6 +188,8 @@ public class StreamMusicPlayer {
                                 filterRevision = currentFilterRevision;
                             }
                             filterChain.process(buffer, bytesRead);
+                            if (gameMuted)
+                                Arrays.fill(buffer, 0, bytesRead, (byte)0);
                             playbackLine.write(buffer, 0, bytesRead);
                             totalBytesWritten += bytesRead;
                             playedPcmBytes += bytesRead;
@@ -355,6 +361,17 @@ public class StreamMusicPlayer {
     public boolean isGamePaused() {
         return gamePaused;
     }
+
+    public void setMutedForGame(boolean muted) {
+        if (this.gameMuted == muted)
+            return;
+        this.gameMuted = muted;
+        updateVolumeOutput();
+    }
+
+    public boolean isMutedForGame() {
+        return this.gameMuted;
+    }
     
     /**
      * Set target volume for fade effect (0.0 to 1.0)
@@ -406,7 +423,7 @@ public class StreamMusicPlayer {
             float musicVolume = mc.options.getSoundSourceVolume(SoundSource.RECORDS);
             
             // Apply fade volume
-            float finalVolume = masterVolume * musicVolume * currentVolume;
+            float finalVolume = this.gameMuted ? 0.0F : masterVolume * musicVolume * currentVolume;
             
             // Apply volume to the line
             if (line.isControlSupported(FloatControl.Type.MASTER_GAIN)) {
@@ -432,7 +449,7 @@ public class StreamMusicPlayer {
             float masterVolume = mc.options.getSoundSourceVolume(SoundSource.MASTER);
             float musicVolume = mc.options.getSoundSourceVolume(SoundSource.RECORDS);
             
-            float targetVolume = masterVolume * musicVolume;
+            float targetVolume = this.gameMuted ? 0.0F : masterVolume * musicVolume;
             
             // Apply volume to the line
             if (line.isControlSupported(FloatControl.Type.MASTER_GAIN)) {
@@ -444,5 +461,12 @@ public class StreamMusicPlayer {
         } catch (Exception e) {
             // Ignore volume control errors
         }
+    }
+
+    private void updateVolumeOutput() {
+        if (this.fadeTime > 0)
+            updateVolumeWithFade();
+        else
+            updateVolume();
     }
 }

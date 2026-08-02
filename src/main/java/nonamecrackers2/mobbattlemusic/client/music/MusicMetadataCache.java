@@ -114,8 +114,11 @@ public class MusicMetadataCache
 					? song.getAsJsonObject("album") : null;
 			String album = albumObject == null ? "" : string(albumObject, "name");
 			String coverUrl = albumObject == null ? "" : string(albumObject, "picUrl");
+			long durationMillis = song.has("duration") ? song.get("duration").getAsLong() :
+					(song.has("dt") ? song.get("dt").getAsLong() : 0L);
 			String coverFileName = downloadCover(songId, coverUrl);
-			MusicMetadata metadata = new MusicMetadata(sourceUrl, songId, title, artist, album, coverUrl, coverFileName);
+			MusicMetadata metadata = new MusicMetadata(sourceUrl, songId, title, artist, album, coverUrl, coverFileName,
+					durationMillis);
 			Files.writeString(metadataPath(songId), GSON.toJson(metadata), StandardCharsets.UTF_8);
 			return Optional.of(metadata);
 		} catch (Exception e) {

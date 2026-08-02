@@ -41,6 +41,7 @@ import net.minecraftforge.registries.ForgeRegistries;
 import nonamecrackers2.mobbattlemusic.MobBattleMusicMod;
 import nonamecrackers2.mobbattlemusic.client.config.MobBattleMusicConfig;
 import nonamecrackers2.mobbattlemusic.client.music.ExternalMusicHandler;
+import nonamecrackers2.mobbattlemusic.client.music.IdleConditionStateClient;
 import nonamecrackers2.mobbattlemusic.client.music.MusicMetadataCache;
 import nonamecrackers2.mobbattlemusic.client.sound.track.ConfiguredAggressiveTrack;
 import nonamecrackers2.mobbattlemusic.client.sound.track.ConfiguredAmbientTrack;
@@ -59,6 +60,7 @@ import nonamecrackers2.mobbattlemusic.network.ExternalPlaylistCatalogPacket;
 import nonamecrackers2.mobbattlemusic.network.MobBattleMusicNetwork;
 import nonamecrackers2.mobbattlemusic.network.ServerExternalPlaylistSyncPacket;
 import nonamecrackers2.mobbattlemusic.playlist.IdleCondition;
+import nonamecrackers2.mobbattlemusic.playlist.IdleConditionRegistry;
 
 public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 	private static final Gson GSON = new GsonBuilder().create();
@@ -84,9 +86,12 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 	private final Map<String, List<String>> localIdleRuleUrls;
 	private final Map<String, ExternalSelectionMode> localSelectionModes;
 	private final Map<String, List<IdleCondition>> localIdleConditions;
+	private final Map<String, List<List<IdleCondition>>> localEntryConditions;
 	private final Map<String, Integer> localIdleIntervals;
 	private final Map<String, Integer> localPriorityOverrides;
+	private final Set<String> disabledMusicEntries;
 	private boolean localSceneUrlsLoaded;
+	private boolean musicStateLoaded;
 
 	private MusicTracksManager() {
 		super(GSON, "music_tracks");
@@ -110,8 +115,10 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		this.localIdleRuleUrls = new LinkedHashMap<>();
 		this.localSelectionModes = new LinkedHashMap<>();
 		this.localIdleConditions = new LinkedHashMap<>();
+		this.localEntryConditions = new LinkedHashMap<>();
 		this.localIdleIntervals = new LinkedHashMap<>();
 		this.localPriorityOverrides = new LinkedHashMap<>();
+		this.disabledMusicEntries = new java.util.HashSet<>();
 	}
 
 	private static List<TrackType> applyDefaultTrackTypes() {
@@ -121,6 +128,7 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 	@Override
 	protected void apply(Map<ResourceLocation, JsonElement> files, ResourceManager manager, ProfilerFiller profiler) {
 		Minecraft mc = Minecraft.getInstance();
+		this.loadMusicState();
 		List<TrackType> list = applyDefaultTrackTypes();
 		this.externalPlaylistsByTrack.clear();
 		this.externalTrackByConfigLocation.clear();
@@ -302,9 +310,23 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 			String id = object.has("id") ? GsonHelper.getAsString(object, "id") : fallbackId;
 			String url = GsonHelper.getAsString(object, "url");
 			String name = object.has("name") ? GsonHelper.getAsString(object, "name") : id;
-			return new ExternalPlaylistEntry(id, name, url);
+			return new ExternalPlaylistEntry(id, name, url, parseConditions(object, "conditions"));
 		}
 		return new ExternalPlaylistEntry(fallbackId, fallbackId, GsonHelper.convertToString(element, "external URL"));
+	}
+
+	private static List<IdleCondition> parseConditions(JsonObject object, String member)
+	{
+		List<IdleCondition> conditions = Lists.newArrayList();
+		for (JsonElement element : GsonHelper.getAsJsonArray(object, member, new JsonArray())) {
+			if (!element.isJsonObject())
+				continue;
+			JsonObject condition = element.getAsJsonObject();
+			conditions.add(new IdleCondition(GsonHelper.getAsString(condition, "type"),
+					GsonHelper.getAsString(condition, "argument", ""),
+					GsonHelper.getAsBoolean(condition, "inverted", false)));
+		}
+		return List.copyOf(conditions);
 	}
 	
 	/**
@@ -323,7 +345,7 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 				LOGGER.error("Invalid external URL in '{}': '{}'. Must be HTTP or HTTPS.", configLocation, entry.url());
 				return null;
 			}
-			resolvedEntries.add(new ExternalPlaylistEntry(entry.id(), entry.name(), resolvedUrl));
+			resolvedEntries.add(new ExternalPlaylistEntry(entry.id(), entry.name(), entry.url(), entry.conditions()));
 		}
 
 		try {
@@ -385,22 +407,66 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		ExternalPlaylist playlist = this.externalPlaylistsByTrack.get(location);
 		if (playlist == null)
 			return null;
-		return playlist.entry(getExternalPlaylistSelectedIndex(playlist, location, false)).url();
+		int index = getExternalPlaylistSelectedIndex(playlist, location, false);
+		return index < 0 ? null : playlist.entry(index).url();
 	}
 
 	public String selectExternalUrl(ResourceLocation location) {
 		ExternalPlaylist playlist = this.externalPlaylistsByTrack.get(location);
 		if (playlist == null)
 			return null;
-		return playlist.entry(getExternalPlaylistSelectedIndex(playlist, location, true)).url();
+		int index = getExternalPlaylistSelectedIndex(playlist, location, true);
+		return index < 0 ? null : playlist.entry(index).url();
 	}
 
 	public ResourceLocation selectSoundTrack(ResourceLocation location) {
 		ExternalPlaylist playlist = this.soundPlaylistsByTrack.get(location);
 		if (playlist == null)
 			return null;
-		String sound = playlist.entry(getExternalPlaylistSelectedIndex(playlist, location, true)).url();
+		int index = getExternalPlaylistSelectedIndex(playlist, location, true);
+		if (index < 0)
+			return null;
+		String sound = playlist.entry(index).url();
 		return soundLocation(sound);
+	}
+
+	public boolean isMusicEntryEnabled(ResourceLocation playlist, ExternalPlaylistEntry entry)
+	{
+		this.loadMusicState();
+		return entry != null && !this.disabledMusicEntries.contains(musicEntryKey(playlist, entry.id())) &&
+				!this.disabledMusicEntries.contains(legacyMusicEntryKey(playlist, entry.url()));
+	}
+
+	public PlaylistControlResult setMusicEntryEnabled(ResourceLocation playlist, ExternalPlaylistEntry entry,
+			boolean enabled)
+	{
+		if (playlist == null || entry == null)
+			return PlaylistControlResult.failure("Unknown music entry");
+		this.loadMusicState();
+		String key = musicEntryKey(playlist, entry.id());
+		this.disabledMusicEntries.remove(legacyMusicEntryKey(playlist, entry.url()));
+		if (enabled)
+			this.disabledMusicEntries.remove(key);
+		else
+			this.disabledMusicEntries.add(key);
+		ResourceLocation trackLocation = resolveSelectableTrackLocation(playlist);
+		if (trackLocation != null)
+			this.externalSessionSelections.remove(trackLocation);
+		this.saveMusicState();
+		return PlaylistControlResult.success((enabled ? "Enabled " : "Disabled ") + playlist + " " + entry.name());
+	}
+
+	public boolean hasEnabledMusicEntries(ResourceLocation id)
+	{
+		ResourceLocation trackLocation = resolveSelectableTrackLocation(id);
+		ExternalPlaylist playlist = trackLocation == null ? null : playlistByTrackLocation(trackLocation);
+		return playlist == null || isValidIndex(playlist, this.externalForcedSelections.get(playlist.configLocation())) ||
+				!playableEntryIndices(playlist).isEmpty();
+	}
+
+	public boolean hasPlayableMusicEntries(ResourceLocation id)
+	{
+		return hasEnabledMusicEntries(id);
 	}
 
 	public void clearExternalSessionSelection(ResourceLocation location) {
@@ -459,7 +525,7 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		this.dynamicExternalTracks.entrySet().removeIf(entry -> entry.getValue().source() == DynamicSource.SERVER);
 		for (ServerExternalPlaylistSyncPacket.TrackDefinition definition : definitions) {
 			List<ExternalPlaylistEntry> entries = definition.entries().stream()
-					.map(entry -> new ExternalPlaylistEntry(entry.id(), entry.name(), entry.url()))
+					.map(entry -> new ExternalPlaylistEntry(entry.id(), entry.name(), entry.url(), entry.conditions()))
 					.toList();
 			DynamicBinding binding = DynamicBinding.parse(definition.scene());
 			if (!entries.isEmpty() && binding != null) {
@@ -529,6 +595,7 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		this.loadLocalSceneUrls();
 		Map<String, List<String>> urlsByTarget = this.localUrls(binding.kind());
 		urlsByTarget.computeIfAbsent(binding.storageKey(), key -> Lists.newArrayList()).add(reference);
+		entryConditions(binding, true).add(List.of());
 		this.saveLocalSceneUrls();
 		this.refreshLocalDynamicTracks();
 		this.rebuildTracksWithDynamic();
@@ -581,10 +648,14 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 			return PlaylistControlResult.failure("Index " + (index + 1) + " out of range for local " +
 					binding.displayName());
 		String removed = urls.remove(index);
+		List<List<IdleCondition>> entryConditions = this.localEntryConditions.get(binding.serializedKey());
+		if (entryConditions != null && index < entryConditions.size())
+			entryConditions.remove(index);
 		if (urls.isEmpty()) {
 			urlsByTarget.remove(binding.storageKey());
 			this.localSelectionModes.remove(binding.serializedKey());
 			this.localIdleConditions.remove(binding.serializedKey());
+			this.localEntryConditions.remove(binding.serializedKey());
 			this.localIdleIntervals.remove(binding.serializedKey());
 			this.localPriorityOverrides.remove(binding.serializedKey());
 		}
@@ -655,6 +726,58 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		this.refreshLocalDynamicTracks();
 		this.rebuildTracksWithDynamic();
 		return PlaylistControlResult.success("Deleted local idle condition #" + (index + 1));
+	}
+
+	public PlaylistControlResult addLocalEntryCondition(DynamicBinding binding, int entryIndex, IdleCondition condition)
+	{
+		if (!hasLocalPlaylist(binding))
+			return PlaylistControlResult.failure("No local playlist exists for " +
+					(binding == null ? "unknown binding" : binding.displayName()));
+		List<List<IdleCondition>> entries = entryConditions(binding, true);
+		if (entryIndex < 0 || entryIndex >= entries.size())
+			return PlaylistControlResult.failure("Music entry index out of range");
+		List<IdleCondition> conditions = Lists.newArrayList(entries.get(entryIndex));
+		conditions.add(condition);
+		entries.set(entryIndex, conditions);
+		saveAndRefreshLocalTracks();
+		return PlaylistControlResult.success("Added condition to " + binding.displayName() + " track #" +
+				(entryIndex + 1));
+	}
+
+	public PlaylistControlResult deleteLocalEntryCondition(DynamicBinding binding, int entryIndex, int conditionIndex)
+	{
+		List<List<IdleCondition>> entries = binding == null ? null : this.localEntryConditions.get(binding.serializedKey());
+		if (entries == null || entryIndex < 0 || entryIndex >= entries.size())
+			return PlaylistControlResult.failure("Music entry index out of range");
+		List<IdleCondition> conditions = Lists.newArrayList(entries.get(entryIndex));
+		if (conditionIndex < 0 || conditionIndex >= conditions.size())
+			return PlaylistControlResult.failure("Condition index out of range");
+		conditions.remove(conditionIndex);
+		entries.set(entryIndex, conditions);
+		saveAndRefreshLocalTracks();
+		return PlaylistControlResult.success("Deleted track condition #" + (conditionIndex + 1));
+	}
+
+	private List<List<IdleCondition>> entryConditions(DynamicBinding binding, boolean create)
+	{
+		List<String> urls = this.localUrls(binding.kind()).getOrDefault(binding.storageKey(), List.of());
+		List<List<IdleCondition>> entries = create
+				? this.localEntryConditions.computeIfAbsent(binding.serializedKey(), key -> Lists.newArrayList())
+				: this.localEntryConditions.get(binding.serializedKey());
+		if (entries == null)
+			return List.of();
+		while (entries.size() < urls.size())
+			entries.add(List.of());
+		while (entries.size() > urls.size())
+			entries.remove(entries.size() - 1);
+		return entries;
+	}
+
+	private void saveAndRefreshLocalTracks()
+	{
+		this.saveLocalSceneUrls();
+		this.refreshLocalDynamicTracks();
+		this.rebuildTracksWithDynamic();
 	}
 
 	private boolean hasLocalPlaylist(DynamicBinding binding) {
@@ -732,7 +855,7 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		if (isValidIndex(playlist, forced))
 			return forced;
 		Integer session = this.externalSessionSelections.get(trackLocation);
-		if (isValidIndex(playlist, session))
+		if (isPlayableIndex(playlist, session))
 			return session;
 		return -1;
 	}
@@ -793,24 +916,46 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		return PlaylistControlResult.success("Cleared forced selection for " + playlist.configLocation());
 	}
 
+	public void synchronizeSessionSelection(ResourceLocation id, long seed)
+	{
+		ResourceLocation trackLocation = resolveSelectableTrackLocation(id);
+		ExternalPlaylist playlist = trackLocation == null ? null : playlistByTrackLocation(trackLocation);
+		if (playlist == null || isValidIndex(playlist, this.externalForcedSelections.get(playlist.configLocation())))
+			return;
+		List<Integer> playable = playableEntryIndices(playlist);
+		if (playable.isEmpty())
+			return;
+		int selected = playable.get(Math.floorMod(Long.hashCode(seed), playable.size()));
+		this.externalSessionSelections.put(trackLocation, selected);
+	}
+
 	private int getExternalPlaylistSelectedIndex(ExternalPlaylist playlist, ResourceLocation trackLocation, boolean createSession) {
 		Integer forced = this.externalForcedSelections.get(playlist.configLocation());
 		if (isValidIndex(playlist, forced))
 			return forced;
 		Integer session = this.externalSessionSelections.get(trackLocation);
-		if (isValidIndex(playlist, session))
+		if (isPlayableIndex(playlist, session))
 			return session;
+		List<Integer> enabled = playableEntryIndices(playlist);
+		if (enabled.isEmpty())
+			return -1;
 		if (!createSession)
-			return 0;
+			return enabled.get(0);
 		int selected = switch (playlist.selectionMode()) {
-			case RANDOM -> ThreadLocalRandom.current().nextInt(playlist.size());
-			case FIRST -> 0;
+			case RANDOM -> enabled.get(ThreadLocalRandom.current().nextInt(enabled.size()));
+			case FIRST -> enabled.get(0);
 			case SEQUENTIAL -> {
 				int next = this.externalSequentialNextSelections.getOrDefault(playlist.configLocation(), 0);
-				if (next < 0 || next >= playlist.size())
-					next = 0;
-				this.externalSequentialNextSelections.put(playlist.configLocation(), (next + 1) % playlist.size());
-				yield next;
+				int found = enabled.get(0);
+				for (int offset = 0; offset < playlist.size(); offset++) {
+					int candidate = Math.floorMod(next + offset, playlist.size());
+					if (isPlayableIndex(playlist, candidate)) {
+						found = candidate;
+						break;
+					}
+				}
+				this.externalSequentialNextSelections.put(playlist.configLocation(), (found + 1) % playlist.size());
+				yield found;
 			}
 		};
 		this.externalSessionSelections.put(trackLocation, selected);
@@ -856,6 +1001,34 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 
 	private static boolean isValidIndex(ExternalPlaylist playlist, Integer index) {
 		return index != null && index >= 0 && index < playlist.size();
+	}
+
+	private boolean isPlayableIndex(ExternalPlaylist playlist, Integer index)
+	{
+		return isValidIndex(playlist, index) && isMusicEntryEnabled(playlist.configLocation(), playlist.entry(index)) &&
+				entryConditionsMatch(playlist, index);
+	}
+
+	private List<Integer> playableEntryIndices(ExternalPlaylist playlist)
+	{
+		List<Integer> enabled = Lists.newArrayList();
+		for (int i = 0; i < playlist.size(); i++) {
+			if (isPlayableIndex(playlist, i))
+				enabled.add(i);
+		}
+		return enabled;
+	}
+
+	private boolean entryConditionsMatch(ExternalPlaylist playlist, int index)
+	{
+		ExternalPlaylistEntry entry = playlist.entry(index);
+		if (entry.conditions().isEmpty())
+			return true;
+		DynamicExternalTrack dynamic = this.dynamicExternalTracks.get(playlist.configLocation());
+		if (dynamic != null && dynamic.source() == DynamicSource.SERVER)
+			return IdleConditionStateClient.isEntryActive(playlist.configLocation(), index);
+		Minecraft mc = Minecraft.getInstance();
+		return mc.player != null && IdleConditionRegistry.test(mc.player, entry.conditions());
 	}
 	
 	public String getExternalPlaylistUrl(ResourceLocation id, String selection) {
@@ -999,8 +1172,10 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 			if (binding == null || urls.isEmpty())
 				return;
 			List<ExternalPlaylistEntry> entries = Lists.newArrayList();
+			List<List<IdleCondition>> conditionsByEntry = entryConditions(binding, true);
 			for (int i = 0; i < urls.size(); i++)
-				entries.add(new ExternalPlaylistEntry(String.valueOf(i + 1), "local_" + (i + 1), urls.get(i)));
+				entries.add(new ExternalPlaylistEntry(String.valueOf(i + 1), "local_" + (i + 1), urls.get(i),
+						conditionsByEntry.get(i)));
 			ResourceLocation id = dynamicConfigLocation(DynamicSource.LOCAL, binding);
 			ExternalSelectionMode selectionMode = this.localSelectionModes.getOrDefault(binding.serializedKey(),
 					ExternalSelectionMode.RANDOM);
@@ -1112,7 +1287,7 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 					continue;
 				}
 				kind = DynamicPlaylistKind.SOUND;
-				resolvedEntries.add(new ExternalPlaylistEntry(entry.id(), entry.name(), soundReference(sound)));
+				resolvedEntries.add(new ExternalPlaylistEntry(entry.id(), entry.name(), soundReference(sound), entry.conditions()));
 				continue;
 			}
 			String resolvedUrl = nonamecrackers2.mobbattlemusic.client.music.UrlResolver.resolveUrl(entry.url());
@@ -1127,8 +1302,8 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 			}
 			kind = DynamicPlaylistKind.EXTERNAL;
 			MusicMetadataCache.getInstance().prepare(entry.url());
-			resolvedEntries.add(new ExternalPlaylistEntry(entry.id(), entry.name(), resolvedUrl));
-			externalMusicHandler.prepareMusicFile(resolvedUrl);
+			resolvedEntries.add(new ExternalPlaylistEntry(entry.id(), entry.name(), entry.url(), entry.conditions()));
+			externalMusicHandler.prepareMusicFile(entry.url());
 		}
 		if (resolvedEntries.isEmpty())
 			return null;
@@ -1151,6 +1326,7 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 			JsonObject idleRules = GsonHelper.getAsJsonObject(root, "idle_rules", new JsonObject());
 			JsonObject selectionModes = GsonHelper.getAsJsonObject(root, "selection_modes", new JsonObject());
 			JsonObject idleConditions = GsonHelper.getAsJsonObject(root, "idle_conditions", new JsonObject());
+			JsonObject entryConditions = GsonHelper.getAsJsonObject(root, "entry_conditions", new JsonObject());
 			JsonObject idleIntervals = GsonHelper.getAsJsonObject(root, "idle_intervals", new JsonObject());
 			JsonObject priorities = GsonHelper.getAsJsonObject(root, "priorities", new JsonObject());
 			this.localSceneUrls.clear();
@@ -1159,6 +1335,7 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 			this.localIdleRuleUrls.clear();
 			this.localSelectionModes.clear();
 			this.localIdleConditions.clear();
+			this.localEntryConditions.clear();
 			this.localIdleIntervals.clear();
 			this.localPriorityOverrides.clear();
 			this.readLocalUrls(scenes, DynamicBinding.Kind.SCENE, this.localSceneUrls);
@@ -1177,10 +1354,49 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 				}
 			}
 			readIdleConditions(idleConditions, this.localIdleConditions);
+			readEntryConditions(entryConditions, this.localEntryConditions);
+			migrateLegacyIdleConditions();
 			readIntegerSettings(idleIntervals, this.localIdleIntervals, 0, 86400);
 			readIntegerSettings(priorities, this.localPriorityOverrides, -1000, 1000);
 		} catch (Exception e) {
 			LOGGER.warn("Failed to load local external playlist cache from {}", path, e);
+		}
+	}
+
+	private static void readEntryConditions(JsonObject object, Map<String, List<List<IdleCondition>>> output)
+	{
+		for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+			DynamicBinding binding = DynamicBinding.parse(entry.getKey());
+			if (binding == null || !entry.getValue().isJsonArray())
+				continue;
+			List<List<IdleCondition>> tracks = Lists.newArrayList();
+			for (JsonElement trackElement : entry.getValue().getAsJsonArray()) {
+				if (!trackElement.isJsonArray()) {
+					tracks.add(List.of());
+					continue;
+				}
+				JsonObject holder = new JsonObject();
+				holder.add("conditions", trackElement);
+				tracks.add(parseConditions(holder, "conditions"));
+			}
+			output.put(binding.serializedKey(), tracks);
+		}
+	}
+
+	private void migrateLegacyIdleConditions()
+	{
+		for (Map.Entry<String, List<IdleCondition>> legacy : this.localIdleConditions.entrySet()) {
+			if (this.localEntryConditions.containsKey(legacy.getKey()))
+				continue;
+			DynamicBinding binding = DynamicBinding.parse(legacy.getKey());
+			if (binding == null)
+				continue;
+			List<String> urls = this.localUrls(binding.kind()).getOrDefault(binding.storageKey(), List.of());
+			List<List<IdleCondition>> migrated = Lists.newArrayList();
+			for (int i = 0; i < urls.size(); i++)
+				migrated.add(List.copyOf(legacy.getValue()));
+			if (!migrated.isEmpty())
+				this.localEntryConditions.put(binding.serializedKey(), migrated);
 		}
 	}
 
@@ -1261,6 +1477,18 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 				idleConditions.add(binding, array);
 			});
 			root.add("idle_conditions", idleConditions);
+			JsonObject entryConditions = new JsonObject();
+			this.localEntryConditions.forEach((binding, tracks) -> {
+				JsonArray trackArray = new JsonArray();
+				for (List<IdleCondition> conditions : tracks) {
+					JsonArray conditionArray = new JsonArray();
+					for (IdleCondition condition : conditions)
+						conditionArray.add(writeCondition(condition));
+					trackArray.add(conditionArray);
+				}
+				entryConditions.add(binding, trackArray);
+			});
+			root.add("entry_conditions", entryConditions);
 			JsonObject idleIntervals = new JsonObject();
 			this.localIdleIntervals.forEach(idleIntervals::addProperty);
 			root.add("idle_intervals", idleIntervals);
@@ -1271,6 +1499,15 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		} catch (IOException e) {
 			LOGGER.error("Failed to save local external playlist cache to {}", path, e);
 		}
+	}
+
+	private static JsonObject writeCondition(IdleCondition condition)
+	{
+		JsonObject object = new JsonObject();
+		object.addProperty("type", condition.type());
+		object.addProperty("argument", condition.argument());
+		object.addProperty("inverted", condition.inverted());
+		return object;
 	}
 	
 	private static void writeUrls(JsonObject object, Map<String, List<String>> urlsByTarget) {
@@ -1283,6 +1520,56 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 	
 	private static Path localSceneUrlsPath() {
 		return Minecraft.getInstance().gameDirectory.toPath().resolve("config").resolve("mobbattlemusic_local_playlists.json");
+	}
+
+	private void loadMusicState()
+	{
+		if (this.musicStateLoaded)
+			return;
+		this.musicStateLoaded = true;
+		Path path = musicStatePath();
+		if (!Files.isRegularFile(path))
+			return;
+		try {
+			JsonObject root = GsonHelper.parse(Files.readString(path, StandardCharsets.UTF_8));
+			for (JsonElement element : GsonHelper.getAsJsonArray(root, "disabled_entries", new JsonArray())) {
+				if (element.isJsonPrimitive() && element.getAsJsonPrimitive().isString())
+					this.disabledMusicEntries.add(element.getAsString());
+			}
+		} catch (Exception e) {
+			LOGGER.warn("Failed to load disabled music entries from {}", path, e);
+		}
+	}
+
+	private void saveMusicState()
+	{
+		Path path = musicStatePath();
+		try {
+			Files.createDirectories(path.getParent());
+			JsonObject root = new JsonObject();
+			JsonArray disabled = new JsonArray();
+			this.disabledMusicEntries.stream().sorted().forEach(disabled::add);
+			root.add("disabled_entries", disabled);
+			Files.writeString(path, new GsonBuilder().setPrettyPrinting().create().toJson(root), StandardCharsets.UTF_8);
+		} catch (IOException e) {
+			LOGGER.error("Failed to save disabled music entries to {}", path, e);
+		}
+	}
+
+	private static String musicEntryKey(ResourceLocation playlist, String source)
+	{
+		return playlist + "\nid:" + source;
+	}
+
+	private static String legacyMusicEntryKey(ResourceLocation playlist, String source)
+	{
+		return playlist + "\n" + source;
+	}
+
+	private static Path musicStatePath()
+	{
+		return Minecraft.getInstance().gameDirectory.toPath().resolve("config")
+				.resolve("mobbattlemusic_music_state.json");
 	}
 	
 	/**
@@ -1539,7 +1826,18 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		}
 	}
 
-	public static record ExternalPlaylistEntry(String id, String name, String url) {}
+	public static record ExternalPlaylistEntry(String id, String name, String url, List<IdleCondition> conditions)
+	{
+		public ExternalPlaylistEntry
+		{
+			conditions = List.copyOf(conditions);
+		}
+
+		public ExternalPlaylistEntry(String id, String name, String url)
+		{
+			this(id, name, url, List.of());
+		}
+	}
 
 	public static record DynamicPlaylistSettings(int priority, ExternalSelectionMode selectionMode,
 			List<IdleCondition> idleConditions, int idleIntervalSeconds) {}

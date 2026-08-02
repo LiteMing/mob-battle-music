@@ -49,6 +49,7 @@ public class ServerExternalPlaylistStore
 	private static final Map<String, List<String>> IDLE_RULE_URLS = new LinkedHashMap<>();
 	private static final Map<String, String> SELECTION_MODES = new LinkedHashMap<>();
 	private static final Map<String, List<IdleCondition>> IDLE_CONDITIONS = new LinkedHashMap<>();
+	private static final Map<String, List<List<IdleCondition>>> ENTRY_CONDITIONS = new LinkedHashMap<>();
 	private static final Map<String, Integer> IDLE_INTERVALS = new LinkedHashMap<>();
 	private static final Map<String, Integer> PRIORITIES = new LinkedHashMap<>();
 	private static boolean loaded;
@@ -112,10 +113,12 @@ public class ServerExternalPlaylistStore
 		load(source.getServer());
 		List<String> urls = urls(binding.kind()).computeIfAbsent(binding.storageKey(), key -> Lists.newArrayList());
 		urls.add(url);
+		entryConditions(binding, true).add(List.of());
 		save(source.getServer());
 		syncAll(source.getServer());
 		int finalIndex = urls.size();
-		source.sendSuccess(() -> Component.literal("Added server " + binding.displayName() + " URL #" + finalIndex), true);
+		MobBattleMusicCommandFeedback.success(source,
+				Component.literal("Added server " + binding.displayName() + " URL #" + finalIndex));
 		return urls.size();
 	}
 	
@@ -178,17 +181,22 @@ public class ServerExternalPlaylistStore
 			return 0;
 		}
 		String removed = urls.remove(index);
+		List<List<IdleCondition>> entryConditions = ENTRY_CONDITIONS.get(binding.serializedKey());
+		if (entryConditions != null && index < entryConditions.size())
+			entryConditions.remove(index);
 		if (urls.isEmpty()) {
 			urls(binding.kind()).remove(binding.storageKey());
 			SELECTION_MODES.remove(binding.serializedKey());
 			IDLE_CONDITIONS.remove(binding.serializedKey());
+			ENTRY_CONDITIONS.remove(binding.serializedKey());
 			IDLE_INTERVALS.remove(binding.serializedKey());
 			PRIORITIES.remove(binding.serializedKey());
 		}
 		save(source.getServer());
 		syncAll(source.getServer());
 		int finalIndex = index + 1;
-		source.sendSuccess(() -> Component.literal("Deleted server " + binding.displayName() + " URL #" + finalIndex + ": " + removed), true);
+		MobBattleMusicCommandFeedback.success(source, Component.literal("Deleted server " + binding.displayName() +
+				" URL #" + finalIndex + ": " + removed));
 		return 1;
 	}
 
@@ -250,8 +258,8 @@ public class ServerExternalPlaylistStore
 		SELECTION_MODES.put(binding.serializedKey(), normalized);
 		save(source.getServer());
 		syncAll(source.getServer());
-		source.sendSuccess(() -> Component.literal("Set server " + binding.displayName() +
-				" playback order to " + normalized), true);
+		MobBattleMusicCommandFeedback.success(source, Component.literal("Set server " + binding.displayName() +
+				" playback order to " + normalized));
 		return 1;
 	}
 
@@ -289,7 +297,8 @@ public class ServerExternalPlaylistStore
 		PRIORITIES.put(binding.serializedKey(), priority);
 		save(source.getServer());
 		syncAll(source.getServer());
-		source.sendSuccess(() -> Component.literal("Set server " + binding.displayName() + " priority to " + priority), true);
+		MobBattleMusicCommandFeedback.success(source,
+				Component.literal("Set server " + binding.displayName() + " priority to " + priority));
 		return 1;
 	}
 
@@ -303,7 +312,8 @@ public class ServerExternalPlaylistStore
 		IDLE_INTERVALS.put(binding.serializedKey(), seconds);
 		save(source.getServer());
 		syncAll(source.getServer());
-		source.sendSuccess(() -> Component.literal("Set idle interval to " + seconds + " seconds"), true);
+		MobBattleMusicCommandFeedback.success(source,
+				Component.literal("Set idle interval to " + seconds + " seconds"));
 		return 1;
 	}
 
@@ -323,7 +333,8 @@ public class ServerExternalPlaylistStore
 		conditions.add(new IdleCondition(type, argument, inverted));
 		save(source.getServer());
 		syncAll(source.getServer());
-		source.sendSuccess(() -> Component.literal("Added idle condition #" + conditions.size()), true);
+		MobBattleMusicCommandFeedback.success(source,
+				Component.literal("Added idle condition #" + conditions.size()));
 		return conditions.size();
 	}
 
@@ -340,7 +351,60 @@ public class ServerExternalPlaylistStore
 			IDLE_CONDITIONS.remove(binding.serializedKey());
 		save(source.getServer());
 		syncAll(source.getServer());
-		source.sendSuccess(() -> Component.literal("Deleted idle condition #" + (index + 1)), true);
+		MobBattleMusicCommandFeedback.success(source,
+				Component.literal("Deleted idle condition #" + (index + 1)));
+		return 1;
+	}
+
+	public static int addEntryCondition(CommandSourceStack source, ResourceLocation playlist, int entryIndex,
+			String type, String argument, boolean inverted)
+	{
+		load(source.getServer());
+		Binding binding = bindingForPlaylist(source.getServer(), playlist);
+		if (binding == null) {
+			source.sendFailure(Component.literal("Unknown server playlist: " + playlist));
+			return 0;
+		}
+		if (!IdleConditionRegistry.isRegistered(type)) {
+			source.sendFailure(Component.literal("Unknown condition type: " + type));
+			return 0;
+		}
+		List<List<IdleCondition>> entries = entryConditions(binding, true);
+		if (entryIndex < 0 || entryIndex >= entries.size()) {
+			source.sendFailure(Component.literal("Music entry index out of range"));
+			return 0;
+		}
+		List<IdleCondition> conditions = Lists.newArrayList(entries.get(entryIndex));
+		conditions.add(new IdleCondition(type, argument, inverted));
+		entries.set(entryIndex, conditions);
+		save(source.getServer());
+		syncAll(source.getServer());
+		MobBattleMusicCommandFeedback.success(source, Component.literal("Added condition to " + playlist +
+				" track #" + (entryIndex + 1)));
+		return conditions.size();
+	}
+
+	public static int deleteEntryCondition(CommandSourceStack source, ResourceLocation playlist, int entryIndex,
+			int conditionIndex)
+	{
+		load(source.getServer());
+		Binding binding = bindingForPlaylist(source.getServer(), playlist);
+		List<List<IdleCondition>> entries = binding == null ? null : ENTRY_CONDITIONS.get(binding.serializedKey());
+		if (entries == null || entryIndex < 0 || entryIndex >= entries.size()) {
+			source.sendFailure(Component.literal("Music entry index out of range"));
+			return 0;
+		}
+		List<IdleCondition> conditions = Lists.newArrayList(entries.get(entryIndex));
+		if (conditionIndex < 0 || conditionIndex >= conditions.size()) {
+			source.sendFailure(Component.literal("Condition index out of range"));
+			return 0;
+		}
+		conditions.remove(conditionIndex);
+		entries.set(entryIndex, conditions);
+		save(source.getServer());
+		syncAll(source.getServer());
+		MobBattleMusicCommandFeedback.success(source,
+				Component.literal("Deleted track condition #" + (conditionIndex + 1)));
 		return 1;
 	}
 
@@ -550,6 +614,7 @@ public class ServerExternalPlaylistStore
 			if (binding != null && binding.target().equals(uuid.toString())) {
 				ENTITY_UUID_URLS.remove(key);
 				SELECTION_MODES.remove(binding.serializedKey());
+				ENTRY_CONDITIONS.remove(binding.serializedKey());
 				removed = true;
 			}
 		}
@@ -619,6 +684,25 @@ public class ServerExternalPlaylistStore
 		}
 		return Set.copyOf(active);
 	}
+
+	public static Set<String> activeEntryConditions(ServerPlayer player)
+	{
+		load(player.getServer());
+		java.util.Set<String> active = new java.util.LinkedHashSet<>();
+		for (ServerExternalPlaylistSyncPacket.TrackDefinition definition : trackDefinitions(player.getServer())) {
+			for (int i = 0; i < definition.entries().size(); i++) {
+				List<IdleCondition> conditions = definition.entries().get(i).conditions();
+				if (!conditions.isEmpty() && IdleConditionRegistry.test(player, conditions))
+					active.add(entryConditionKey(definition.configLocation(), i));
+			}
+		}
+		return Set.copyOf(active);
+	}
+
+	public static String entryConditionKey(ResourceLocation playlist, int entryIndex)
+	{
+		return playlist + "#" + entryIndex;
+	}
 	
 	public static String playlistEntryUrl(MinecraftServer server, ResourceLocation playlist, int index)
 	{
@@ -657,10 +741,11 @@ public class ServerExternalPlaylistStore
 				return;
 			List<ServerExternalPlaylistSyncPacket.Entry> entries = Lists.newArrayList();
 			ResourceLocation config = configLocation(binding);
+			List<List<IdleCondition>> conditionsByEntry = entryConditions(binding, true);
 			for (int i = 0; i < urls.size(); i++) {
 				String url = urls.get(i);
 				entries.add(new ServerExternalPlaylistSyncPacket.Entry(String.valueOf(i + 1), "server_" + (i + 1), url,
-						ServerTimelineMarkerStore.markers(server, config, url)));
+						conditionsByEntry.get(i), ServerTimelineMarkerStore.markers(server, config, url)));
 			}
 			definitions.add(new ServerExternalPlaylistSyncPacket.TrackDefinition(config, binding.serializedKey(),
 					PRIORITIES.getOrDefault(binding.serializedKey(), defaultPriority(binding)), defaultFadeTime(binding),
@@ -741,6 +826,33 @@ public class ServerExternalPlaylistStore
 			case IDLE_RULE -> IDLE_RULE_URLS;
 		};
 	}
+
+	private static List<List<IdleCondition>> entryConditions(Binding binding, boolean create)
+	{
+		List<String> urls = urls(binding.kind()).getOrDefault(binding.storageKey(), List.of());
+		List<List<IdleCondition>> entries = create
+				? ENTRY_CONDITIONS.computeIfAbsent(binding.serializedKey(), key -> Lists.newArrayList())
+				: ENTRY_CONDITIONS.get(binding.serializedKey());
+		if (entries == null)
+			return List.of();
+		while (entries.size() < urls.size())
+			entries.add(List.of());
+		while (entries.size() > urls.size())
+			entries.remove(entries.size() - 1);
+		return entries;
+	}
+
+	private static Binding bindingForPlaylist(MinecraftServer server, ResourceLocation playlist)
+	{
+		for (Kind kind : Kind.values()) {
+			for (String key : urls(kind).keySet()) {
+				Binding binding = Binding.create(kind, key);
+				if (binding != null && configLocation(binding).equals(playlist))
+					return binding;
+			}
+		}
+		return null;
+	}
 	
 	private static boolean isValidUrl(String url)
 	{
@@ -783,6 +895,7 @@ public class ServerExternalPlaylistStore
 			JsonObject idleRules = GsonHelper.getAsJsonObject(root, "idle_rules", new JsonObject());
 			JsonObject selectionModes = GsonHelper.getAsJsonObject(root, "selection_modes", new JsonObject());
 			JsonObject idleConditions = GsonHelper.getAsJsonObject(root, "idle_conditions", new JsonObject());
+			JsonObject entryConditions = GsonHelper.getAsJsonObject(root, "entry_conditions", new JsonObject());
 			JsonObject idleIntervals = GsonHelper.getAsJsonObject(root, "idle_intervals", new JsonObject());
 			JsonObject priorities = GsonHelper.getAsJsonObject(root, "priorities", new JsonObject());
 			SCENE_URLS.clear();
@@ -791,6 +904,7 @@ public class ServerExternalPlaylistStore
 			IDLE_RULE_URLS.clear();
 			SELECTION_MODES.clear();
 			IDLE_CONDITIONS.clear();
+			ENTRY_CONDITIONS.clear();
 			IDLE_INTERVALS.clear();
 			PRIORITIES.clear();
 			readUrls(scenes, Kind.SCENE, SCENE_URLS);
@@ -804,10 +918,54 @@ public class ServerExternalPlaylistStore
 					SELECTION_MODES.put(binding.serializedKey(), mode);
 			}
 			readIdleConditions(idleConditions, IDLE_CONDITIONS);
+			readEntryConditions(entryConditions, ENTRY_CONDITIONS);
+			migrateLegacyIdleConditions();
 			readIntegerSettings(idleIntervals, IDLE_INTERVALS, 0, 86400);
 			readIntegerSettings(priorities, PRIORITIES, -1000, 1000);
 		} catch (Exception e) {
 			LOGGER.warn("Failed to load server external playlists from {}", path, e);
+		}
+	}
+
+	private static void readEntryConditions(JsonObject object, Map<String, List<List<IdleCondition>>> output)
+	{
+		for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+			Binding binding = Binding.parse(entry.getKey());
+			if (binding == null || !entry.getValue().isJsonArray())
+				continue;
+			List<List<IdleCondition>> tracks = Lists.newArrayList();
+			for (JsonElement trackElement : entry.getValue().getAsJsonArray()) {
+				List<IdleCondition> conditions = Lists.newArrayList();
+				if (trackElement.isJsonArray()) {
+					for (JsonElement conditionElement : trackElement.getAsJsonArray()) {
+						if (!conditionElement.isJsonObject())
+							continue;
+						JsonObject condition = conditionElement.getAsJsonObject();
+						conditions.add(new IdleCondition(GsonHelper.getAsString(condition, "type"),
+								GsonHelper.getAsString(condition, "argument", ""),
+								GsonHelper.getAsBoolean(condition, "inverted", false)));
+					}
+				}
+				tracks.add(List.copyOf(conditions));
+			}
+			output.put(binding.serializedKey(), tracks);
+		}
+	}
+
+	private static void migrateLegacyIdleConditions()
+	{
+		for (Map.Entry<String, List<IdleCondition>> legacy : IDLE_CONDITIONS.entrySet()) {
+			if (ENTRY_CONDITIONS.containsKey(legacy.getKey()))
+				continue;
+			Binding binding = Binding.parse(legacy.getKey());
+			if (binding == null)
+				continue;
+			List<String> urls = urls(binding.kind()).getOrDefault(binding.storageKey(), List.of());
+			List<List<IdleCondition>> migrated = Lists.newArrayList();
+			for (int i = 0; i < urls.size(); i++)
+				migrated.add(List.copyOf(legacy.getValue()));
+			if (!migrated.isEmpty())
+				ENTRY_CONDITIONS.put(binding.serializedKey(), migrated);
 		}
 	}
 
@@ -891,6 +1049,23 @@ public class ServerExternalPlaylistStore
 				idleConditions.add(binding, array);
 			});
 			root.add("idle_conditions", idleConditions);
+			JsonObject entryConditions = new JsonObject();
+			ENTRY_CONDITIONS.forEach((binding, tracks) -> {
+				JsonArray trackArray = new JsonArray();
+				for (List<IdleCondition> conditions : tracks) {
+					JsonArray conditionArray = new JsonArray();
+					for (IdleCondition condition : conditions) {
+						JsonObject object = new JsonObject();
+						object.addProperty("type", condition.type());
+						object.addProperty("argument", condition.argument());
+						object.addProperty("inverted", condition.inverted());
+						conditionArray.add(object);
+					}
+					trackArray.add(conditionArray);
+				}
+				entryConditions.add(binding, trackArray);
+			});
+			root.add("entry_conditions", entryConditions);
 			JsonObject idleIntervals = new JsonObject();
 			IDLE_INTERVALS.forEach(idleIntervals::addProperty);
 			root.add("idle_intervals", idleIntervals);

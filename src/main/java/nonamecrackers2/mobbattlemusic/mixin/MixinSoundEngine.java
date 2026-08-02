@@ -10,6 +10,8 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.LocalCapture;
+import org.lwjgl.openal.AL10;
+import org.lwjgl.openal.AL11;
 
 import com.google.common.collect.Multimap;
 
@@ -22,6 +24,7 @@ import net.minecraft.sounds.SoundSource;
 import nonamecrackers2.mobbattlemusic.client.init.MobBattleMusicClientCapabilities;
 import nonamecrackers2.mobbattlemusic.client.audio.GlobalAudioFilterManager;
 import nonamecrackers2.mobbattlemusic.client.sound.MobBattleTrack;
+import nonamecrackers2.mobbattlemusic.mixin.MixinChannelAccessor;
 
 @Mixin(SoundEngine.class)
 public abstract class MixinSoundEngine
@@ -56,6 +59,39 @@ public abstract class MixinSoundEngine
 	public void mobbattlemusic$tail_tickNonPaused(CallbackInfo ci)
 	{
 		GlobalAudioFilterManager.refreshMbmChannels(this.instanceToChannel);
+		for (Map.Entry<SoundInstance, ChannelAccess.ChannelHandle> entry : this.instanceToChannel.entrySet()) {
+			if (entry.getKey() instanceof MobBattleTrack track && !track.isPreview()) {
+				long startPosition = track.beginStartPositionAttempt();
+				if (startPosition > 0L) {
+					entry.getValue().execute(channel -> {
+						boolean succeeded = false;
+						try {
+							int source = ((MixinChannelAccessor)(Object)channel).mobbattlemusic$getSource();
+							float offsetSeconds = startPosition / 1000.0F;
+							int buffer = AL10.alGetSourcei(source, AL10.AL_BUFFER);
+							if (buffer != 0) {
+								int size = AL10.alGetBufferi(buffer, AL10.AL_SIZE);
+								int channels = AL10.alGetBufferi(buffer, AL10.AL_CHANNELS);
+								int bits = AL10.alGetBufferi(buffer, AL10.AL_BITS);
+								int frequency = AL10.alGetBufferi(buffer, AL10.AL_FREQUENCY);
+								float duration = channels <= 0 || bits <= 0 || frequency <= 0 ? 0.0F :
+										size / (channels * (bits / 8.0F) * frequency);
+								if (duration > 0.0F)
+									offsetSeconds %= duration;
+							}
+							while (AL10.alGetError() != AL10.AL_NO_ERROR) {}
+							AL10.alSourcef(source, AL11.AL_SEC_OFFSET, offsetSeconds);
+							succeeded = AL10.alGetError() == AL10.AL_NO_ERROR;
+						} catch (Throwable ignored) {
+						} finally {
+							track.completeStartPositionAttempt(succeeded);
+						}
+					});
+				}
+				float volume = MobBattleTrack.isMainPlaybackMuted() ? 0.0F : this.calculateVolume(entry.getKey());
+				entry.getValue().execute(channel -> channel.setVolume(volume));
+			}
+		}
 		Minecraft mc = Minecraft.getInstance();
 		if (mc.level != null)
 		{

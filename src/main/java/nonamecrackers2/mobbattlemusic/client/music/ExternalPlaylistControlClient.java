@@ -69,6 +69,6 @@ public class ExternalPlaylistControlClient
 	{
 		Minecraft mc = Minecraft.getInstance();
 		if (mc.player != null)
-			mc.player.displayClientMessage(Component.literal("[Mob Battle Music] " + message), false);
+			mc.player.displayClientMessage(Component.literal("[Mob Battle Music] " + message), true);
 	}
 }

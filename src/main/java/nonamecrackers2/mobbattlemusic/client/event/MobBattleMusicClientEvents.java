@@ -27,12 +27,15 @@ import nonamecrackers2.mobbattlemusic.client.manager.BattleMusicManager;
 import nonamecrackers2.mobbattlemusic.client.music.ExternalMusicHandler;
 import nonamecrackers2.mobbattlemusic.client.music.IdleConditionStateClient;
 import nonamecrackers2.mobbattlemusic.client.resource.MusicTracksManager;
+import nonamecrackers2.mobbattlemusic.client.sound.MobBattleTrack;
+import nonamecrackers2.mobbattlemusic.client.util.PlayerCombatSessionClient;
 import nonamecrackers2.mobbattlemusic.client.sound.track.TrackType;
 import nonamecrackers2.mobbattlemusic.client.util.AggressiveEntityStateClient;
 
 public class MobBattleMusicClientEvents
 {
-	private static boolean wasGamePaused = false;
+	private static boolean wasMainPlaybackPaused;
+	private static boolean wasMainPlaybackMuted;
 	public static void registerConfigScreen(RegisterConfigScreensEvent event)
 	{
 		event.builder(ConfigHomeScreen.builder(ImageTitle.ofMod(MobBattleMusicMod.MODID, 512, 256, 0.5F))
@@ -62,6 +65,7 @@ public class MobBattleMusicClientEvents
 	public static void onClientLogin(ClientPlayerNetworkEvent.LoggingIn event)
 	{
 		AggressiveEntityStateClient.clear();
+		PlayerCombatSessionClient.clear();
 		IdleConditionStateClient.clear();
 		MusicTracksManager.getInstance().syncExternalPlaylistCatalogToServer();
 	}
@@ -72,6 +76,12 @@ public class MobBattleMusicClientEvents
 		AggressiveEntityStateClient.clear();
 		IdleConditionStateClient.clear();
 		AudioFilterManager.deactivate();
+		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
+		handler.getPlayer().resumeFromGame();
+		handler.getPlayer().setMutedForGame(false);
+		MobBattleTrack.setMainPlaybackMuted(false);
+		wasMainPlaybackPaused = false;
+		wasMainPlaybackMuted = false;
 	}
 	
 	@SubscribeEvent
@@ -92,22 +102,21 @@ public class MobBattleMusicClientEvents
 		{
 			if (mc.player != null)
 				AudioFilterManager.tick(mc.player);
-			// Check for game pause state changes
-			boolean isGamePaused = mc.isPaused();
-			if (isGamePaused != wasGamePaused)
-			{
-				wasGamePaused = isGamePaused;
-				
-				// Handle external music player pause/resume
-				ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
-				if (isGamePaused)
-				{
+			boolean pauseScreenOpen = mc.screen != null && mc.screen.isPauseScreen();
+			boolean pauseMainPlayback = pauseScreenOpen && mc.isSingleplayer();
+			boolean muteMainPlayback = pauseScreenOpen && !mc.isSingleplayer();
+			ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
+			if (pauseMainPlayback != wasMainPlaybackPaused) {
+				wasMainPlaybackPaused = pauseMainPlayback;
+				if (pauseMainPlayback)
 					handler.getPlayer().pauseForGame();
-				}
 				else
-				{
 					handler.getPlayer().resumeFromGame();
-				}
+			}
+			if (muteMainPlayback != wasMainPlaybackMuted) {
+				wasMainPlaybackMuted = muteMainPlayback;
+				handler.getPlayer().setMutedForGame(muteMainPlayback);
+				MobBattleTrack.setMainPlaybackMuted(muteMainPlayback);
 			}
 			
 			// Only tick the music manager when not paused

@@ -33,6 +33,7 @@ final class AudioFilterScreen extends Screen
 	private Button enabledButton;
 	private Button newButton;
 	private Button saveButton;
+	private Button entryEnabledButton;
 	private Button deleteButton;
 	private Button reloadButton;
 	private Button scopeButton;
@@ -91,10 +92,12 @@ final class AudioFilterScreen extends Screen
 		int right = this.width - 12;
 		int detailWidth = right - x;
 		boolean compact = detailWidth < 420;
+		boolean wrappedActions = detailWidth < 338;
 		int topY = 58;
 		int enabledWidth = compact ? 70 : 86;
 		int newWidth = compact ? 44 : 52;
 		int saveWidth = compact ? 44 : 52;
+		int entryEnabledWidth = compact ? 56 : 70;
 		int deleteWidth = compact ? 48 : 56;
 		int reloadWidth = compact ? 48 : 58;
 		this.enabledButton = this.addRenderableWidget(Button.builder(enabledLabel(), button -> toggleEnabled())
@@ -103,13 +106,20 @@ final class AudioFilterScreen extends Screen
 				.bounds(x + enabledWidth + 4, topY, newWidth, 20).build());
 		this.saveButton = this.addRenderableWidget(Button.builder(text("filters.button.save"), button -> saveFilter())
 				.bounds(this.newButton.getX() + newWidth + 4, topY, saveWidth, 20).build());
+		this.entryEnabledButton = this.addRenderableWidget(Button.builder(entryEnabledLabel(), button -> toggleEntryEnabled())
+				.bounds(wrappedActions ? x : this.saveButton.getX() + saveWidth + 4,
+						wrappedActions ? topY + 24 : topY, entryEnabledWidth, 20).build());
 		this.deleteButton = this.addRenderableWidget(Button.builder(text("button.delete"), button -> deleteFilter())
-				.bounds(this.saveButton.getX() + saveWidth + 4, topY, deleteWidth, 20).build());
+				.bounds(this.entryEnabledButton.getX() + entryEnabledWidth + 4, topY, deleteWidth, 20).build());
+		this.deleteButton.setY(this.entryEnabledButton.getY());
 		this.reloadButton = this.addRenderableWidget(Button.builder(text("button.refresh"), button -> reloadFilters())
 				.bounds(this.deleteButton.getX() + deleteWidth + 4, topY, reloadWidth, 20).build());
+		this.reloadButton.setY(this.entryEnabledButton.getY());
 
-		int idY = 84;
+		int idY = wrappedActions ? 108 : 84;
 		int selectorY = compact ? 108 : idY;
+		if (wrappedActions)
+			selectorY = idY + 24;
 		int scopeWidth = compact ? Math.max(70, (detailWidth - 4) / 2) : 92;
 		int typeWidth = compact ? detailWidth - scopeWidth - 4 : 104;
 		this.idBox = this.addRenderableWidget(new EditBox(this.font, x, idY + 1,
@@ -127,7 +137,7 @@ final class AudioFilterScreen extends Screen
 		this.typeButton = this.addRenderableWidget(Button.builder(typeLabel(), button -> toggleTypeDropdown())
 				.bounds(this.scopeButton.getX() + scopeWidth + 4, selectorY, typeWidth, 20).build());
 
-		int numbersY = compact ? 134 : 110;
+		int numbersY = wrappedActions ? selectorY + 26 : compact ? 134 : 110;
 		int gap = 4;
 		int numberWidth = Math.max(42, (right - x - gap * 4) / 5);
 		this.frequencyBox = numberBox(x, numbersY, numberWidth, "filters.field.frequency", STATE.frequency, 12);
@@ -170,6 +180,7 @@ final class AudioFilterScreen extends Screen
 
 		this.scopeDropdown.setItems(List.of(
 				new PlaylistDropdown.Item("mbm", text("filters.scope.mbm")),
+				new PlaylistDropdown.Item("minecraft", text("filters.scope.minecraft")),
 				new PlaylistDropdown.Item("global", text("filters.scope.global"))));
 		this.scopeDropdown.setBounds(this.scopeButton.getX(), selectorY + 20, this.scopeButton.getWidth(), this.height - 8);
 		this.typeDropdown.setItems(List.of(
@@ -243,9 +254,10 @@ final class AudioFilterScreen extends Screen
 					scopeName(entry.definition().scope()), source);
 			graphics.drawString(this.font, trim(detail.getString(), Math.max(12, width / 6)), x + 6, rowY + 18,
 					entry.runtime() ? 0xD8B878 : 0xB8C5D1, false);
+			boolean enabled = entry.runtime() || entry.definition().enabled();
 			boolean active = AudioFilterManager.activeMbmFilters().contains(entry.definition());
-			graphics.fill(x + width - 6, rowY + 5, x + width - 3, rowY + 8,
-					active ? 0xFF76D18B : 0xFF666666);
+			graphics.fill(x + width - 14, rowY + 5, x + width - 3, rowY + 16,
+					enabled ? (active ? 0xFF76D18B : 0xFFD6A84B) : 0xFF666666);
 		}
 	}
 
@@ -308,6 +320,10 @@ final class AudioFilterScreen extends Screen
 		if (index < 0 || index >= this.entries.size())
 			return false;
 		this.selected = index;
+		if (mouseX >= x + leftWidth() - 24 && !this.entries.get(index).runtime()) {
+			toggleEntryEnabled();
+			return true;
+		}
 		this.selectedCondition = 0;
 		this.conditionScroll = 0;
 		this.loadSelectedEntry();
@@ -450,12 +466,14 @@ final class AudioFilterScreen extends Screen
 			message(text("filters.message.invalid"));
 			return;
 		}
-		if (this.scope == AudioFilterDefinition.Scope.GLOBAL &&
+		if (this.scope != AudioFilterDefinition.Scope.MBM &&
 				(this.type == AudioFilterDefinition.Type.PEAK_EQ || this.type == AudioFilterDefinition.Type.LOFI)) {
 			message(text("filters.message.global_unsupported"));
 			return;
 		}
-		AudioFilterManager.putConfigDefinition(new AudioFilterDefinition(id, this.scope, this.type, frequency, q, gain,
+		Entry selected = selectedEntry();
+		boolean enabled = selected == null || selected.runtime() || selected.definition().enabled();
+		AudioFilterManager.putConfigDefinition(new AudioFilterDefinition(id, enabled, this.scope, this.type, frequency, q, gain,
 				bitDepth, sampleRate, this.draftConditions));
 		activateNow();
 		message(text("filters.message.saved", id));
@@ -500,6 +518,20 @@ final class AudioFilterScreen extends Screen
 		AudioFilterManager.setConfigEnabled(!AudioFilterManager.configEnabled());
 		activateNow();
 		this.enabledButton.setMessage(enabledLabel());
+	}
+
+	private void toggleEntryEnabled()
+	{
+		Entry entry = selectedEntry();
+		if (entry == null || entry.runtime())
+			return;
+		boolean enabled = !entry.definition().enabled();
+		AudioFilterManager.setConfigDefinitionEnabled(entry.definition().id(), enabled);
+		activateNow();
+		rebuildEntries();
+		loadSelectedEntry();
+		message(text(enabled ? "filters.message.entry_enabled" : "filters.message.entry_disabled",
+				entry.definition().id()));
 	}
 
 	private void activateNow()
@@ -609,6 +641,8 @@ final class AudioFilterScreen extends Screen
 		this.conditionDeleteButton.active = editable && !this.draftConditions.isEmpty();
 		this.saveButton.active = editable && ResourceLocation.tryParse(this.idBox.getValue().trim()) != null;
 		this.deleteButton.active = selectedEntry() != null && !this.selectedRuntime;
+		this.entryEnabledButton.active = selectedEntry() != null && !this.selectedRuntime;
+		this.entryEnabledButton.setMessage(entryEnabledLabel());
 	}
 
 	private void captureNumberValues()
@@ -673,6 +707,13 @@ final class AudioFilterScreen extends Screen
 	private Component enabledLabel()
 	{
 		return text(AudioFilterManager.configEnabled() ? "filters.enabled" : "filters.disabled");
+	}
+
+	private Component entryEnabledLabel()
+	{
+		Entry entry = selectedEntry();
+		return text(entry != null && entry.definition().enabled()
+				? "filters.button.disable_entry" : "filters.button.enable_entry");
 	}
 
 	private Component scopeLabel()
@@ -767,13 +808,14 @@ final class AudioFilterScreen extends Screen
 
 	private int filterListTop()
 	{
-		return this.width - detailX() - 12 < 420 ? 170 : 146;
+		int detailWidth = this.width - detailX() - 12;
+		return detailWidth < 338 ? 194 : detailWidth < 420 ? 170 : 146;
 	}
 
 	private void message(Component message)
 	{
 		if (this.minecraft.player != null)
-			this.minecraft.player.displayClientMessage(Component.literal("[Mob Battle Music] ").append(message), false);
+			this.minecraft.player.displayClientMessage(Component.literal("[Mob Battle Music] ").append(message), true);
 	}
 
 	private static Double parseDouble(String raw, double min, double max)

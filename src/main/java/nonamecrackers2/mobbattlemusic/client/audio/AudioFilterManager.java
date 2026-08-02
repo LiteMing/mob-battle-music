@@ -27,6 +27,7 @@ import org.apache.logging.log4j.Logger;
 public final class AudioFilterManager
 {
 	private static final Logger LOGGER = LogManager.getLogger("mobbattlemusic/AudioFilterManager");
+	private static final int PRESET_VERSION = 1;
 	private static final int MAX_STACKED_FILTERS = 8;
 	private static final Map<ResourceLocation, AudioFilterDefinition> CONFIG_DEFINITIONS = new LinkedHashMap<>();
 	private static final Map<ResourceLocation, AudioFilterDefinition> RUNTIME_DEFINITIONS = new LinkedHashMap<>();
@@ -68,6 +69,21 @@ public final class AudioFilterManager
 		saveConfig();
 	}
 
+	public static synchronized boolean isConfigDefinitionEnabled(ResourceLocation id)
+	{
+		AudioFilterDefinition definition = CONFIG_DEFINITIONS.get(id);
+		return definition != null && definition.enabled();
+	}
+
+	public static synchronized void setConfigDefinitionEnabled(ResourceLocation id, boolean enabled)
+	{
+		AudioFilterDefinition definition = CONFIG_DEFINITIONS.get(id);
+		if (definition == null)
+			return;
+		CONFIG_DEFINITIONS.put(id, definition.withEnabled(enabled));
+		saveConfig();
+	}
+
 	public static synchronized boolean removeConfigDefinition(ResourceLocation id)
 	{
 		if (CONFIG_DEFINITIONS.remove(id) == null)
@@ -94,7 +110,7 @@ public final class AudioFilterManager
 		for (AudioFilterDefinition definition : definitions()) {
 			if (next.size() >= MAX_STACKED_FILTERS)
 				break;
-			if (IdleConditionRegistry.test(player, definition.conditions()))
+			if (definition.enabled() && IdleConditionRegistry.test(player, definition.conditions()))
 				next.add(definition);
 		}
 		List<AudioFilterDefinition> immutable = List.copyOf(next);
@@ -121,7 +137,8 @@ public final class AudioFilterManager
 
 	public static List<AudioFilterDefinition> activeMbmFilters()
 	{
-		return active;
+		return active.stream().filter(definition -> definition.scope() != AudioFilterDefinition.Scope.MINECRAFT)
+				.toList();
 	}
 
 	public static synchronized void loadConfig()
@@ -142,6 +159,10 @@ public final class AudioFilterManager
 				if (definition != null)
 					CONFIG_DEFINITIONS.put(definition.id(), definition);
 			}
+			if (GsonHelper.getAsInt(root, "preset_version", 0) < PRESET_VERSION) {
+				addMissingPresets();
+				saveConfig();
+			}
 		} catch (Exception e) {
 			LOGGER.error("Failed to load audio filters from {}", path, e);
 		}
@@ -151,10 +172,12 @@ public final class AudioFilterManager
 	{
 		JsonObject root = new JsonObject();
 		root.addProperty("enabled", configEnabled);
+		root.addProperty("preset_version", PRESET_VERSION);
 		JsonArray filters = new JsonArray();
 		for (AudioFilterDefinition definition : CONFIG_DEFINITIONS.values()) {
 			JsonObject object = new JsonObject();
 			object.addProperty("id", definition.id().toString());
+			object.addProperty("enabled", definition.enabled());
 			object.addProperty("scope", definition.scope().getSerializedName());
 			object.addProperty("type", definition.type().getSerializedName());
 			object.addProperty("frequency_hz", definition.frequencyHz());
@@ -209,7 +232,7 @@ public final class AudioFilterManager
 						GsonHelper.getAsString(condition, "argument", ""),
 						GsonHelper.getAsBoolean(condition, "inverted", false)));
 			}
-			return new AudioFilterDefinition(id, scope, type,
+			return new AudioFilterDefinition(id, GsonHelper.getAsBoolean(object, "enabled", true), scope, type,
 					GsonHelper.getAsDouble(object, "frequency_hz", 1_000.0D),
 					GsonHelper.getAsDouble(object, "q", 0.707D),
 					GsonHelper.getAsDouble(object, "gain_db", 0.0D),
@@ -225,21 +248,14 @@ public final class AudioFilterManager
 	{
 		JsonObject root = new JsonObject();
 		root.addProperty("enabled", false);
+		root.addProperty("preset_version", PRESET_VERSION);
 		JsonArray filters = new JsonArray();
-		JsonObject underwater = new JsonObject();
-		underwater.addProperty("id", "mobbattlemusic:underwater_low_pass");
-		underwater.addProperty("scope", "mbm");
-		underwater.addProperty("type", "low_pass");
-		underwater.addProperty("frequency_hz", 900);
-		underwater.addProperty("q", 0.707D);
-		JsonArray conditions = new JsonArray();
-		JsonObject condition = new JsonObject();
-		condition.addProperty("type", "mobbattlemusic:underwater");
-		condition.addProperty("argument", "");
-		condition.addProperty("inverted", false);
-		conditions.add(condition);
-		underwater.add("conditions", conditions);
-		filters.add(underwater);
+		filters.add(defaultFilter("mobbattlemusic:underwater_low_pass", "low_pass", 900.0D, 12, 22_050,
+				"mobbattlemusic:underwater", ""));
+		filters.add(defaultFilter("mobbattlemusic:nether_high_pass", "high_pass", 250.0D, 12, 22_050,
+				"mobbattlemusic:dimension", "minecraft:the_nether"));
+		filters.add(defaultFilter("mobbattlemusic:end_lofi", "lofi", 1_000.0D, 10, 12_000,
+				"mobbattlemusic:dimension", "minecraft:the_end"));
 		root.add("filters", filters);
 		try {
 			Files.createDirectories(path.getParent());
@@ -247,6 +263,48 @@ public final class AudioFilterManager
 		} catch (IOException e) {
 			LOGGER.warn("Failed to create default audio filter config at {}", path, e);
 		}
+	}
+
+	private static void addMissingPresets()
+	{
+		putMissingPreset("mobbattlemusic:underwater_low_pass", AudioFilterDefinition.Type.LOW_PASS, 900.0D,
+				12, 22_050, "mobbattlemusic:underwater", "");
+		putMissingPreset("mobbattlemusic:nether_high_pass", AudioFilterDefinition.Type.HIGH_PASS, 250.0D,
+				12, 22_050, "mobbattlemusic:dimension", "minecraft:the_nether");
+		putMissingPreset("mobbattlemusic:end_lofi", AudioFilterDefinition.Type.LOFI, 1_000.0D,
+				10, 12_000, "mobbattlemusic:dimension", "minecraft:the_end");
+	}
+
+	private static void putMissingPreset(String id, AudioFilterDefinition.Type type, double frequency, int bitDepth,
+			int sampleRate, String conditionType, String conditionArgument)
+	{
+		ResourceLocation location = new ResourceLocation(id);
+		CONFIG_DEFINITIONS.putIfAbsent(location, new AudioFilterDefinition(location, false,
+				AudioFilterDefinition.Scope.MBM, type, frequency, 0.707D, 0.0D, bitDepth, sampleRate,
+				List.of(new IdleCondition(conditionType, conditionArgument, false))));
+	}
+
+	private static JsonObject defaultFilter(String id, String type, double frequency, int bitDepth, int sampleRate,
+			String conditionType, String conditionArgument)
+	{
+		JsonObject filter = new JsonObject();
+		filter.addProperty("id", id);
+		filter.addProperty("enabled", false);
+		filter.addProperty("scope", "mbm");
+		filter.addProperty("type", type);
+		filter.addProperty("frequency_hz", frequency);
+		filter.addProperty("q", 0.707D);
+		filter.addProperty("gain_db", 0.0D);
+		filter.addProperty("bit_depth", bitDepth);
+		filter.addProperty("sample_rate_hz", sampleRate);
+		JsonObject condition = new JsonObject();
+		condition.addProperty("type", conditionType);
+		condition.addProperty("argument", conditionArgument);
+		condition.addProperty("inverted", false);
+		JsonArray conditions = new JsonArray();
+		conditions.add(condition);
+		filter.add("conditions", conditions);
+		return filter;
 	}
 
 	private static Path configPath()

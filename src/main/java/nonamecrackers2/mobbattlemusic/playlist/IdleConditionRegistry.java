@@ -23,12 +23,18 @@ public final class IdleConditionRegistry
 
 	static {
 		register(MobBattleMusicMod.id("dimension"), "Dimension", (player, argument) ->
-				player.level().dimension().location().toString().equals(argument));
+				matchesLocation(player.level().dimension().location(), argument));
 		register(MobBattleMusicMod.id("biome"), "Biome", (player, argument) ->
 				player.level().getBiome(player.blockPosition()).unwrapKey()
 						.map(key -> key.location().toString().equals(argument)).orElse(false));
 		register(MobBattleMusicMod.id("structure"), "Structure", IdleConditionRegistry::insideStructure);
 		register(MobBattleMusicMod.id("underwater"), "Underwater", (player, argument) -> player.isUnderWater());
+	}
+
+	private static boolean matchesLocation(ResourceLocation location, String argument)
+	{
+		return location.toString().equals(argument) ||
+				!argument.contains(":") && location.getPath().equals(argument);
 	}
 
 	private IdleConditionRegistry() {}

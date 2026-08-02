@@ -47,8 +47,8 @@ public final class ServerTimelineMarkerStore
 		markers.sort(Comparator.comparingLong(TimelineMarker::timeMillis));
 		save(source.getServer());
 		ServerExternalPlaylistStore.syncAll(source.getServer());
-		source.sendSuccess(() -> Component.literal("Added timeline marker for " + playlist + " track #" +
-				(trackIndex + 1) + " at " + timeMillis + " ms"), true);
+		MobBattleMusicCommandFeedback.success(source, Component.literal("Added timeline marker for " + playlist +
+				" track #" + (trackIndex + 1) + " at " + timeMillis + " ms"));
 		return 1;
 	}
 
@@ -69,7 +69,8 @@ public final class ServerTimelineMarkerStore
 			MARKERS.remove(playlist.toString());
 		save(source.getServer());
 		ServerExternalPlaylistStore.syncAll(source.getServer());
-		source.sendSuccess(() -> Component.literal("Deleted timeline marker #" + (markerIndex + 1)), true);
+		MobBattleMusicCommandFeedback.success(source,
+				Component.literal("Deleted timeline marker #" + (markerIndex + 1)));
 		return 1;
 	}
 

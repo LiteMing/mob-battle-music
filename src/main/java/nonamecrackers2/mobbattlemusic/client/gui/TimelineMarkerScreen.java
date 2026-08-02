@@ -35,6 +35,8 @@ final class TimelineMarkerScreen extends Screen
 
 	private final Screen parent;
 	private final MusicPlaylistScreen.EditMode editMode;
+	private final ResourceLocation preferredPlaylist;
+	private final int preferredEntryIndex;
 	private final List<Track> tracks = new ArrayList<>();
 	private Button modeButton;
 	private Button previewButton;
@@ -55,6 +57,18 @@ final class TimelineMarkerScreen extends Screen
 		super(text("timeline.title"));
 		this.parent = parent;
 		this.editMode = editMode;
+		this.preferredPlaylist = null;
+		this.preferredEntryIndex = -1;
+	}
+
+	TimelineMarkerScreen(Screen parent, MusicPlaylistScreen.EditMode editMode, ResourceLocation playlist,
+			int entryIndex)
+	{
+		super(text("timeline.title"));
+		this.parent = parent;
+		this.editMode = editMode;
+		this.preferredPlaylist = playlist;
+		this.preferredEntryIndex = entryIndex;
 	}
 
 	static void refreshIfOpen()
@@ -73,18 +87,18 @@ final class TimelineMarkerScreen extends Screen
 		this.trackScroll = state.trackScroll;
 		this.markerScroll = state.markerScroll;
 		this.rebuildTracks();
-		for (Button tab : PlaylistTabs.create(this.width, PlaylistTabs.Tab.TIMELINE, this::navigateTo))
-			this.addRenderableWidget(tab);
-		this.modeButton = this.addRenderableWidget(Button.builder(modeLabel(), button -> switchMode())
-				.bounds(this.width - 112, 6, 100, 20).build());
+		selectPreferredTrack();
+		if (!compactEditor())
+			this.modeButton = this.addRenderableWidget(Button.builder(modeLabel(), button -> switchMode())
+					.bounds(this.width - 112, 6, 100, 20).build());
 
 		int x = detailX();
-		boolean compact = this.width - x - 12 < 420;
+		boolean compact = compactEditor() || detailRight() - x < 420;
 		this.previewButton = this.addRenderableWidget(Button.builder(text("button.preview"), button -> previewSelected())
-				.bounds(x, 58, 64, 20).build());
+				.bounds(x, contentTop() + 2, 64, 20).build());
 		this.stopButton = this.addRenderableWidget(Button.builder(text("button.stop"), button -> stopPreview())
-				.bounds(x + 68, 58, 54, 20).build());
-		int bottomY = this.height - 28;
+				.bounds(x + 68, contentTop() + 2, 54, 20).build());
+		int bottomY = bottomControlsY();
 		int timeWidth = compact ? 60 : 72;
 		int addWidth = compact ? 42 : 50;
 		int deleteWidth = compact ? 42 : 54;
@@ -100,7 +114,7 @@ final class TimelineMarkerScreen extends Screen
 			this.scrubbedTime = true;
 			updateButtonState();
 		});
-		int eventWidth = Math.max(48, this.width - 12 - x - timeWidth - addWidth - deleteWidth - doneWidth - 16);
+		int eventWidth = Math.max(48, detailRight() - x - timeWidth - addWidth - deleteWidth - doneWidth - 16);
 		this.markerEventBox = this.addRenderableWidget(new EditBox(this.font, x + timeWidth + 4, bottomY + 1, eventWidth, 18,
 				text("field.marker_event")));
 		this.markerEventBox.setMaxLength(128);
@@ -116,16 +130,33 @@ final class TimelineMarkerScreen extends Screen
 		this.deleteMarkerButton = this.addRenderableWidget(Button.builder(text("button.marker_delete"), button -> deleteMarker())
 				.bounds(actionsX + addWidth + 4, bottomY, deleteWidth, 20).build());
 		this.addRenderableWidget(Button.builder(text("button.done"), button -> closeToParent())
-				.bounds(this.width - 12 - doneWidth, bottomY, doneWidth, 20).build());
+				.bounds(detailRight() - doneWidth, bottomY, doneWidth, 20).build());
 		this.updateButtonState();
+	}
+
+	private void selectPreferredTrack()
+	{
+		if (this.preferredPlaylist == null)
+			return;
+		for (int i = 0; i < this.tracks.size(); i++) {
+			Track track = this.tracks.get(i);
+			if (track.playlist().equals(this.preferredPlaylist) && track.entryIndex() == this.preferredEntryIndex) {
+				this.selectedTrack = i;
+				break;
+			}
+		}
 	}
 
 	@Override
 	public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick)
 	{
 		this.renderBackground(graphics);
-		graphics.drawString(this.font, this.title, 12, 10, 0xFFFFFF, false);
-		renderTrackList(graphics, mouseX, mouseY);
+		if (compactEditor())
+			graphics.fill(panelLeft(), panelTop(), panelRight(), panelBottom(), 0xEE10151A);
+		graphics.drawString(this.font, this.title, compactEditor() ? panelLeft() + 8 : 12,
+				compactEditor() ? panelTop() + 8 : 10, 0xFFFFFF, false);
+		if (!compactEditor())
+			renderTrackList(graphics, mouseX, mouseY);
 		renderTimelinePanel(graphics, mouseX, mouseY);
 		super.render(graphics, mouseX, mouseY, partialTick);
 	}
@@ -161,20 +192,20 @@ final class TimelineMarkerScreen extends Screen
 	private void renderTimelinePanel(GuiGraphics graphics, int mouseX, int mouseY)
 	{
 		int x = detailX();
-		int right = this.width - 12;
-		int top = 56;
-		int bottom = this.height - 34;
+		int right = detailRight();
+		int top = contentTop();
+		int bottom = contentBottom();
 		graphics.fill(x - 2, top - 2, right, bottom + 2, 0x90000000);
 		Track track = selectedTrack();
 		if (track == null) {
 			graphics.drawString(this.font, text("timeline.select_track"), x + 8, 86, 0xA0A0A0, false);
 			return;
 		}
-		graphics.drawString(this.font, trim(track.title(), Math.max(16, (right - x) / 6)), x + 132, 64,
+		graphics.drawString(this.font, trim(track.title(), Math.max(16, (right - x - 132) / 6)), x + 132, top + 8,
 				0xFFFFFF, false);
 		long position = previewPosition(track);
 		long duration = previewDuration(track);
-		int timelineY = 106;
+		int timelineY = top + 50;
 		String time = formatDuration(position) + " / " + (duration > 0L ? formatDuration(duration) : "--:--");
 		graphics.drawString(this.font, text("preview.progress", time), x, timelineY - 14, 0xD8D8D8, false);
 		graphics.fill(x, timelineY, right, timelineY + 9, 0xD0202020);
@@ -196,8 +227,8 @@ final class TimelineMarkerScreen extends Screen
 		}
 		graphics.fill(x + Math.max(0, filled - 1), timelineY - 1, x + filled + 1, timelineY + 10, 0xFFE8F4F8);
 
-		int listTop = 132;
-		int listBottom = this.height - 36;
+		int listTop = timelineY + 26;
+		int listBottom = contentBottom();
 		graphics.drawString(this.font, text("timeline.markers", markers.size()), x, listTop - 12, 0xA0A0A0, false);
 		int rowHeight = 20;
 		int visible = Math.max(1, (listBottom - listTop) / rowHeight);
@@ -234,15 +265,15 @@ final class TimelineMarkerScreen extends Screen
 		Track track = selectedTrack();
 		long duration = previewDuration(track);
 		int x = detailX();
-		int right = this.width - 12;
-		int y = 106;
+		int right = detailRight();
+		int y = contentTop() + 50;
 		if (track == null || duration <= 0L || mouseX < x || mouseX > right || mouseY < y - 5 || mouseY > y + 14)
 			return false;
 		double progress = (mouseX - x) / Math.max(1.0D, right - x);
 		long position = Math.round(duration * Math.max(0.0D, Math.min(1.0D, progress)));
 		this.scrubbedTime = true;
 		this.markerTimeBox.setValue(String.valueOf(position));
-		ExternalMusicHandler.getInstance().seekMusic(position);
+		ExternalMusicHandler.getInstance().seekPreviewMusic(position);
 		List<TimelineMarker> markers = markers(track);
 		for (int i = 0; i < markers.size(); i++) {
 			if (Math.abs(markers.get(i).timeMillis() - position) <= Math.max(250L, duration / 150L)) {
@@ -256,6 +287,8 @@ final class TimelineMarkerScreen extends Screen
 
 	private boolean selectTrackRow(double mouseX, double mouseY)
 	{
+		if (compactEditor())
+			return false;
 		int x = 12;
 		int y = 56;
 		if (mouseX < x || mouseX >= x + leftWidth() || mouseY < y || mouseY >= this.height - 34)
@@ -280,8 +313,8 @@ final class TimelineMarkerScreen extends Screen
 		if (track == null)
 			return false;
 		int x = detailX();
-		int y = 132;
-		if (mouseX < x || mouseX >= this.width - 12 || mouseY < y || mouseY >= this.height - 36)
+		int y = contentTop() + 76;
+		if (mouseX < x || mouseX >= detailRight() || mouseY < y || mouseY >= contentBottom())
 			return false;
 		List<TimelineMarker> markers = markers(track);
 		int index = this.markerScroll + (int)((mouseY - y) / 20);
@@ -291,7 +324,7 @@ final class TimelineMarkerScreen extends Screen
 		this.scrubbedTime = true;
 		this.markerTimeBox.setValue(String.valueOf(markers.get(index).timeMillis()));
 		if (previewDuration(track) > 0L)
-			ExternalMusicHandler.getInstance().seekMusic(markers.get(index).timeMillis());
+			ExternalMusicHandler.getInstance().seekPreviewMusic(markers.get(index).timeMillis());
 		this.updateButtonState();
 		return true;
 	}
@@ -299,7 +332,7 @@ final class TimelineMarkerScreen extends Screen
 	@Override
 	public boolean mouseScrolled(double mouseX, double mouseY, double delta)
 	{
-		if (mouseX < detailX())
+		if (!compactEditor() && mouseX < detailX())
 			this.trackScroll = Math.max(0, this.trackScroll - (int)Math.signum(delta));
 		else
 			this.markerScroll = Math.max(0, this.markerScroll - (int)Math.signum(delta));
@@ -312,7 +345,7 @@ final class TimelineMarkerScreen extends Screen
 		super.tick();
 		Track track = selectedTrack();
 		if (!this.markerTimeBox.isFocused() && isPreviewing(track)) {
-			this.markerTimeBox.setValue(String.valueOf(ExternalMusicHandler.getInstance().getPositionMillis()));
+			this.markerTimeBox.setValue(String.valueOf(ExternalMusicHandler.getInstance().getPreviewPositionMillis()));
 			this.scrubbedTime = false;
 		}
 		if (this.syncRefreshCooldown > 0 && --this.syncRefreshCooldown == 0)
@@ -451,17 +484,17 @@ final class TimelineMarkerScreen extends Screen
 	private boolean isPreviewing(Track track)
 	{
 		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
-		return track != null && handler.isPreviewing() && track.entry().url().equals(handler.getCurrentlyPlayingUrl());
+		return track != null && handler.isPreviewing() && track.entry().url().equals(handler.getPreviewUrl());
 	}
 
 	private long previewPosition(Track track)
 	{
-		return isPreviewing(track) ? ExternalMusicHandler.getInstance().getPositionMillis() : 0L;
+		return isPreviewing(track) ? ExternalMusicHandler.getInstance().getPreviewPositionMillis() : 0L;
 	}
 
 	private long previewDuration(Track track)
 	{
-		return isPreviewing(track) ? ExternalMusicHandler.getInstance().getDurationMillis() : 0L;
+		return isPreviewing(track) ? ExternalMusicHandler.getInstance().getPreviewDurationMillis() : 0L;
 	}
 
 	private Track selectedTrack()
@@ -513,13 +546,58 @@ final class TimelineMarkerScreen extends Screen
 
 	private int leftWidth()
 	{
-		return this.width < 600 ? Math.max(110, Math.min(140, this.width / 4))
-				: Math.max(150, Math.min(280, this.width / 3));
+		return this.width < 600 ? Math.max(96, Math.min(120, this.width / 4))
+				: Math.max(130, Math.min(220, this.width / 4));
 	}
 
 	private int detailX()
 	{
-		return 20 + leftWidth();
+		return compactEditor() ? panelLeft() + 12 : 20 + leftWidth();
+	}
+
+	private boolean compactEditor()
+	{
+		return this.preferredPlaylist != null;
+	}
+
+	private int panelLeft()
+	{
+		return Math.max(12, (this.width - Math.min(520, this.width - 24)) / 2);
+	}
+
+	private int panelRight()
+	{
+		return this.width - panelLeft();
+	}
+
+	private int panelTop()
+	{
+		return Math.max(18, (this.height - Math.min(260, this.height - 36)) / 2);
+	}
+
+	private int panelBottom()
+	{
+		return this.height - panelTop();
+	}
+
+	private int detailRight()
+	{
+		return compactEditor() ? panelRight() - 12 : this.width - 12;
+	}
+
+	private int contentTop()
+	{
+		return compactEditor() ? panelTop() + 30 : 56;
+	}
+
+	private int contentBottom()
+	{
+		return compactEditor() ? panelBottom() - 34 : this.height - 34;
+	}
+
+	private int bottomControlsY()
+	{
+		return compactEditor() ? panelBottom() - 26 : this.height - 28;
 	}
 
 	private Component modeLabel()
@@ -535,7 +613,7 @@ final class TimelineMarkerScreen extends Screen
 	private void message(Component message)
 	{
 		if (this.minecraft.player != null)
-			this.minecraft.player.displayClientMessage(Component.literal("[Mob Battle Music] ").append(message), false);
+			this.minecraft.player.displayClientMessage(Component.literal("[Mob Battle Music] ").append(message), true);
 	}
 
 	private static Long parseLong(String raw, long min, long max)

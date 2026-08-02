@@ -33,12 +33,15 @@ import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.item.TieredItem;
 import nonamecrackers2.mobbattlemusic.client.config.MobBattleMusicConfig;
 import nonamecrackers2.mobbattlemusic.client.music.ExternalMusicHandler;
+import nonamecrackers2.mobbattlemusic.client.music.MusicMetadataCache;
 import nonamecrackers2.mobbattlemusic.client.music.TimelineMarkerStore;
 import nonamecrackers2.mobbattlemusic.client.resource.MusicTracksManager;
 import nonamecrackers2.mobbattlemusic.client.sound.ExternalUrlMusicTrack;
 import nonamecrackers2.mobbattlemusic.client.sound.MobBattleTrack;
+import nonamecrackers2.mobbattlemusic.client.sound.MobBattleMusicSounds;
 import nonamecrackers2.mobbattlemusic.client.sound.track.TrackType;
 import nonamecrackers2.mobbattlemusic.client.util.AggressiveEntityStateClient;
+import nonamecrackers2.mobbattlemusic.client.util.PlayerCombatSessionClient;
 import nonamecrackers2.mobbattlemusic.client.util.MobBattleMusicCompat;
 import nonamecrackers2.mobbattlemusic.client.util.MobSelection;
 import nonamecrackers2.mobbattlemusic.mixin.MixinAbstractSoundInstance;
@@ -71,6 +74,10 @@ public class BattleMusicManager {
 	private final Map<ResourceLocation, Long> idleNextStartMillis = Maps.newHashMap();
 	private final Map<ResourceLocation, ResumeState> externalResumeStates = Maps.newHashMap();
 	private long idleSuppressedUntilMillis;
+	private boolean initialIdleCooldownApplied;
+	private java.util.UUID reportedPlayerOpponent;
+	private int playerSessionReportCooldown;
+	private boolean playerSessionReportInitialized;
 	private @Nullable ResourceLocation timelineTrack;
 	private String timelineUrl = "";
 	private long timelineLastPosition = -1L;
@@ -117,9 +124,6 @@ public class BattleMusicManager {
 	}
 
 	public void tick() {
-		if (ExternalMusicHandler.getInstance().isPreviewing())
-			return;
-
 		// Handle threat timers
 		boolean flag = true;
 		if (this.panickingFrom != null) {
@@ -146,6 +150,7 @@ public class BattleMusicManager {
 		MobBattleMusicCompat.YoukaiStgCombat youkaiStgCombat =
 				MobBattleMusicCompat.getYoukaiHomecomingStgCombat(this.minecraft.player);
 		LivingEntity youkaiStgTarget = youkaiStgCombat.sessionTarget();
+		reportPlayerCombatSession(youkaiStgCombat);
 		if (youkaiStgTarget != null && !(youkaiStgTarget instanceof Player) && youkaiStgTarget.isAlive()
 				&& !(this.panickingFrom instanceof Player)) {
 			this.panic(youkaiStgTarget, MobBattleMusicConfig.CLIENT.threatReevaluationCooldown.get() * 20);
@@ -220,6 +225,7 @@ public class BattleMusicManager {
 		List<TrackType> tracks = MusicTracksManager.getInstance().getTracks();
 
 		long now = System.currentTimeMillis();
+		initializeIdleCooldowns(tracks, now);
 		TrackType priority = null;
 		for (TrackType type : tracks) {
 			if (type.canPlay(selection) && isStartAllowed(type, now)) {
@@ -293,9 +299,20 @@ public class BattleMusicManager {
 
 		if (tracksManager.isExternalUrl(trackLocation)) {
 			// Handle external URL track
+			long synchronizedPosition = allowNewTracks
+					? synchronizeCombatPlayback(type, trackLocation, tracksManager) : 0L;
 			String url = tracksManager.getExternalUrl(trackLocation);
+			ExternalUrlMusicTrack externalTrack = this.externalTracks.get(type);
+			if (url == null) {
+				if (externalTrack != null) {
+					externalTrack.stop();
+					this.externalTracks.remove(type);
+					tracksManager.clearExternalSessionSelection(trackLocation);
+					scheduleIdleNextStart(type);
+				}
+				return;
+			}
 			if (url != null) {
-				ExternalUrlMusicTrack externalTrack = this.externalTracks.get(type);
 				if (externalTrack != null && externalTrack.isStopped()) {
 					this.externalTracks.remove(type);
 					tracksManager.clearExternalSessionSelection(trackLocation);
@@ -322,6 +339,8 @@ public class BattleMusicManager {
 							return;
 						stopOtherExternalTracks(type, tracksManager);
 						long resumePosition = consumeExternalResume(trackLocation, url);
+						if (resumePosition <= 0L)
+							resumePosition = wrapSynchronizedPosition(url, synchronizedPosition);
 						externalTrack = new ExternalUrlMusicTrack(url, type.getFadeTime(), resumePosition);
 						externalTrack.play();
 						this.externalTracks.put(type, externalTrack);
@@ -355,7 +374,17 @@ public class BattleMusicManager {
 			}
 		} else {
 			// Handle normal Minecraft sound track
+			long synchronizedPosition = allowNewTracks
+					? synchronizeCombatPlayback(type, trackLocation, tracksManager) : 0L;
+			boolean soundPlaylist = tracksManager.isSoundPlaylist(trackLocation);
 			ResourceLocation soundTrackLocation = tracksManager.selectSoundTrack(trackLocation);
+			if (soundPlaylist && soundTrackLocation == null) {
+				MobBattleTrack existingTrack = this.tracks.remove(type);
+				if (existingTrack != null)
+					existingTrack.stop();
+				tracksManager.clearSoundSessionSelection(trackLocation);
+				return;
+			}
 			ResourceLocation resolvedTrackLocation = soundTrackLocation != null ? soundTrackLocation : trackLocation;
 			MobBattleTrack track = null;
 			MobBattleTrack existingTrack = this.tracks.get(type);
@@ -370,7 +399,7 @@ public class BattleMusicManager {
 					&& this.minecraft.options.getSoundSourceVolume(SoundSource.MASTER) > 0.0F) {
 				track = this.tracks.computeIfAbsent(type, t -> {
 					MobBattleTrack newTrack = new MobBattleTrack(resolvedTrackLocation, type.getFadeTime(),
-							!type.isIdlePlayback());
+							!type.isIdlePlayback(), false, synchronizedPosition);
 					this.minecraft.getSoundManager().play(newTrack);
 					this.notifyTrackSwitch(tracksManager.describeTrack(trackLocation, resolvedTrackLocation.toString()));
 					LOGGER.debug("Beginning track {}", type);
@@ -388,10 +417,98 @@ public class BattleMusicManager {
 
 	private boolean isStartAllowed(TrackType type, long now)
 	{
+		if (!MusicTracksManager.getInstance().hasPlayableMusicEntries(type.getTrack()))
+			return false;
+		if (this.reportedPlayerOpponent != null && isPlayerTrack(type.getTrack()) &&
+				PlayerCombatSessionClient.startTick(this.reportedPlayerOpponent) < 0L)
+			return false;
 		if (!type.isIdlePlayback())
 			return true;
 		return now >= this.idleSuppressedUntilMillis &&
 				now >= this.idleNextStartMillis.getOrDefault(type.getTrack(), 0L);
+	}
+
+	private boolean isPlayerTrack(ResourceLocation trackLocation)
+	{
+		MusicTracksManager.DynamicBinding binding = MusicTracksManager.getInstance().editableBinding(trackLocation);
+		return trackLocation.equals(MobBattleMusicSounds.PLAYER_TRACK) ||
+				binding != null && "player".equals(binding.scene());
+	}
+
+	private void initializeIdleCooldowns(List<TrackType> tracks, long now)
+	{
+		if (this.initialIdleCooldownApplied)
+			return;
+		this.initialIdleCooldownApplied = true;
+		for (TrackType type : tracks) {
+			if (!type.isIdlePlayback())
+				continue;
+			int interval = type.getPlaybackIntervalSeconds();
+			if (interval <= 0)
+				interval = Math.max(5, MobBattleMusicConfig.CLIENT.idleResumeDelay.get());
+			double jitter = 0.9D + this.level.random.nextDouble() * 0.2D;
+			this.idleNextStartMillis.put(type.getTrack(), now + Math.round(interval * 1000.0D * jitter));
+		}
+	}
+
+	private long synchronizeCombatPlayback(TrackType type, ResourceLocation trackLocation,
+			MusicTracksManager tracksManager)
+	{
+		if (type.isIdlePlayback())
+			return 0L;
+		MusicTracksManager.DynamicBinding binding = tracksManager.editableBinding(trackLocation);
+		java.util.UUID playerOpponent = this.panickingFrom instanceof Player player
+				? player.getUUID() : this.reportedPlayerOpponent;
+		boolean playerTrack = isPlayerTrack(trackLocation);
+		if (playerTrack && playerOpponent != null) {
+			long startTick = PlayerCombatSessionClient.startTick(playerOpponent);
+			if (startTick < 0L)
+				return 0L;
+			long seed = startTick ^ this.minecraft.player.getUUID().getMostSignificantBits() ^
+					this.minecraft.player.getUUID().getLeastSignificantBits() ^
+					playerOpponent.getMostSignificantBits() ^ playerOpponent.getLeastSignificantBits() ^
+					trackLocation.hashCode();
+			tracksManager.synchronizeSessionSelection(trackLocation, seed);
+			return Math.max(0L, this.level.getGameTime() - startTick) * 50L;
+		}
+		if (this.panickingFrom == null)
+			return 0L;
+		if (binding != null && !"aggressive".equals(binding.scene()))
+			return 0L;
+		long startTick = AggressiveEntityStateClient.startTick(this.panickingFrom.getUUID());
+		if (startTick < 0L)
+			return 0L;
+		long seed = startTick ^ this.panickingFrom.getUUID().getMostSignificantBits() ^
+				this.panickingFrom.getUUID().getLeastSignificantBits() ^ trackLocation.hashCode();
+		tracksManager.synchronizeSessionSelection(trackLocation, seed);
+		return Math.max(0L, this.level.getGameTime() - startTick) * 50L;
+	}
+
+	private void reportPlayerCombatSession(MobBattleMusicCompat.YoukaiStgCombat combat)
+	{
+		java.util.UUID opponent = combat.playerOpponent() && combat.sessionTarget() instanceof Player player
+				? player.getUUID() : this.panickingFrom instanceof Player player ? player.getUUID() : null;
+		if (this.playerSessionReportCooldown > 0)
+			this.playerSessionReportCooldown--;
+		if (java.util.Objects.equals(opponent, this.reportedPlayerOpponent) && this.playerSessionReportInitialized) {
+			if (opponent == null || this.playerSessionReportCooldown > 0)
+				return;
+		}
+		this.reportedPlayerOpponent = opponent;
+		this.playerSessionReportInitialized = true;
+		this.playerSessionReportCooldown = 10;
+		MobBattleMusicNetwork.reportPlayerCombatSession(opponent);
+		if (opponent == null)
+			PlayerCombatSessionClient.clear();
+	}
+
+	private static long wrapSynchronizedPosition(String url, long position)
+	{
+		if (position <= 0L)
+			return 0L;
+		long duration = MusicMetadataCache.getInstance().get(url)
+				.map(metadata -> metadata.durationMillis()).orElse(0L);
+		return duration > 1L ? position % duration : position;
 	}
 
 	private void scheduleIdleNextStart(TrackType type)

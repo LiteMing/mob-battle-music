@@ -1,7 +1,7 @@
 package nonamecrackers2.mobbattlemusic.client.music;
 
 public record MusicMetadata(String sourceUrl, String songId, String title, String artist, String album,
-		String coverUrl, String coverFileName)
+		String coverUrl, String coverFileName, long durationMillis)
 {
 	public String displayTitle(String fallback)
 	{

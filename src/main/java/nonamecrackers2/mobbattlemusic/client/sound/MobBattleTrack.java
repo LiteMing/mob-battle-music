@@ -10,7 +10,12 @@ import nonamecrackers2.mobbattlemusic.client.manager.BattleMusicManager;
 public class MobBattleTrack extends AbstractSoundInstance implements TickableSoundInstance
 {
 	public static final int MAX_EMPTY_TIME = 300;
+	private static volatile boolean mainPlaybackMuted;
 	private final int fadeTime;
+	private final boolean preview;
+	private final long startPositionMillis;
+	private boolean startPositionPending;
+	private boolean startPositionAttempting;
 	private float targetedVolume = 1.0F;
 	private int emptyTime;
 	private boolean stopped;
@@ -22,8 +27,22 @@ public class MobBattleTrack extends AbstractSoundInstance implements TickableSou
 
 	public MobBattleTrack(ResourceLocation sound, int fadeTime, boolean looping)
 	{
+		this(sound, fadeTime, looping, false);
+	}
+
+	public MobBattleTrack(ResourceLocation sound, int fadeTime, boolean looping, boolean preview)
+	{
+		this(sound, fadeTime, looping, preview, 0L);
+	}
+
+	public MobBattleTrack(ResourceLocation sound, int fadeTime, boolean looping, boolean preview,
+			long startPositionMillis)
+	{
 		super(sound, BattleMusicManager.DEFAULT_SOUND_SOURCE, SoundInstance.createUnseededRandom());
 		this.fadeTime = fadeTime;
+		this.preview = preview;
+		this.startPositionMillis = Math.max(0L, startPositionMillis);
+		this.startPositionPending = this.startPositionMillis > 0L;
 		this.looping = looping;
 		this.delay = 0;
 		this.volume = 0.0F;
@@ -48,9 +67,44 @@ public class MobBattleTrack extends AbstractSoundInstance implements TickableSou
 		this.targetedVolume = volume;
 	}
 
+	public static MobBattleTrack preview(ResourceLocation sound, int fadeTime)
+	{
+		return new MobBattleTrack(sound, fadeTime, true, true);
+	}
+
+	public boolean isPreview()
+	{
+		return this.preview;
+	}
+
+	public static boolean isMainPlaybackMuted()
+	{
+		return mainPlaybackMuted;
+	}
+
+	public static void setMainPlaybackMuted(boolean muted)
+	{
+		mainPlaybackMuted = muted;
+	}
+
 	public ResourceLocation getTrackLocation()
 	{
 		return this.location;
+	}
+
+	public synchronized long beginStartPositionAttempt()
+	{
+		if (!this.startPositionPending || this.startPositionAttempting)
+			return 0L;
+		this.startPositionAttempting = true;
+		return this.startPositionMillis;
+	}
+
+	public synchronized void completeStartPositionAttempt(boolean succeeded)
+	{
+		if (succeeded)
+			this.startPositionPending = false;
+		this.startPositionAttempting = false;
 	}
 	
 	@Override

@@ -6,7 +6,7 @@ import java.util.Locale;
 import net.minecraft.resources.ResourceLocation;
 import nonamecrackers2.mobbattlemusic.playlist.IdleCondition;
 
-public record AudioFilterDefinition(ResourceLocation id, Scope scope, Type type, double frequencyHz, double q,
+public record AudioFilterDefinition(ResourceLocation id, boolean enabled, Scope scope, Type type, double frequencyHz, double q,
 		double gainDb, int bitDepth, int sampleRateHz, List<IdleCondition> conditions)
 {
 	public AudioFilterDefinition
@@ -19,6 +19,12 @@ public record AudioFilterDefinition(ResourceLocation id, Scope scope, Type type,
 		conditions = List.copyOf(conditions);
 	}
 
+	public AudioFilterDefinition withEnabled(boolean enabled)
+	{
+		return new AudioFilterDefinition(this.id, enabled, this.scope, this.type, this.frequencyHz, this.q,
+				this.gainDb, this.bitDepth, this.sampleRateHz, this.conditions);
+	}
+
 	private static double clamp(double value, double min, double max)
 	{
 		return Math.max(min, Math.min(max, value));
@@ -27,6 +33,7 @@ public record AudioFilterDefinition(ResourceLocation id, Scope scope, Type type,
 	public enum Scope
 	{
 		MBM,
+		MINECRAFT,
 		GLOBAL;
 
 		public String getSerializedName()
@@ -36,7 +43,11 @@ public record AudioFilterDefinition(ResourceLocation id, Scope scope, Type type,
 
 		public static Scope parse(String value)
 		{
-			return "global".equalsIgnoreCase(value) ? GLOBAL : MBM;
+			if ("global".equalsIgnoreCase(value))
+				return GLOBAL;
+			if ("minecraft".equalsIgnoreCase(value) || "non_mbm".equalsIgnoreCase(value))
+				return MINECRAFT;
+			return MBM;
 		}
 	}
 

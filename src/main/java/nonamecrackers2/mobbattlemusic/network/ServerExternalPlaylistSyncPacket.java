@@ -48,6 +48,12 @@ public class ServerExternalPlaylistSyncPacket
 				buffer.writeUtf(entry.id());
 				buffer.writeUtf(entry.name());
 				buffer.writeUtf(entry.url());
+				buffer.writeVarInt(entry.conditions().size());
+				for (IdleCondition condition : entry.conditions()) {
+					buffer.writeUtf(condition.type());
+					buffer.writeUtf(condition.argument());
+					buffer.writeBoolean(condition.inverted());
+				}
 				buffer.writeVarInt(entry.markers().size());
 				for (TimelineMarker marker : entry.markers()) {
 					buffer.writeVarLong(marker.timeMillis());
@@ -78,11 +84,15 @@ public class ServerExternalPlaylistSyncPacket
 				String id = buffer.readUtf();
 				String name = buffer.readUtf();
 				String url = buffer.readUtf();
+				int entryConditionCount = buffer.readVarInt();
+				List<IdleCondition> entryConditions = new ArrayList<>(entryConditionCount);
+				for (int k = 0; k < entryConditionCount; k++)
+					entryConditions.add(new IdleCondition(buffer.readUtf(), buffer.readUtf(), buffer.readBoolean()));
 				int markerCount = buffer.readVarInt();
 				List<TimelineMarker> markers = new ArrayList<>(markerCount);
 				for (int k = 0; k < markerCount; k++)
 					markers.add(new TimelineMarker(buffer.readVarLong(), buffer.readResourceLocation()));
-				entries.add(new Entry(id, name, url, markers));
+				entries.add(new Entry(id, name, url, entryConditions, markers));
 			}
 			tracks.add(new TrackDefinition(configLocation, scene, priority, fadeTime, selectionMode, idleConditions,
 					idleIntervalSeconds, entries));
@@ -108,16 +118,23 @@ public class ServerExternalPlaylistSyncPacket
 		}
 	}
 	
-	public static record Entry(String id, String name, String url, List<TimelineMarker> markers)
+	public static record Entry(String id, String name, String url, List<IdleCondition> conditions,
+			List<TimelineMarker> markers)
 	{
 		public Entry
 		{
+			conditions = List.copyOf(conditions);
 			markers = List.copyOf(markers);
 		}
 
 		public Entry(String id, String name, String url)
 		{
-			this(id, name, url, List.of());
+			this(id, name, url, List.of(), List.of());
+		}
+
+		public Entry(String id, String name, String url, List<TimelineMarker> markers)
+		{
+			this(id, name, url, List.of(), markers);
 		}
 	}
 }

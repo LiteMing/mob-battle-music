@@ -16,7 +16,7 @@ import nonamecrackers2.mobbattlemusic.playlist.IdleConditionRegistry;
 
 public final class IdleConditionStateServer
 {
-	private static final Map<UUID, Set<ResourceLocation>> LAST_ACTIVE = new ConcurrentHashMap<>();
+	private static final Map<UUID, ActiveState> LAST_ACTIVE = new ConcurrentHashMap<>();
 
 	private IdleConditionStateServer() {}
 
@@ -26,17 +26,21 @@ public final class IdleConditionStateServer
 				player.tickCount % 10 != 0)
 			return;
 		Set<ResourceLocation> active = ServerExternalPlaylistStore.activeIdleRules(player);
-		Set<ResourceLocation> previous = LAST_ACTIVE.put(player.getUUID(), Set.copyOf(active));
-		if (!active.equals(previous))
-			send(player, active);
+		Set<String> activeEntries = ServerExternalPlaylistStore.activeEntryConditions(player);
+		ActiveState state = new ActiveState(Set.copyOf(active), Set.copyOf(activeEntries));
+		ActiveState previous = LAST_ACTIVE.put(player.getUUID(), state);
+		if (!state.equals(previous))
+			send(player, state);
 	}
 
 	public static void onPlayerLoggedIn(PlayerEvent.PlayerLoggedInEvent event)
 	{
 		if (event.getEntity() instanceof ServerPlayer player) {
 			Set<ResourceLocation> active = ServerExternalPlaylistStore.activeIdleRules(player);
-			LAST_ACTIVE.put(player.getUUID(), Set.copyOf(active));
-			send(player, active);
+			ActiveState state = new ActiveState(Set.copyOf(active),
+					ServerExternalPlaylistStore.activeEntryConditions(player));
+			LAST_ACTIVE.put(player.getUUID(), state);
+			send(player, state);
 		}
 	}
 
@@ -45,9 +49,12 @@ public final class IdleConditionStateServer
 		LAST_ACTIVE.remove(event.getEntity().getUUID());
 	}
 
-	private static void send(ServerPlayer player, Set<ResourceLocation> active)
+	private static void send(ServerPlayer player, ActiveState active)
 	{
-		MobBattleMusicNetwork.sendIdleConditionState(player, new IdleConditionStatePacket(List.copyOf(active),
+		MobBattleMusicNetwork.sendIdleConditionState(player, new IdleConditionStatePacket(List.copyOf(active.rules()),
+				List.copyOf(active.entries()),
 				List.copyOf(IdleConditionRegistry.descriptors())));
 	}
+
+	private record ActiveState(Set<ResourceLocation> rules, Set<String> entries) {}
 }

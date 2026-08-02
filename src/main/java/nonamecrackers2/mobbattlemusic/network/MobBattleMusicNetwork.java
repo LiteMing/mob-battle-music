@@ -12,7 +12,7 @@ import nonamecrackers2.mobbattlemusic.MobBattleMusicMod;
 
 public class MobBattleMusicNetwork
 {
-	private static final String PROTOCOL_VERSION = "10";
+	private static final String PROTOCOL_VERSION = "12";
 	private static int nextId;
 	private static final SimpleChannel CHANNEL = NetworkRegistry.ChannelBuilder
 			.named(MobBattleMusicMod.id("main"))
@@ -63,6 +63,16 @@ public class MobBattleMusicNetwork
 				.decoder(TimelineMarkerHitPacket::decode)
 				.consumerMainThread(MobBattleMusicNetwork::handleTimelineMarkerHit)
 				.add();
+		CHANNEL.messageBuilder(PlayerCombatSessionReportPacket.class, nextId++, NetworkDirection.PLAY_TO_SERVER)
+				.encoder(PlayerCombatSessionReportPacket::encode)
+				.decoder(PlayerCombatSessionReportPacket::decode)
+				.consumerMainThread(MobBattleMusicNetwork::handlePlayerCombatSessionReport)
+				.add();
+		CHANNEL.messageBuilder(PlayerCombatSessionStatePacket.class, nextId++, NetworkDirection.PLAY_TO_CLIENT)
+				.encoder(PlayerCombatSessionStatePacket::encode)
+				.decoder(PlayerCombatSessionStatePacket::decode)
+				.consumerMainThread(MobBattleMusicNetwork::handlePlayerCombatSessionState)
+				.add();
 	}
 	
 	public static void sendExternalPlaylistControl(ServerPlayer player, ExternalPlaylistControlPacket packet)
@@ -104,6 +114,16 @@ public class MobBattleMusicNetwork
 	{
 		CHANNEL.sendToServer(packet);
 	}
+
+	public static void reportPlayerCombatSession(java.util.UUID opponent)
+	{
+		CHANNEL.sendToServer(new PlayerCombatSessionReportPacket(opponent));
+	}
+
+	public static void sendPlayerCombatSessionState(ServerPlayer player, PlayerCombatSessionStatePacket packet)
+	{
+		CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), packet);
+	}
 	
 	private static void handleExternalPlaylistControl(ExternalPlaylistControlPacket packet, Supplier<NetworkEvent.Context> context)
 	{
@@ -141,6 +161,18 @@ public class MobBattleMusicNetwork
 	}
 
 	private static void handleTimelineMarkerHit(TimelineMarkerHitPacket packet, Supplier<NetworkEvent.Context> context)
+	{
+		packet.handle(context);
+	}
+
+	private static void handlePlayerCombatSessionReport(PlayerCombatSessionReportPacket packet,
+			Supplier<NetworkEvent.Context> context)
+	{
+		packet.handle(context);
+	}
+
+	private static void handlePlayerCombatSessionState(PlayerCombatSessionStatePacket packet,
+			Supplier<NetworkEvent.Context> context)
 	{
 		packet.handle(context);
 	}

@@ -79,7 +79,7 @@ public final class MobBattleMusicAudioFilters
 
 		public void register()
 		{
-			AudioFilterManager.register(new AudioFilterDefinition(this.id, this.scope, this.type,
+			AudioFilterManager.register(new AudioFilterDefinition(this.id, true, this.scope, this.type,
 					this.frequencyHz, this.q, this.gainDb, this.bitDepth, this.sampleRateHz, this.conditions));
 		}
 	}

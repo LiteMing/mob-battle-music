@@ -87,6 +87,7 @@ public class MobBattleMusicCommands
 		for (String scene : ServerExternalPlaylistStore.supportedScenes())
 			root.then(serverSceneLiteral(scene, scene));
 		root.then(timelineMarkerArgument());
+		root.then(entryConditionArgument());
 		root.then(Commands.literal("scene")
 				.then(Commands.argument("scene", StringArgumentType.word())
 						.suggests(MobBattleMusicCommands::suggestScenes)
@@ -136,6 +137,46 @@ public class MobBattleMusicCommands
 														ResourceLocationArgument.getId(context, "marker_playlist"),
 														IntegerArgumentType.getInteger(context, "track_index") - 1,
 														IntegerArgumentType.getInteger(context, "marker_index") - 1))))));
+	}
+
+	private static LiteralArgumentBuilder<CommandSourceStack> entryConditionArgument()
+	{
+		RequiredArgumentBuilder<CommandSourceStack, String> conditionType =
+				Commands.argument("entry_condition_type", StringArgumentType.word())
+						.suggests(MobBattleMusicCommands::suggestConditionTypes)
+						.executes(context -> addEntryCondition(context, false, ""))
+						.then(Commands.argument("entry_condition_argument", StringArgumentType.greedyString())
+								.executes(context -> addEntryCondition(context, false,
+										StringArgumentType.getString(context, "entry_condition_argument"))));
+		RequiredArgumentBuilder<CommandSourceStack, String> invertedConditionType =
+				Commands.argument("entry_condition_type", StringArgumentType.word())
+						.suggests(MobBattleMusicCommands::suggestConditionTypes)
+						.executes(context -> addEntryCondition(context, true, ""))
+						.then(Commands.argument("entry_condition_argument", StringArgumentType.greedyString())
+								.executes(context -> addEntryCondition(context, true,
+										StringArgumentType.getString(context, "entry_condition_argument"))));
+		return Commands.literal("entry_condition")
+				.then(Commands.argument("entry_playlist", ResourceLocationArgument.id())
+						.suggests((context, builder) -> SharedSuggestionProvider.suggestResource(
+								ServerExternalPlaylistStore.recordedPlaylists(context.getSource().getServer()), builder))
+						.then(Commands.argument("entry_track_index", IntegerArgumentType.integer(1))
+								.then(Commands.literal("add").then(conditionType))
+								.then(Commands.literal("add_not").then(invertedConditionType))
+								.then(Commands.literal("delete")
+										.then(Commands.argument("entry_condition_index", IntegerArgumentType.integer(1))
+												.executes(context -> ServerExternalPlaylistStore.deleteEntryCondition(
+														context.getSource(),
+														ResourceLocationArgument.getId(context, "entry_playlist"),
+														IntegerArgumentType.getInteger(context, "entry_track_index") - 1,
+														IntegerArgumentType.getInteger(context, "entry_condition_index") - 1))))));
+	}
+
+	private static int addEntryCondition(CommandContext<CommandSourceStack> context, boolean inverted, String argument)
+	{
+		return ServerExternalPlaylistStore.addEntryCondition(context.getSource(),
+				ResourceLocationArgument.getId(context, "entry_playlist"),
+				IntegerArgumentType.getInteger(context, "entry_track_index") - 1,
+				StringArgumentType.getString(context, "entry_condition_type"), argument, inverted);
 	}
 
 	private static boolean canUsePlaylistCommand(CommandSourceStack source)
@@ -448,8 +489,8 @@ public class MobBattleMusicCommands
 		ExternalPlaylistControlPacket packet = new ExternalPlaylistControlPacket(playlistId, action, selection);
 		for (ServerPlayer player : players)
 			MobBattleMusicNetwork.sendExternalPlaylistControl(player, packet);
-		source.sendSuccess(() -> Component.literal("Sent " + action.name().toLowerCase() + " playlist control for " +
-				playlistId + " to " + players.size() + " player(s)"), true);
+		MobBattleMusicCommandFeedback.success(source, Component.literal("Sent " + action.name().toLowerCase() +
+				" playlist control for " + playlistId + " to " + players.size() + " player(s)"));
 		return players.size();
 	}
 	
@@ -458,8 +499,8 @@ public class MobBattleMusicCommands
 		String selection = ExternalPlaylistCatalogServer.chooseRandomEntry(source.getServer(), players, playlistId);
 		if (selection != null) {
 			int sent = send(source, players, playlistId, ExternalPlaylistControlPacket.Action.SET, selection);
-			source.sendSuccess(() -> Component.literal("Server selected random playlist entry '" + selection +
-					"' for " + playlistId), true);
+			MobBattleMusicCommandFeedback.success(source, Component.literal("Server selected random playlist entry '" +
+					selection + "' for " + playlistId));
 			return sent;
 		}
 		source.sendFailure(Component.literal("No synced playlist catalog found for " + playlistId +

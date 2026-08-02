@@ -22,19 +22,27 @@ public class ExternalMusicHandler {
     private final MusicCache cache;
     private final MusicDownloader downloader;
     private final StreamMusicPlayer player;
+    private final StreamMusicPlayer previewPlayer;
     private final Map<String, CompletableFuture<Path>> ongoingDownloads;
+    private final Object playbackLock = new Object();
+    private final Object previewPlaybackLock = new Object();
     private final AtomicLong playbackRequest = new AtomicLong();
+    private final AtomicLong previewPlaybackRequest = new AtomicLong();
     private volatile String currentlyPlayingUrl;
     private volatile Path currentlyPlayingPath;
     private volatile long currentDurationHintMillis;
-    private volatile boolean previewing;
+    private volatile String previewUrl;
+    private volatile Path previewPath;
+    private volatile long previewDurationHintMillis;
     
     private ExternalMusicHandler() {
         this.cache = new MusicCache();
         this.downloader = new MusicDownloader();
         this.player = new StreamMusicPlayer();
+        this.previewPlayer = new StreamMusicPlayer();
         this.ongoingDownloads = new ConcurrentHashMap<>();
         this.currentlyPlayingUrl = null;
+        this.previewUrl = null;
     }
     
     public static ExternalMusicHandler getInstance() {
@@ -122,44 +130,69 @@ public class ExternalMusicHandler {
     }
 
     public void playMusic(String url, int fadeTime, long durationHintMillis) {
-        playMusic(url, fadeTime, 0L, durationHintMillis, false);
+        playMusic(url, fadeTime, 0L, durationHintMillis);
     }
 
     public void playMusicFrom(String url, int fadeTime, long startPositionMillis) {
-        playMusic(url, fadeTime, Math.max(0L, startPositionMillis), 0L, false);
+        playMusic(url, fadeTime, Math.max(0L, startPositionMillis), 0L);
     }
 
     public void playPreviewMusic(String url, int fadeTime, long durationHintMillis) {
-        playMusic(url, fadeTime, 0L, durationHintMillis, true);
+        long request;
+        synchronized (this.previewPlaybackLock) {
+            request = this.previewPlaybackRequest.incrementAndGet();
+            this.previewUrl = url;
+            this.previewPath = null;
+            this.previewDurationHintMillis = Math.max(0L, durationHintMillis);
+        }
+        prepareMusicFile(url).thenAccept(cachedPath -> {
+            synchronized (this.previewPlaybackLock) {
+                if (request != this.previewPlaybackRequest.get())
+                    return;
+                if (cachedPath == null) {
+                    clearPreviewState();
+                    LOGGER.error("Failed to prepare preview music file for playback: {}", url);
+                    return;
+                }
+
+                try {
+                    this.previewPlayer.play(cachedPath, fadeTime, 0L, durationHintMillis);
+                    this.previewPath = cachedPath;
+                    LOGGER.info("Started previewing music from: {}", url);
+                } catch (Exception e) {
+                    clearPreviewState();
+                    LOGGER.error("Failed to preview music from: {}", url, e);
+                }
+            }
+        });
     }
 
-    private void playMusic(String url, int fadeTime, long startPositionMillis, long durationHintMillis, boolean preview) {
-        long request = playbackRequest.incrementAndGet();
-        this.previewing = preview;
-        this.currentlyPlayingUrl = url;
-        this.currentlyPlayingPath = null;
-        this.currentDurationHintMillis = Math.max(0L, durationHintMillis);
+    private void playMusic(String url, int fadeTime, long startPositionMillis, long durationHintMillis) {
+        long request;
+        synchronized (this.playbackLock) {
+            request = this.playbackRequest.incrementAndGet();
+            this.currentlyPlayingUrl = url;
+            this.currentlyPlayingPath = null;
+            this.currentDurationHintMillis = Math.max(0L, durationHintMillis);
+        }
         prepareMusicFile(url).thenAccept(cachedPath -> {
-            if (request != playbackRequest.get())
-                return;
-            if (cachedPath == null) {
-                if (preview)
-                    previewing = false;
-                currentlyPlayingUrl = null;
-                currentlyPlayingPath = null;
-                currentDurationHintMillis = 0L;
-                LOGGER.error("Failed to prepare music file for playback: {}", url);
-                return;
-            }
-            
-            try {
-                player.play(cachedPath, fadeTime, startPositionMillis, durationHintMillis);
-                currentlyPlayingPath = cachedPath;
-                
-                LOGGER.info("Started playing music from: {}", url);
-                
-            } catch (Exception e) {
-                LOGGER.error("Failed to play music from: {}", url, e);
+            synchronized (this.playbackLock) {
+                if (request != this.playbackRequest.get())
+                    return;
+                if (cachedPath == null) {
+                    clearPlaybackState();
+                    LOGGER.error("Failed to prepare music file for playback: {}", url);
+                    return;
+                }
+
+                try {
+                    this.player.play(cachedPath, fadeTime, startPositionMillis, durationHintMillis);
+                    this.currentlyPlayingPath = cachedPath;
+                    LOGGER.info("Started playing music from: {}", url);
+                } catch (Exception e) {
+                    clearPlaybackState();
+                    LOGGER.error("Failed to play music from: {}", url, e);
+                }
             }
         });
     }
@@ -168,28 +201,45 @@ public class ExternalMusicHandler {
      * Stop currently playing music
      */
     public void stopMusic() {
-        playbackRequest.incrementAndGet();
-        player.stop();
-        currentlyPlayingUrl = null;
-        currentlyPlayingPath = null;
-        currentDurationHintMillis = 0L;
-        previewing = false;
+        synchronized (this.playbackLock) {
+            this.playbackRequest.incrementAndGet();
+            this.player.stop();
+            clearPlaybackState();
+        }
     }
 
     public void stopPreviewMusic() {
-        if (this.previewing)
-            stopMusic();
+        synchronized (this.previewPlaybackLock) {
+            this.previewPlaybackRequest.incrementAndGet();
+            this.previewPlayer.stop();
+            clearPreviewState();
+        }
     }
 
     public boolean seekMusic(long positionMillis) {
-        Path path = currentlyPlayingPath;
-        if (path == null || currentlyPlayingUrl == null)
-            return false;
-        long duration = getDurationMillis();
-        long clamped = duration > 0L ? Math.max(0L, Math.min(positionMillis, duration - 1L)) : Math.max(0L, positionMillis);
-        playbackRequest.incrementAndGet();
-        player.play(path, 0, clamped, currentDurationHintMillis);
-        return true;
+        synchronized (this.playbackLock) {
+            Path path = this.currentlyPlayingPath;
+            if (path == null || this.currentlyPlayingUrl == null)
+                return false;
+            long duration = getDurationMillis();
+            long clamped = clampPosition(positionMillis, duration);
+            this.playbackRequest.incrementAndGet();
+            this.player.play(path, 0, clamped, this.currentDurationHintMillis);
+            return true;
+        }
+    }
+
+    public boolean seekPreviewMusic(long positionMillis) {
+        synchronized (this.previewPlaybackLock) {
+            Path path = this.previewPath;
+            if (path == null || this.previewUrl == null)
+                return false;
+            long duration = getPreviewDurationMillis();
+            long clamped = clampPosition(positionMillis, duration);
+            this.previewPlaybackRequest.incrementAndGet();
+            this.previewPlayer.play(path, 0, clamped, this.previewDurationHintMillis);
+            return true;
+        }
     }
 
     public long getPositionMillis() {
@@ -198,6 +248,14 @@ public class ExternalMusicHandler {
 
     public long getDurationMillis() {
         return Math.max(player.getDurationMillis(), currentDurationHintMillis);
+    }
+
+    public long getPreviewPositionMillis() {
+        return this.previewPlayer.getPositionMillis();
+    }
+
+    public long getPreviewDurationMillis() {
+        return Math.max(this.previewPlayer.getDurationMillis(), this.previewDurationHintMillis);
     }
     
     /**
@@ -222,13 +280,13 @@ public class ExternalMusicHandler {
     }
 
     public boolean isPreviewing() {
-        if (this.previewing && this.currentlyPlayingPath != null && !this.player.isPlaying() && !this.player.isPaused()) {
-            this.previewing = false;
-            this.currentlyPlayingUrl = null;
-            this.currentlyPlayingPath = null;
-            this.currentDurationHintMillis = 0L;
+        synchronized (this.previewPlaybackLock) {
+            if (this.previewUrl != null && this.previewPath != null &&
+                    !this.previewPlayer.isPlaying() && !this.previewPlayer.isPaused()) {
+                clearPreviewState();
+            }
+            return this.previewUrl != null;
         }
-        return this.previewing;
     }
 
     public boolean isPreparingCurrentMusic() {
@@ -240,6 +298,10 @@ public class ExternalMusicHandler {
      */
     public String getCurrentlyPlayingUrl() {
         return currentlyPlayingUrl;
+    }
+
+    public String getPreviewUrl() {
+        return this.previewUrl;
     }
     
     /**
@@ -275,5 +337,27 @@ public class ExternalMusicHandler {
      */
     public StreamMusicPlayer getPlayer() {
         return player;
+    }
+
+    public StreamMusicPlayer getPreviewPlayer() {
+        return this.previewPlayer;
+    }
+
+    private void clearPlaybackState() {
+        this.currentlyPlayingUrl = null;
+        this.currentlyPlayingPath = null;
+        this.currentDurationHintMillis = 0L;
+    }
+
+    private void clearPreviewState() {
+        this.previewUrl = null;
+        this.previewPath = null;
+        this.previewDurationHintMillis = 0L;
+    }
+
+    private static long clampPosition(long positionMillis, long durationMillis) {
+        return durationMillis > 0L
+                ? Math.max(0L, Math.min(positionMillis, durationMillis - 1L))
+                : Math.max(0L, positionMillis);
     }
 }

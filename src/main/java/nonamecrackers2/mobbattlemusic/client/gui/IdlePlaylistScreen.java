@@ -48,6 +48,7 @@ final class IdlePlaylistScreen extends Screen
 	private Button intervalApplyButton;
 	private Button previewButton;
 	private Button stopButton;
+	private Button entryEnabledButton;
 	private Button deleteTrackButton;
 	private Button conditionTypeButton;
 	private Button conditionInvertButton;
@@ -58,7 +59,6 @@ final class IdlePlaylistScreen extends Screen
 	private EditBox intervalBox;
 	private EditBox conditionArgumentBox;
 	private EditBox ruleBox;
-	private EditBox musicBox;
 	private int selectedRule;
 	private int selectedTrack;
 	private int selectedCondition;
@@ -134,8 +134,10 @@ final class IdlePlaylistScreen extends Screen
 				.bounds(detailX, trackActionY, 62, 20).build());
 		this.stopButton = this.addRenderableWidget(Button.builder(text("button.stop"), button -> stopPreview())
 				.bounds(detailX + 66, trackActionY, 52, 20).build());
+		this.entryEnabledButton = this.addRenderableWidget(Button.builder(entryEnabledLabel(), button -> toggleSelectedEntry())
+				.bounds(detailX + 122, trackActionY, 76, 20).build());
 		this.deleteTrackButton = this.addRenderableWidget(Button.builder(text("button.delete"), button -> deleteTrack())
-				.bounds(detailX + 122, trackActionY, 56, 20).build());
+				.bounds(detailX + 202, trackActionY, 56, 20).build());
 
 		int conditionY = this.height - 76;
 		int conditionTypeWidth = compact ? 84 : Math.min(150, Math.max(104, detailWidth / 4));
@@ -168,26 +170,17 @@ final class IdlePlaylistScreen extends Screen
 						conditionDeleteWidth, 20).build());
 
 		int addY = this.height - 52;
-		int addWidth = 52;
+		int addWidth = compact ? 72 : 92;
 		int doneWidth = 54;
-		int ruleWidth = Math.min(150, Math.max(100, detailWidth / 4));
+		int ruleWidth = Math.max(80, detailWidth - addWidth - doneWidth - 12);
 		this.ruleBox = this.addRenderableWidget(new EditBox(this.font, detailX, addY + 1, ruleWidth, 18,
 				text("idle.field.rule")));
 		this.ruleBox.setMaxLength(128);
 		this.ruleBox.setHint(text("idle.field.rule"));
 		this.ruleBox.setValue(state.ruleId);
 		this.ruleBox.setResponder(value -> state().ruleId = value);
-		this.musicBox = this.addRenderableWidget(new EditBox(this.font, detailX + ruleWidth + 4, addY + 1,
-				Math.max(60, detailWidth - ruleWidth - addWidth - doneWidth - 12), 18, text("field.music")));
-		this.musicBox.setMaxLength(4096);
-		this.musicBox.setHint(text("field.music"));
-		this.musicBox.setValue(state.music);
-		this.musicBox.setResponder(value -> {
-			state().music = value;
-			this.updateButtonState();
-		});
-		this.addTrackButton = this.addRenderableWidget(Button.builder(text("idle.button.add_track"), button -> addTrack())
-				.bounds(this.musicBox.getX() + this.musicBox.getWidth() + 4, addY, addWidth, 20).build());
+		this.addTrackButton = this.addRenderableWidget(Button.builder(text("idle.button.choose_track"), button -> addTrack())
+				.bounds(this.ruleBox.getX() + this.ruleBox.getWidth() + 4, addY, addWidth, 20).build());
 		this.addRenderableWidget(Button.builder(text("button.done"), button -> closeToParent())
 				.bounds(this.width - 66, addY, doneWidth, 20).build());
 
@@ -270,7 +263,7 @@ final class IdlePlaylistScreen extends Screen
 		graphics.drawString(this.font, text("idle.tracks", rule.playlist().entries().size()), x + 2, trackTop - 12,
 				0xA0A0A0, false);
 		renderTracks(graphics, rule, mouseX, mouseY, x, trackTop, right - x, split - trackTop);
-		List<IdleCondition> conditions = rule.settings().idleConditions();
+		List<IdleCondition> conditions = selectedTrackConditions();
 		graphics.drawString(this.font, text("idle.conditions", conditions.size()), x + 2, split + 4,
 				0xA0A0A0, false);
 		renderConditions(graphics, conditions, mouseX, mouseY, x, split + 17, right - x,
@@ -294,8 +287,11 @@ final class IdlePlaylistScreen extends Screen
 						index == this.selectedTrack ? 0x8038546E : 0x50405058);
 			MusicMetadata metadata = MusicMetadataCache.getInstance().get(entry.url()).orElse(null);
 			String title = metadata == null ? entry.name() : metadata.displayTitle(entry.name());
-			graphics.drawString(this.font, (index + 1) + ". " + trim(title, Math.max(12, width / 6)), x + 4,
-					rowY + 5, 0xD8D8D8, false);
+			boolean enabled = MusicTracksManager.getInstance().isMusicEntryEnabled(rule.playlist().configLocation(), entry);
+			graphics.drawString(this.font, (index + 1) + ". " + trim(title, Math.max(12, (width - 28) / 6)), x + 4,
+					rowY + 5, enabled ? 0xD8D8D8 : 0x777F89, false);
+			graphics.fill(x + width - 15, rowY + 4, x + width - 4, rowY + 15,
+					enabled ? 0xFF76D18B : 0xFF666666);
 		}
 	}
 
@@ -366,6 +362,10 @@ final class IdlePlaylistScreen extends Screen
 			int index = this.trackScroll + (int)((mouseY - trackTop) / 18);
 			if (index >= 0 && index < rule.playlist().entries().size()) {
 				this.selectedTrack = index;
+				if (mouseX >= this.width - 38) {
+					toggleSelectedEntry();
+					return true;
+				}
 				this.updateButtonState();
 				return true;
 			}
@@ -373,7 +373,7 @@ final class IdlePlaylistScreen extends Screen
 		int conditionTop = split + 17;
 		if (mouseX >= x && mouseX < this.width - 12 && mouseY >= conditionTop && mouseY < detailBottom) {
 			int index = this.conditionScroll + (int)((mouseY - conditionTop) / 18);
-			if (index >= 0 && index < rule.settings().idleConditions().size()) {
+			if (index >= 0 && index < selectedTrackConditions().size()) {
 				this.selectedCondition = index;
 				this.updateButtonState();
 				return true;
@@ -490,7 +490,7 @@ final class IdlePlaylistScreen extends Screen
 		} else {
 			this.selectedTrack = clamp(this.selectedTrack, 0, Math.max(0, rule.playlist().entries().size() - 1));
 			this.selectedCondition = clamp(this.selectedCondition, 0,
-					Math.max(0, rule.settings().idleConditions().size() - 1));
+					Math.max(0, selectedTrackConditions().size() - 1));
 			this.priorityBox.setValue(String.valueOf(rule.settings().priority()));
 			this.intervalBox.setValue(String.valueOf(rule.settings().idleIntervalSeconds()));
 			this.orderButton.setMessage(orderLabel(rule.settings().selectionMode()));
@@ -512,29 +512,27 @@ final class IdlePlaylistScreen extends Screen
 		this.intervalBox.active = selected;
 		this.intervalApplyButton.active = selected;
 		this.previewButton.active = selected && selectedTrackEntry() != null;
+		this.entryEnabledButton.active = selected && selectedTrackEntry() != null;
+		this.entryEnabledButton.setMessage(entryEnabledLabel());
 		this.deleteTrackButton.active = selected && selectedTrackEntry() != null;
 		this.conditionTypeButton.active = selected;
 		this.conditionArgumentBox.active = selected;
 		this.conditionInvertButton.active = selected;
 		this.conditionAddButton.active = selected && ResourceLocation.tryParse(this.conditionType) != null;
-		this.conditionDeleteButton.active = selected && !rule.settings().idleConditions().isEmpty();
-		this.addTrackButton.active = !this.ruleBox.getValue().isBlank() && !this.musicBox.getValue().isBlank();
+		this.conditionDeleteButton.active = selected && !selectedTrackConditions().isEmpty();
+		this.addTrackButton.active = ResourceLocation.tryParse(this.ruleBox.getValue().trim()) != null;
 	}
 
 	private void addTrack()
 	{
 		String ruleId = this.ruleBox.getValue().trim();
-		String music = this.musicBox.getValue().trim();
-		if (ResourceLocation.tryParse(ruleId) == null || music.isBlank()) {
-			message(text("idle.message.rule_music_required"));
+		if (ResourceLocation.tryParse(ruleId) == null) {
+			message(text("idle.message.rule_required"));
 			return;
 		}
-		if (this.editMode == MusicPlaylistScreen.EditMode.SERVER)
-			runServerCommand("mobbattlemusic idle rule " + ruleId + " add " + music);
-		else {
-			message(MusicTracksManager.getInstance().addLocalIdleRuleUrl(ruleId, music).message());
-			refreshRules();
-		}
+		saveState();
+		stopPreview();
+		MusicPlaylistScreen.openForIdleRule(this, this.editMode, ruleId);
 	}
 
 	private void deleteTrack()
@@ -551,6 +549,29 @@ final class IdlePlaylistScreen extends Screen
 		}
 	}
 
+	private void toggleSelectedEntry()
+	{
+		Rule rule = selectedRule();
+		MusicTracksManager.ExternalPlaylistEntry entry = selectedTrackEntry();
+		if (rule == null || entry == null)
+			return;
+		MusicTracksManager manager = MusicTracksManager.getInstance();
+		boolean enabled = !manager.isMusicEntryEnabled(rule.playlist().configLocation(), entry);
+		message(manager.setMusicEntryEnabled(rule.playlist().configLocation(), entry, enabled).message());
+		if (!enabled)
+			stopPreview();
+		updateButtonState();
+	}
+
+	private Component entryEnabledLabel()
+	{
+		Rule rule = selectedRule();
+		MusicTracksManager.ExternalPlaylistEntry entry = selectedTrackEntry();
+		boolean enabled = rule != null && entry != null && MusicTracksManager.getInstance()
+				.isMusicEntryEnabled(rule.playlist().configLocation(), entry);
+		return text(enabled ? "button.disable_entry" : "button.enable_entry");
+	}
+
 	private void previewSelected()
 	{
 		MusicTracksManager.ExternalPlaylistEntry entry = selectedTrackEntry();
@@ -559,7 +580,7 @@ final class IdlePlaylistScreen extends Screen
 		stopPreview();
 		ResourceLocation sound = soundLocation(entry.url());
 		if (sound != null) {
-			this.previewTrack = new MobBattleTrack(sound, 20);
+			this.previewTrack = MobBattleTrack.preview(sound, 20);
 			this.minecraft.getSoundManager().play(this.previewTrack);
 		} else {
 			ExternalMusicHandler.getInstance().playPreviewMusic(entry.url(), 20, 0L);
@@ -691,17 +712,19 @@ final class IdlePlaylistScreen extends Screen
 	private void addCondition()
 	{
 		Rule rule = selectedRule();
-		if (rule == null || ResourceLocation.tryParse(this.conditionType) == null)
+		MusicTracksManager.ExternalPlaylistEntry entry = selectedTrackEntry();
+		if (rule == null || entry == null || ResourceLocation.tryParse(this.conditionType) == null)
 			return;
 		String argument = this.conditionArgumentBox.getValue().trim();
 		if (this.editMode == MusicPlaylistScreen.EditMode.SERVER) {
-			String command = "mobbattlemusic idle rule " + rule.binding().target() + " condition " +
+			String command = "mobbattlemusic entry_condition " + rule.playlist().configLocation() + " " +
+					(this.selectedTrack + 1) + " " +
 					(this.conditionInverted ? "add_not " : "add ") + this.conditionType;
 			if (!argument.isBlank())
 				command += " " + argument;
 			runServerCommand(command);
 		} else {
-			message(MusicTracksManager.getInstance().addLocalIdleCondition(rule.binding(),
+			message(MusicTracksManager.getInstance().addLocalEntryCondition(rule.binding(), this.selectedTrack,
 					new IdleCondition(this.conditionType, argument, this.conditionInverted)).message());
 			refreshRules();
 		}
@@ -710,13 +733,14 @@ final class IdlePlaylistScreen extends Screen
 	private void deleteCondition()
 	{
 		Rule rule = selectedRule();
-		if (rule == null || rule.settings().idleConditions().isEmpty())
+		if (rule == null || selectedTrackConditions().isEmpty())
 			return;
 		if (this.editMode == MusicPlaylistScreen.EditMode.SERVER)
-			runServerCommand("mobbattlemusic idle rule " + rule.binding().target() + " condition delete " +
-					(this.selectedCondition + 1));
+			runServerCommand("mobbattlemusic entry_condition " + rule.playlist().configLocation() + " " +
+					(this.selectedTrack + 1) + " delete " + (this.selectedCondition + 1));
 		else {
-			message(MusicTracksManager.getInstance().deleteLocalIdleCondition(rule.binding(), this.selectedCondition).message());
+			message(MusicTracksManager.getInstance().deleteLocalEntryCondition(rule.binding(), this.selectedTrack,
+					this.selectedCondition).message());
 			refreshRules();
 		}
 	}
@@ -744,13 +768,18 @@ final class IdlePlaylistScreen extends Screen
 
 	private boolean isActive(Rule rule)
 	{
-		ResourceLocation id = ResourceLocation.tryParse(rule.binding().target());
-		if (id == null)
-			return false;
-		if (this.editMode == MusicPlaylistScreen.EditMode.SERVER)
-			return IdleConditionStateClient.isActive(id);
-		return this.minecraft.player != null && IdleConditionRegistry.test(this.minecraft.player,
-				rule.settings().idleConditions());
+		for (int i = 0; i < rule.playlist().entries().size(); i++) {
+			List<IdleCondition> conditions = rule.playlist().entries().get(i).conditions();
+			if (conditions.isEmpty())
+				return true;
+			if (this.editMode == MusicPlaylistScreen.EditMode.SERVER) {
+				if (IdleConditionStateClient.isEntryActive(rule.playlist().configLocation(), i))
+					return true;
+			} else if (this.minecraft.player != null && IdleConditionRegistry.test(this.minecraft.player, conditions)) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	private boolean sourceMatchesMode(MusicTracksManager.DynamicSource source)
@@ -762,6 +791,12 @@ final class IdlePlaylistScreen extends Screen
 	private Rule selectedRule()
 	{
 		return this.selectedRule < 0 || this.selectedRule >= this.rules.size() ? null : this.rules.get(this.selectedRule);
+	}
+
+	private List<IdleCondition> selectedTrackConditions()
+	{
+		MusicTracksManager.ExternalPlaylistEntry entry = selectedTrackEntry();
+		return entry == null ? List.of() : entry.conditions();
 	}
 
 	private MusicTracksManager.ExternalPlaylistEntry selectedTrackEntry()
@@ -808,8 +843,6 @@ final class IdlePlaylistScreen extends Screen
 		state.conditionInverted = this.conditionInverted;
 		if (this.ruleBox != null)
 			state.ruleId = this.ruleBox.getValue();
-		if (this.musicBox != null)
-			state.music = this.musicBox.getValue();
 		if (this.conditionArgumentBox != null)
 			state.conditionArgument = this.conditionArgumentBox.getValue();
 	}
@@ -914,7 +947,7 @@ final class IdlePlaylistScreen extends Screen
 	private void message(Component message)
 	{
 		if (this.minecraft.player != null)
-			this.minecraft.player.displayClientMessage(Component.literal("[Mob Battle Music] ").append(message), false);
+			this.minecraft.player.displayClientMessage(Component.literal("[Mob Battle Music] ").append(message), true);
 	}
 
 	private static Integer parseInteger(String raw, int min, int max)
@@ -964,7 +997,6 @@ final class IdlePlaylistScreen extends Screen
 		private int trackScroll;
 		private int conditionScroll;
 		private String ruleId = "mobbattlemusic:default";
-		private String music = "";
 		private String conditionType = "mobbattlemusic:dimension";
 		private String conditionArgument = "";
 		private boolean conditionInverted;
