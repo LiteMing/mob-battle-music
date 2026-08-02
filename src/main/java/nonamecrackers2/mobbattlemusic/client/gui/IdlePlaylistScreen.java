@@ -734,11 +734,11 @@ final class IdlePlaylistScreen extends Screen
 		if ("mobbattlemusic:dimension".equals(this.conditionType) && this.minecraft.getConnection() != null)
 			return this.minecraft.getConnection().levels().stream().map(key -> key.location().toString()).sorted().toList();
 		if ("mobbattlemusic:biome".equals(this.conditionType))
-			return this.minecraft.level.registryAccess().registryOrThrow(Registries.BIOME).keySet().stream()
-					.map(ResourceLocation::toString).sorted().toList();
+			return this.minecraft.level.registryAccess().registry(Registries.BIOME).stream()
+					.flatMap(registry -> registry.keySet().stream()).map(ResourceLocation::toString).sorted().toList();
 		if ("mobbattlemusic:structure".equals(this.conditionType))
-			return this.minecraft.level.registryAccess().registryOrThrow(Registries.STRUCTURE).keySet().stream()
-					.map(ResourceLocation::toString).sorted().toList();
+			return this.minecraft.level.registryAccess().registry(Registries.STRUCTURE).stream()
+					.flatMap(registry -> registry.keySet().stream()).map(ResourceLocation::toString).sorted().toList();
 		return List.of();
 	}
 

@@ -419,7 +419,7 @@ public class MusicPlaylistScreen extends Screen
 		}
 		renderPreviewProgress(graphics);
 		super.render(graphics, mouseX, mouseY, partialTick);
-		renderCompletions(graphics);
+		renderCompletions(graphics, mouseX, mouseY);
 		this.kindDropdown.render(graphics, this.font, mouseX, mouseY);
 		this.orderDropdown.render(graphics, this.font, mouseX, mouseY);
 	}
@@ -730,6 +730,8 @@ public class MusicPlaylistScreen extends Screen
 				this.orderDropdown.close();
 			return true;
 		}
+		if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT && clickCompletion(mouseX, mouseY))
+			return true;
 		if (seekPreview(mouseX, mouseY))
 			return true;
 		int left = 12;
@@ -1292,25 +1294,48 @@ public class MusicPlaylistScreen extends Screen
 		return false;
 	}
 
-	private void renderCompletions(GuiGraphics graphics)
+	private void renderCompletions(GuiGraphics graphics, int mouseX, int mouseY)
+	{
+		CompletionPopup popup = completionPopup();
+		if (popup == null)
+			return;
+		graphics.fill(popup.x() - 1, popup.y() - 1, popup.x() + popup.width() + 1,
+				popup.y() + popup.height() + 1, 0xD0000000);
+		for (int i = 0; i < popup.matches().size(); i++) {
+			int rowY = popup.rowY(i);
+			if (mouseX >= popup.x() && mouseX < popup.x() + popup.width() &&
+					mouseY >= rowY && mouseY < rowY + CompletionPopup.ROW_HEIGHT)
+				graphics.fill(popup.x(), rowY, popup.x() + popup.width(), rowY + CompletionPopup.ROW_HEIGHT,
+						0xFF465A64);
+			int color = i == 0 ? 0xFFE6C96A : 0xFFE0E0E0;
+			graphics.drawString(this.font, trim(popup.matches().get(i), Math.max(8, popup.width() / 6)),
+					popup.x() + 3, rowY + 1, color, false);
+		}
+	}
+
+	private boolean clickCompletion(double mouseX, double mouseY)
+	{
+		CompletionPopup popup = completionPopup();
+		if (popup == null || mouseX < popup.x() || mouseX >= popup.x() + popup.width() ||
+				mouseY < popup.rowsY() || mouseY >= popup.rowsY() + popup.matches().size() * CompletionPopup.ROW_HEIGHT)
+			return false;
+		int index = (int)((mouseY - popup.rowsY()) / CompletionPopup.ROW_HEIGHT);
+		applyCompletion(popup.box(), popup.matches().get(index));
+		return true;
+	}
+
+	private CompletionPopup completionPopup()
 	{
 		EditBox box = focusedCompletionBox();
 		if (box == null)
-			return;
+			return null;
 		List<String> matches = completionMatches(box, suggestionsFor(box));
 		if (matches.isEmpty())
-			return;
-		int maxVisible = Math.min(6, matches.size());
-		int x = box.getX();
+			return null;
+		List<String> visible = matches.subList(0, Math.min(6, matches.size()));
 		int width = Math.max(box.getWidth(), 120);
-		int height = maxVisible * 12 + 4;
-		int y = Math.max(12, box.getY() - height - 2);
-		graphics.fill(x - 1, y - 1, x + width + 1, y + height + 1, 0xD0000000);
-		for (int i = 0; i < maxVisible; i++) {
-			int color = i == 0 ? 0xFFE6C96A : 0xFFE0E0E0;
-			graphics.drawString(this.font, trim(matches.get(i), Math.max(8, width / 6)), x + 3, y + 3 + i * 12,
-					color, false);
-		}
+		int height = visible.size() * CompletionPopup.ROW_HEIGHT + 4;
+		return new CompletionPopup(box, visible, box.getX(), Math.max(12, box.getY() - height - 2), width, height);
 	}
 
 	private EditBox focusedCompletionBox()
@@ -1353,10 +1378,15 @@ public class MusicPlaylistScreen extends Screen
 			return false;
 		int currentIndex = matches.indexOf(current);
 		String next = matches.get(currentIndex >= 0 ? (currentIndex + 1) % matches.size() : 0);
-		box.setValue(next);
-		box.setCursorPosition(next.length());
-		saveState();
+		applyCompletion(box, next);
 		return true;
+	}
+
+	private void applyCompletion(EditBox box, String value)
+	{
+		box.setValue(value);
+		box.setCursorPosition(value.length());
+		saveState();
 	}
 
 	private static List<String> completionMatches(EditBox box, Collection<String> suggestions)
@@ -1418,11 +1448,11 @@ public class MusicPlaylistScreen extends Screen
 		if ("mobbattlemusic:dimension".equals(type) && this.minecraft.getConnection() != null)
 			return this.minecraft.getConnection().levels().stream().map(key -> key.location().toString()).sorted().toList();
 		if ("mobbattlemusic:biome".equals(type))
-			return this.minecraft.level.registryAccess().registryOrThrow(Registries.BIOME).keySet().stream()
-					.map(ResourceLocation::toString).sorted().toList();
+			return this.minecraft.level.registryAccess().registry(Registries.BIOME).stream()
+					.flatMap(registry -> registry.keySet().stream()).map(ResourceLocation::toString).sorted().toList();
 		if ("mobbattlemusic:structure".equals(type))
-			return this.minecraft.level.registryAccess().registryOrThrow(Registries.STRUCTURE).keySet().stream()
-					.map(ResourceLocation::toString).sorted().toList();
+			return this.minecraft.level.registryAccess().registry(Registries.STRUCTURE).stream()
+					.flatMap(registry -> registry.keySet().stream()).map(ResourceLocation::toString).sorted().toList();
 		return List.of();
 	}
 
@@ -1760,7 +1790,7 @@ public class MusicPlaylistScreen extends Screen
 	private static class EditorState
 	{
 		private String kind = "scene";
-		private String scene = "aggressive";
+		private String scene = "";
 		private String target = "";
 		private String music = "";
 		private String searchQuery = "";
@@ -1779,6 +1809,21 @@ public class MusicPlaylistScreen extends Screen
 		private int searchPage;
 		private boolean searchHasNext;
 		private List<NeteaseMusicSearch.Song> searchRows = List.of();
+	}
+
+	private record CompletionPopup(EditBox box, List<String> matches, int x, int y, int width, int height)
+	{
+		private static final int ROW_HEIGHT = 12;
+
+		int rowsY()
+		{
+			return this.y + 2;
+		}
+
+		int rowY(int index)
+		{
+			return rowsY() + index * ROW_HEIGHT;
+		}
 	}
 	
 	private static record Row(ResourceLocation playlist, String context, MusicTracksManager.DynamicBinding binding,
