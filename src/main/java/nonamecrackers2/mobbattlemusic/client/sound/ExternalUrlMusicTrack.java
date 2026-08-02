@@ -1,7 +1,5 @@
 package nonamecrackers2.mobbattlemusic.client.sound;
 
-import java.nio.file.Path;
-
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -22,10 +20,16 @@ public class ExternalUrlMusicTrack {
     private boolean started = false;
     private boolean stopped = false;
     private float targetVolume = 1.0f;
+    private final long startPositionMillis;
     
     public ExternalUrlMusicTrack(String url, int fadeTime) {
+        this(url, fadeTime, 0L);
+    }
+
+    public ExternalUrlMusicTrack(String url, int fadeTime, long startPositionMillis) {
         this.url = url;
         this.fadeTime = fadeTime;
+        this.startPositionMillis = Math.max(0L, startPositionMillis);
         this.handler = ExternalMusicHandler.getInstance();
         this.player = handler.getPlayer();
     }
@@ -39,24 +43,11 @@ public class ExternalUrlMusicTrack {
         }
         
         started = true;
-        
-        // Check if already cached
-        if (handler.isCached(url)) {
-            Path cachedPath = handler.getCachedFilePath(url);
-            if (cachedPath != null) {
-                LOGGER.info("Playing cached external URL music with fade-in ({}ms): {}", fadeTime * 50, url);
-                try {
-                    java.io.InputStream inputStream = new java.io.FileInputStream(cachedPath.toFile());
-                    player.play(inputStream, fadeTime);
-                } catch (Exception e) {
-                    LOGGER.error("Failed to play cached music: {}", url, e);
-                }
-            }
-        } else {
-            // Download and play
-            LOGGER.info("Downloading and playing external URL music: {}", url);
-            handler.playMusic(url);
-        }
+        LOGGER.info("Playing external URL music with fade-in ({}ms): {}", fadeTime * 50, url);
+        if (this.startPositionMillis > 0L)
+            handler.playMusicFrom(url, fadeTime, this.startPositionMillis);
+        else
+            handler.playMusic(url, fadeTime);
     }
     
     /**
@@ -82,7 +73,7 @@ public class ExternalUrlMusicTrack {
     public void stop() {
         if (!stopped) {
             stopped = true;
-            player.stop();
+            handler.stopMusic();
             LOGGER.debug("Stopped external URL music: {}", url);
         }
     }
@@ -112,7 +103,12 @@ public class ExternalUrlMusicTrack {
      * Check if the track has been stopped
      */
     public boolean isStopped() {
-        return stopped || (!player.isPlaying() && started);
+        if (stopped || !started) {
+            return stopped;
+        }
+        if (!url.equals(handler.getCurrentlyPlayingUrl()))
+            return true;
+        return !handler.isPreparingCurrentMusic() && !player.isPlaying() && !player.isPaused();
     }
     
     /**
@@ -127,6 +123,10 @@ public class ExternalUrlMusicTrack {
      */
     public int getFadeTime() {
         return fadeTime;
+    }
+
+    public long getStartPositionMillis() {
+        return this.startPositionMillis;
     }
     
     /**

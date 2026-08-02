@@ -25,6 +25,16 @@ public abstract class TrackType
 	{
 		return 1.0F;
 	}
+
+	public boolean isIdlePlayback()
+	{
+		return false;
+	}
+
+	public int getPlaybackIntervalSeconds()
+	{
+		return 0;
+	}
 	
 	public abstract int getFadeTime();
 	

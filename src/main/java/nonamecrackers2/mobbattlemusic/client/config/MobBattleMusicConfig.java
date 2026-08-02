@@ -46,6 +46,8 @@ public class MobBattleMusicConfig
 		public final ForgeConfigSpec.IntValue maxRetries;
 		public final ForgeConfigSpec.BooleanValue useCacheOnError;
 		public final ForgeConfigSpec.BooleanValue showErrorNotifications;
+		public final ForgeConfigSpec.BooleanValue ignoreServerPlaylistRequests;
+		public final ForgeConfigSpec.BooleanValue showTrackActionbar;
 		
 		public ClientConfig(ForgeConfigSpec.Builder builder)
 		{
@@ -118,6 +120,14 @@ public class MobBattleMusicConfig
 			this.showErrorNotifications = builder
 				.comment("Show error notifications in-game (debug mode)")
 				.define("showErrorNotifications", false);
+			
+			this.ignoreServerPlaylistRequests = builder
+				.comment("Ignore server-sent external playlist updates and direct playback requests")
+				.define("ignoreServerPlaylistRequests", false);
+
+			this.showTrackActionbar = builder
+				.comment("Show an actionbar message when Mob Battle Music switches tracks")
+				.define("showTrackActionbar", false);
 			
 			builder.pop();
 		}

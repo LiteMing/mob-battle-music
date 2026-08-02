@@ -20,11 +20,13 @@ public class MobSelection
 	private static final MobSelection.EmptyGroup EMPTY = new MobSelection.EmptyGroup();
 	private final Map<MobSelection.GroupType, MobSelection.Group> groups;
 	private final @Nullable LivingEntity panicTarget;
+	private final boolean playerCombatActive;
 	
-	private MobSelection(Map<MobSelection.GroupType, MobSelection.Group> groups, @Nullable LivingEntity panicTarget)
+	private MobSelection(Map<MobSelection.GroupType, MobSelection.Group> groups, @Nullable LivingEntity panicTarget, boolean playerCombatActive)
 	{
 		this.groups = groups;
 		this.panicTarget = panicTarget;
+		this.playerCombatActive = playerCombatActive;
 	}
 	
 	public MobSelection.Group group(MobSelection.GroupType type)
@@ -35,6 +37,11 @@ public class MobSelection
 	public @Nullable LivingEntity panicTarget()
 	{
 		return this.panicTarget;
+	}
+
+	public boolean playerCombatActive()
+	{
+		return this.playerCombatActive;
 	}
 	
 	public static MobSelection.Builder builder()
@@ -94,6 +101,7 @@ public class MobSelection
 	{
 		private final Map<MobSelection.GroupType, MobSelection.Group> mobs = Maps.newEnumMap(MobSelection.GroupType.class);
 		private @Nullable LivingEntity panicTarget;
+		private boolean playerCombatActive;
 		
 		private Builder() {}
 		
@@ -109,10 +117,16 @@ public class MobSelection
 			this.panicTarget = panicTarget;
 			return this;
 		}
+
+		public Builder setPlayerCombatActive(boolean playerCombatActive)
+		{
+			this.playerCombatActive = playerCombatActive;
+			return this;
+		}
 		
 		public MobSelection build()
 		{
-			return new MobSelection(this.mobs, this.panicTarget);
+			return new MobSelection(this.mobs, this.panicTarget, this.playerCombatActive);
 		}
 	}
 	

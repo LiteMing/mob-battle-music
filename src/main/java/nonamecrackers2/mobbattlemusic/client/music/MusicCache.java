@@ -6,7 +6,9 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
 import java.util.HexFormat;
+import java.util.List;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -119,8 +121,11 @@ public class MusicCache {
         
         try {
             long size = Files.size(path);
-            // File must be at least 1KB to be considered valid
-            return size > 1024;
+            if (size <= 1024)
+                return false;
+            try (var input = Files.newInputStream(path)) {
+                return isLikelyMp3(input.readNBytes(4096));
+            }
         } catch (IOException e) {
             LOGGER.error("Failed to validate cached file: {}", path, e);
             return false;
@@ -191,6 +196,44 @@ public class MusicCache {
      */
     public Path getCacheDirectory() {
         return cacheDirectory;
+    }
+
+    public static boolean isLikelyMp3(byte[] data) {
+        if (data == null || data.length < 4)
+            return false;
+        if (data[0] == 'I' && data[1] == 'D' && data[2] == '3')
+            return true;
+        int limit = Math.min(data.length - 1, 4096);
+        for (int i = 0; i < limit; i++) {
+            int first = data[i] & 0xFF;
+            int second = data[i + 1] & 0xFF;
+            if (first == 0xFF && (second & 0xE0) == 0xE0)
+                return true;
+        }
+        return false;
+    }
+
+    public List<String> getCachedUrls() {
+        List<String> urls = new ArrayList<>();
+        if (!Files.exists(cacheDirectory)) {
+            return urls;
+        }
+        try (var files = Files.list(cacheDirectory)) {
+            files.filter(path -> path.getFileName().toString().endsWith(".meta.json"))
+                .forEach(path -> {
+                    try {
+                        CacheMetadata metadata = GSON.fromJson(Files.readString(path), CacheMetadata.class);
+                        if (metadata != null && metadata.getUrl() != null && !metadata.getUrl().isBlank()) {
+                            urls.add(metadata.getUrl());
+                        }
+                    } catch (Exception e) {
+                        LOGGER.debug("Failed to read cache metadata: {}", path, e);
+                    }
+                });
+        } catch (IOException e) {
+            LOGGER.debug("Failed to list music cache metadata", e);
+        }
+        return urls;
     }
     
     /**

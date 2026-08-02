@@ -2,7 +2,12 @@ package nonamecrackers2.mobbattlemusic.client.music;
 
 import java.io.BufferedInputStream;
 import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 
+import javax.sound.sampled.AudioFileFormat;
 import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.AudioInputStream;
 import javax.sound.sampled.AudioSystem;
@@ -15,8 +20,9 @@ import org.apache.logging.log4j.Logger;
 
 import javazoom.spi.mpeg.sampled.file.MpegAudioFileReader;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.sounds.SoundManager;
 import net.minecraft.sounds.SoundSource;
+import nonamecrackers2.mobbattlemusic.client.audio.AudioFilterManager;
+import nonamecrackers2.mobbattlemusic.client.audio.PcmFilterChain;
 
 /**
  * A simple MP3 stream player that uses JavaSound API directly
@@ -33,7 +39,11 @@ public class StreamMusicPlayer {
     private volatile float targetVolume = 1.0f;
     private volatile float currentVolume = 0.0f;
     private volatile int fadeTime = 0; // Fade time in ticks (20 ticks = 1 second)
-    private SourceDataLine line;
+    private volatile SourceDataLine line;
+    private final AtomicLong playbackGeneration = new AtomicLong();
+    private volatile long playedPcmBytes;
+    private volatile long totalDurationMillis;
+    private volatile double decodedBytesPerSecond;
     private long lastVolumeUpdate = 0;
     
     /**
@@ -41,25 +51,37 @@ public class StreamMusicPlayer {
      * @param inputStream The MP3 input stream
      * @param fadeTimeInTicks Fade-in time in ticks (20 ticks = 1 second)
      */
-    public void play(InputStream inputStream, int fadeTimeInTicks) {
+    public void play(Path file, int fadeTimeInTicks) {
+        play(file, fadeTimeInTicks, 0L, 0L);
+    }
+
+    public void play(Path file, int fadeTimeInTicks, long startPositionMillis, long durationHintMillis) {
         this.fadeTime = fadeTimeInTicks;
         this.currentVolume = 0.0f; // Start from 0 for fade-in
         this.targetVolume = 1.0f;
-        play(inputStream);
+        startPlayback(file, startPositionMillis, durationHintMillis);
     }
     
     /**
      * Play an MP3 stream without fade-in
      * @param inputStream The MP3 input stream
      */
-    public void play(InputStream inputStream) {
-        stop(); // Stop any currently playing music
-        
+    public void play(Path file) {
+        play(file, 0);
+    }
+
+    private void startPlayback(Path file, long startPositionMillis, long durationHintMillis) {
+        stop();
+        long generation = playbackGeneration.incrementAndGet();
         playing = true;
         paused = false;
+        playedPcmBytes = 0L;
+        totalDurationMillis = Math.max(0L, durationHintMillis);
+        decodedBytesPerSecond = 0.0D;
         lastVolumeUpdate = System.currentTimeMillis();
         
         playbackThread = new Thread(() -> {
+            SourceDataLine playbackLine = null;
             try {
                 LOGGER.info("Starting MP3 playback thread");
                 
@@ -69,116 +91,125 @@ public class StreamMusicPlayer {
                 LOGGER.info("MpegAudioFileReader created successfully");
                 
                 LOGGER.info("Reading audio input stream from MP3...");
-                AudioInputStream audioInputStream = null;
-                try {
-                    audioInputStream = reader.getAudioInputStream(new BufferedInputStream(inputStream));
+                long detectedDuration = detectDurationMillis(reader, file);
+                if (detectedDuration > 0L)
+                    totalDurationMillis = detectedDuration;
+
+                try (InputStream inputStream = Files.newInputStream(file);
+                        AudioInputStream audioInputStream = reader.getAudioInputStream(new BufferedInputStream(inputStream))) {
                     LOGGER.info("Audio input stream created successfully");
-                } catch (Exception e) {
-                    LOGGER.error("Failed to create audio input stream from MP3", e);
-                    throw e;
-                }
                 
-                // Get the audio format
-                AudioFormat baseFormat = audioInputStream.getFormat();
-                LOGGER.info("Base audio format: {}", baseFormat);
+                    // Get the audio format
+                    AudioFormat baseFormat = audioInputStream.getFormat();
+                    LOGGER.info("Base audio format: {}", baseFormat);
                 
-                // Convert to PCM
-                AudioFormat decodedFormat = new AudioFormat(
-                    AudioFormat.Encoding.PCM_SIGNED,
-                    baseFormat.getSampleRate(),
-                    16,
-                    baseFormat.getChannels(),
-                    baseFormat.getChannels() * 2,
-                    baseFormat.getSampleRate(),
-                    false
-                );
-                LOGGER.info("Decoded audio format: {}", decodedFormat);
+                    // Convert to PCM
+                    AudioFormat decodedFormat = new AudioFormat(
+                        AudioFormat.Encoding.PCM_SIGNED,
+                        baseFormat.getSampleRate(),
+                        16,
+                        baseFormat.getChannels(),
+                        baseFormat.getChannels() * 2,
+                        baseFormat.getSampleRate(),
+                        false
+                    );
+                    LOGGER.info("Decoded audio format: {}", decodedFormat);
+                    decodedBytesPerSecond = decodedFormat.getFrameRate() * decodedFormat.getFrameSize();
                 
-                LOGGER.info("Converting to PCM format...");
-                AudioInputStream decodedStream = null;
-                try {
-                    decodedStream = AudioSystem.getAudioInputStream(decodedFormat, audioInputStream);
+                    LOGGER.info("Converting to PCM format...");
+                    try (AudioInputStream decodedStream = AudioSystem.getAudioInputStream(decodedFormat, audioInputStream)) {
                     LOGGER.info("PCM conversion successful");
-                } catch (Exception e) {
-                    LOGGER.error("Failed to convert to PCM format", e);
-                    throw e;
-                }
                 
-                // Get a line to play the audio
-                DataLine.Info info = new DataLine.Info(SourceDataLine.class, decodedFormat);
-                if (!AudioSystem.isLineSupported(info)) {
-                    LOGGER.error("Audio line not supported: {}", info);
-                    return;
-                }
-                
-                LOGGER.info("Getting audio line...");
-                line = (SourceDataLine) AudioSystem.getLine(info);
-                LOGGER.info("Got audio line: {}", line);
-                
-                LOGGER.info("Opening audio line...");
-                line.open(decodedFormat);
-                LOGGER.info("Audio line opened, buffer size: {}", line.getBufferSize());
-                
-                // Set initial volume
-                updateVolume();
-                
-                LOGGER.info("Starting audio line...");
-                line.start();
-                LOGGER.info("Audio line started");
-                
-                // Play the audio
-                byte[] buffer = new byte[BUFFER_SIZE];
-                int bytesRead;
-                long totalBytesWritten = 0;
-                
-                LOGGER.info("Entering playback loop...");
-                while (playing && (bytesRead = decodedStream.read(buffer)) != -1) {
-                    // Handle pause (manual or game pause)
-                    while ((paused || gamePaused) && playing) {
-                        try {
-                            Thread.sleep(100);
-                        } catch (InterruptedException e) {
-                            break;
+                        if (totalDurationMillis <= 0L && audioInputStream.getFrameLength() > 0L &&
+                                baseFormat.getFrameRate() > 0.0F) {
+                            totalDurationMillis = Math.round(audioInputStream.getFrameLength() * 1000.0D /
+                                    baseFormat.getFrameRate());
                         }
-                    }
-                    
-                    if (!playing) break;
-                    
-                    // Update volume with fade effect
-                    updateVolumeWithFade();
-                    
-                    line.write(buffer, 0, bytesRead);
-                    totalBytesWritten += bytesRead;
-                    
-                    // Log progress every 1MB
-                    if (totalBytesWritten % (1024 * 1024) == 0) {
-                        LOGGER.debug("Played {} MB, line available: {}, active: {}", 
-                            totalBytesWritten / (1024 * 1024), line.available(), line.isActive());
+
+                        long targetBytes = millisToPcmBytes(startPositionMillis, decodedFormat);
+                        playedPcmBytes = skipDecodedBytes(decodedStream, targetBytes, decodedFormat.getFrameSize());
+
+                        // Get a line to play the audio
+                        DataLine.Info info = new DataLine.Info(SourceDataLine.class, decodedFormat);
+                        if (!AudioSystem.isLineSupported(info)) {
+                            LOGGER.error("Audio line not supported: {}", info);
+                            return;
+                        }
+                
+                        LOGGER.info("Getting audio line...");
+                        playbackLine = (SourceDataLine) AudioSystem.getLine(info);
+                        if (generation != playbackGeneration.get())
+                            return;
+                        line = playbackLine;
+                        LOGGER.info("Got audio line: {}", playbackLine);
+                
+                        LOGGER.info("Opening audio line...");
+                        playbackLine.open(decodedFormat);
+                        LOGGER.info("Audio line opened, buffer size: {}", playbackLine.getBufferSize());
+                
+                        // Set initial volume
+                        updateVolume();
+                
+                        LOGGER.info("Starting audio line...");
+                        playbackLine.start();
+                        LOGGER.info("Audio line started");
+                
+                        // Play the audio
+                        byte[] buffer = new byte[BUFFER_SIZE];
+                        int bytesRead;
+                        long totalBytesWritten = 0;
+                        long filterRevision = -1L;
+                        PcmFilterChain filterChain = PcmFilterChain.create(List.of(), decodedFormat);
+                
+                        LOGGER.info("Entering playback loop at {} ms...", getPositionMillis());
+                        while (generation == playbackGeneration.get() && playing &&
+                                (bytesRead = decodedStream.read(buffer)) != -1) {
+                            // Handle pause (manual or game pause)
+                            while ((paused || gamePaused) && generation == playbackGeneration.get() && playing) {
+                                try {
+                                    Thread.sleep(100);
+                                } catch (InterruptedException e) {
+                                    Thread.currentThread().interrupt();
+                                    break;
+                                }
+                            }
+
+                            if (generation != playbackGeneration.get() || !playing)
+                                break;
+
+                            updateVolumeWithFade();
+                            long currentFilterRevision = AudioFilterManager.revision();
+                            if (currentFilterRevision != filterRevision) {
+                                filterChain = PcmFilterChain.create(AudioFilterManager.activeMbmFilters(), decodedFormat);
+                                filterRevision = currentFilterRevision;
+                            }
+                            filterChain.process(buffer, bytesRead);
+                            playbackLine.write(buffer, 0, bytesRead);
+                            totalBytesWritten += bytesRead;
+                            playedPcmBytes += bytesRead;
+                        }
+
+                        LOGGER.info("Playback loop ended. Total bytes written: {}, playing: {}", totalBytesWritten, playing);
                     }
                 }
-                
-                LOGGER.info("Playback loop ended. Total bytes written: {}, playing: {}", totalBytesWritten, playing);
-                
-                // Cleanup
-                line.drain();
-                line.stop();
-                line.close();
-                decodedStream.close();
-                audioInputStream.close();
-                inputStream.close();
-                
                 LOGGER.info("Finished playing MP3 stream");
                 
             } catch (Throwable e) {
-                LOGGER.error("Error playing MP3 stream: {}", e.getMessage(), e);
-                LOGGER.error("Exception class: {}", e.getClass().getName());
-                LOGGER.error("Stack trace:", e);
-                if (e.getCause() != null) {
-                    LOGGER.error("Caused by: {}", e.getCause().getMessage(), e.getCause());
-                }
+                if (generation == playbackGeneration.get())
+                    LOGGER.error("Error playing MP3 stream: {}", e.getMessage(), e);
             } finally {
-                playing = false;
-                paused = false;
+                if (playbackLine != null) {
+                    try {
+                        playbackLine.stop();
+                        playbackLine.close();
+                    } catch (Exception ignored) {
+                    }
+                }
+                if (generation == playbackGeneration.get()) {
+                    playing = false;
+                    paused = false;
+                    line = null;
+                }
                 LOGGER.info("Playback thread finished");
             }
         });
@@ -190,24 +221,68 @@ public class StreamMusicPlayer {
     }
     
     /**
-     * Stop playback
+     * Stop playback - non-blocking
      */
     public void stop() {
+        playbackGeneration.incrementAndGet();
         playing = false;
         paused = false;
+        playedPcmBytes = 0L;
+        totalDurationMillis = 0L;
+        decodedBytesPerSecond = 0.0D;
         
-        if (playbackThread != null && playbackThread.isAlive()) {
-            try {
-                playbackThread.join(1000);
-            } catch (InterruptedException e) {
-                LOGGER.warn("Interrupted while waiting for playback thread to stop");
-            }
+        SourceDataLine activeLine = line;
+        line = null;
+        if (activeLine != null && activeLine.isOpen()) {
+            activeLine.stop();
+            activeLine.close();
         }
-        
-        if (line != null && line.isOpen()) {
-            line.stop();
-            line.close();
+    }
+
+    public long getPositionMillis() {
+        double bytesPerSecond = decodedBytesPerSecond;
+        return bytesPerSecond <= 0.0D ? 0L : Math.max(0L, Math.round(playedPcmBytes * 1000.0D / bytesPerSecond));
+    }
+
+    public long getDurationMillis() {
+        return totalDurationMillis;
+    }
+
+    private static long detectDurationMillis(MpegAudioFileReader reader, Path file) {
+        try {
+            AudioFileFormat format = reader.getAudioFileFormat(file.toFile());
+            Object duration = format.properties().get("duration");
+            if (duration instanceof Number number)
+                return Math.max(0L, number.longValue() / 1000L);
+            if (format.getFrameLength() > 0 && format.getFormat().getFrameRate() > 0.0F)
+                return Math.round(format.getFrameLength() * 1000.0D / format.getFormat().getFrameRate());
+        } catch (Exception e) {
+            LOGGER.debug("Unable to read MP3 duration for {}", file, e);
         }
+        return 0L;
+    }
+
+    private static long millisToPcmBytes(long millis, AudioFormat format) {
+        if (millis <= 0L)
+            return 0L;
+        long bytes = Math.round(millis / 1000.0D * format.getFrameRate() * format.getFrameSize());
+        return bytes - bytes % format.getFrameSize();
+    }
+
+    private static long skipDecodedBytes(AudioInputStream stream, long targetBytes, int frameSize) throws Exception {
+        byte[] buffer = new byte[BUFFER_SIZE];
+        long skipped = 0L;
+        while (skipped < targetBytes) {
+            int requested = (int)Math.min(buffer.length, targetBytes - skipped);
+            requested -= requested % frameSize;
+            if (requested <= 0)
+                break;
+            int read = stream.read(buffer, 0, requested);
+            if (read < 0)
+                break;
+            skipped += read;
+        }
+        return skipped;
     }
     
     /**
@@ -354,7 +429,6 @@ public class StreamMusicPlayer {
         try {
             // Get Minecraft's master and record volume
             Minecraft mc = Minecraft.getInstance();
-            SoundManager soundManager = mc.getSoundManager();
             float masterVolume = mc.options.getSoundSourceVolume(SoundSource.MASTER);
             float musicVolume = mc.options.getSoundSourceVolume(SoundSource.RECORDS);
             

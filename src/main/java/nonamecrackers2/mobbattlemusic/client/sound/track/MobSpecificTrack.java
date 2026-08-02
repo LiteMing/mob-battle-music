@@ -8,9 +8,14 @@ import javax.annotation.Nullable;
 
 import com.google.common.collect.Maps;
 
+import net.minecraft.client.Minecraft;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.Mob;
+import nonamecrackers2.mobbattlemusic.client.config.MobBattleMusicConfig;
+import nonamecrackers2.mobbattlemusic.client.util.AggressiveEntityStateClient;
 import nonamecrackers2.mobbattlemusic.client.util.MobSelection;
 
 public class MobSpecificTrack extends MobTrack {
@@ -21,6 +26,7 @@ public class MobSpecificTrack extends MobTrack {
 	private final String matchMethod;
 	@Nullable
 	private final String matchValue;
+	private final boolean matchPanicTarget;
 
 	public MobSpecificTrack(EntityType<?> type, ResourceLocation track, int fadeTime, MobSelection.GroupType group,
 			MobSelection.Selector selector) {
@@ -29,10 +35,17 @@ public class MobSpecificTrack extends MobTrack {
 
 	public MobSpecificTrack(EntityType<?> type, @Nullable String matchMethod, @Nullable String matchValue,
 			ResourceLocation track, int fadeTime, MobSelection.GroupType group, MobSelection.Selector selector) {
+		this(type, matchMethod, matchValue, track, fadeTime, group, selector, true);
+	}
+
+	public MobSpecificTrack(EntityType<?> type, @Nullable String matchMethod, @Nullable String matchValue,
+			ResourceLocation track, int fadeTime, MobSelection.GroupType group, MobSelection.Selector selector,
+			boolean matchPanicTarget) {
 		super(track, fadeTime, group, selector);
 		this.type = type;
 		this.matchMethod = matchMethod;
 		this.matchValue = matchValue;
+		this.matchPanicTarget = matchPanicTarget;
 	}
 
 	private boolean matchesEntity(LivingEntity entity) {
@@ -66,7 +79,41 @@ public class MobSpecificTrack extends MobTrack {
 
 	@Override
 	public boolean canPlay(MobSelection selection) {
-		return selection.panicTarget() != null && this.matchesEntity(selection.panicTarget())
-				|| this.getMobs(selection).stream().anyMatch(this::matchesEntity);
+		return this.matchPanicTarget && selection.panicTarget() != null && this.matchesEntity(selection.panicTarget())
+				|| this.getMobs(selection).stream().anyMatch(this::matchesEntity)
+				|| this.matchesLoadedEntity();
+	}
+	
+	private boolean matchesLoadedEntity() {
+		Minecraft mc = Minecraft.getInstance();
+		if (mc.level == null || mc.player == null)
+			return false;
+		for (Entity entity : mc.level.entitiesForRendering()) {
+			if (!(entity instanceof LivingEntity living) || !this.matchesEntity(living))
+				continue;
+			if (!living.isAlive() || living.distanceTo(mc.player) > MobBattleMusicConfig.CLIENT.maxMobSearchRadius.get())
+				continue;
+			if (!selectorMatches(mc, living))
+				continue;
+			return switch (this.group) {
+				case ATTACKING -> this.matchPanicTarget && living instanceof Mob mob &&
+						mob.distanceTo(mc.player) <= MobBattleMusicConfig.CLIENT.threatRadius.get() &&
+						(AggressiveEntityStateClient.isServerAggressive(mob.getUUID()) ||
+								mob.isAggressive() || mob.getTarget() != null);
+				case ENEMIES -> true;
+			};
+		}
+		return false;
+	}
+	
+	private boolean selectorMatches(Minecraft mc, LivingEntity entity) {
+		return switch (this.selector) {
+			case ANY -> true;
+			case LINE_OF_SIGHT -> mc.player.hasLineOfSight(entity);
+			case ON_SCREEN -> {
+				var frustum = mc.levelRenderer.getFrustum();
+				yield frustum != null && frustum.isVisible(entity.getBoundingBox()) && mc.player.hasLineOfSight(entity);
+			}
+		};
 	}
 }

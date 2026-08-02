@@ -14,7 +14,7 @@ public class UrlResolver {
     
     // Pattern to match Netease Cloud Music song URLs
     private static final Pattern NETEASE_SONG_PATTERN = Pattern.compile(
-        "(?:https?://)?music\\.163\\.com/song\\?id=(\\d+)"
+        "(?:https?://)?music\\.163\\.com/(?:song\\?id=|song/media/outer/url\\?id=)(\\d+)"
     );
     
     /**
@@ -52,5 +52,13 @@ public class UrlResolver {
         
         // Check if it's a Netease Cloud Music song page URL
         return NETEASE_SONG_PATTERN.matcher(url).find();
+    }
+
+    public static String neteaseSongId(String url) {
+        if (url == null || url.isEmpty()) {
+            return null;
+        }
+        Matcher neteaseMatcher = NETEASE_SONG_PATTERN.matcher(url);
+        return neteaseMatcher.find() ? neteaseMatcher.group(1) : null;
     }
 }

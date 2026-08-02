@@ -1,11 +1,10 @@
 package nonamecrackers2.mobbattlemusic.client.music;
 
-import java.io.FileInputStream;
-import java.io.InputStream;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -24,7 +23,11 @@ public class ExternalMusicHandler {
     private final MusicDownloader downloader;
     private final StreamMusicPlayer player;
     private final Map<String, CompletableFuture<Path>> ongoingDownloads;
-    private String currentlyPlayingUrl;
+    private final AtomicLong playbackRequest = new AtomicLong();
+    private volatile String currentlyPlayingUrl;
+    private volatile Path currentlyPlayingPath;
+    private volatile long currentDurationHintMillis;
+    private volatile boolean previewing;
     
     private ExternalMusicHandler() {
         this.cache = new MusicCache();
@@ -47,6 +50,7 @@ public class ExternalMusicHandler {
      * @return CompletableFuture with the Path of the cached file, or null if failed
      */
     public CompletableFuture<Path> prepareMusicFile(String url) {
+        MusicMetadataCache.getInstance().prepare(url);
         // Check if already downloading
         CompletableFuture<Path> ongoing = ongoingDownloads.get(url);
         if (ongoing != null) {
@@ -67,7 +71,8 @@ public class ExternalMusicHandler {
                 LOGGER.info("Preparing music file from URL: {}", url);
                 
                 // Download the file
-                byte[] mp3Data = downloader.download(url, progress -> {
+                String resolvedUrl = UrlResolver.resolveUrl(url);
+                byte[] mp3Data = downloader.download(resolvedUrl, progress -> {
                     LOGGER.debug("Download progress for {}: {}", url, progress);
                 }).join();
                 
@@ -104,20 +109,52 @@ public class ExternalMusicHandler {
      * @param url The external music URL
      */
     public void playMusic(String url) {
+        playMusic(url, 0);
+    }
+    
+    /**
+     * Play music from an external URL
+     * @param url The external music URL
+     * @param fadeTime Fade-in time in ticks
+     */
+    public void playMusic(String url, int fadeTime) {
+        playMusic(url, fadeTime, 0L);
+    }
+
+    public void playMusic(String url, int fadeTime, long durationHintMillis) {
+        playMusic(url, fadeTime, 0L, durationHintMillis, false);
+    }
+
+    public void playMusicFrom(String url, int fadeTime, long startPositionMillis) {
+        playMusic(url, fadeTime, Math.max(0L, startPositionMillis), 0L, false);
+    }
+
+    public void playPreviewMusic(String url, int fadeTime, long durationHintMillis) {
+        playMusic(url, fadeTime, 0L, durationHintMillis, true);
+    }
+
+    private void playMusic(String url, int fadeTime, long startPositionMillis, long durationHintMillis, boolean preview) {
+        long request = playbackRequest.incrementAndGet();
+        this.previewing = preview;
+        this.currentlyPlayingUrl = url;
+        this.currentlyPlayingPath = null;
+        this.currentDurationHintMillis = Math.max(0L, durationHintMillis);
         prepareMusicFile(url).thenAccept(cachedPath -> {
+            if (request != playbackRequest.get())
+                return;
             if (cachedPath == null) {
+                if (preview)
+                    previewing = false;
+                currentlyPlayingUrl = null;
+                currentlyPlayingPath = null;
+                currentDurationHintMillis = 0L;
                 LOGGER.error("Failed to prepare music file for playback: {}", url);
                 return;
             }
             
             try {
-                // Stop any currently playing music
-                stopMusic();
-                
-                // Play the cached MP3 file
-                InputStream inputStream = new FileInputStream(cachedPath.toFile());
-                player.play(inputStream);
-                currentlyPlayingUrl = url;
+                player.play(cachedPath, fadeTime, startPositionMillis, durationHintMillis);
+                currentlyPlayingPath = cachedPath;
                 
                 LOGGER.info("Started playing music from: {}", url);
                 
@@ -131,8 +168,36 @@ public class ExternalMusicHandler {
      * Stop currently playing music
      */
     public void stopMusic() {
+        playbackRequest.incrementAndGet();
         player.stop();
         currentlyPlayingUrl = null;
+        currentlyPlayingPath = null;
+        currentDurationHintMillis = 0L;
+        previewing = false;
+    }
+
+    public void stopPreviewMusic() {
+        if (this.previewing)
+            stopMusic();
+    }
+
+    public boolean seekMusic(long positionMillis) {
+        Path path = currentlyPlayingPath;
+        if (path == null || currentlyPlayingUrl == null)
+            return false;
+        long duration = getDurationMillis();
+        long clamped = duration > 0L ? Math.max(0L, Math.min(positionMillis, duration - 1L)) : Math.max(0L, positionMillis);
+        playbackRequest.incrementAndGet();
+        player.play(path, 0, clamped, currentDurationHintMillis);
+        return true;
+    }
+
+    public long getPositionMillis() {
+        return player.getPositionMillis();
+    }
+
+    public long getDurationMillis() {
+        return Math.max(player.getDurationMillis(), currentDurationHintMillis);
     }
     
     /**
@@ -154,6 +219,20 @@ public class ExternalMusicHandler {
      */
     public boolean isPlaying() {
         return player.isPlaying();
+    }
+
+    public boolean isPreviewing() {
+        if (this.previewing && this.currentlyPlayingPath != null && !this.player.isPlaying() && !this.player.isPaused()) {
+            this.previewing = false;
+            this.currentlyPlayingUrl = null;
+            this.currentlyPlayingPath = null;
+            this.currentDurationHintMillis = 0L;
+        }
+        return this.previewing;
+    }
+
+    public boolean isPreparingCurrentMusic() {
+        return this.currentlyPlayingUrl != null && this.currentlyPlayingPath == null;
     }
     
     /**

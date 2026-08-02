@@ -6,6 +6,8 @@
 	"mixins": [
 	],
 	"client": [
+		"MixinChannel",
+		"MixinChannelAccessor",
 		"MixinLivingEntity",
 		"MixinSoundEngine",
 		"MixinMusicManager",

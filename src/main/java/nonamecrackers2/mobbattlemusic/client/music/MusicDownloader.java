@@ -66,6 +66,11 @@ public class MusicDownloader {
             
             if (response.statusCode() >= 200 && response.statusCode() < 300) {
                 byte[] data = response.body();
+                String contentType = response.headers().firstValue("Content-Type").orElse("");
+                if (contentType.toLowerCase(java.util.Locale.ROOT).contains("text/html") ||
+                        !MusicCache.isLikelyMp3(data)) {
+                    throw new IOException("Response is not MP3 audio (Content-Type: " + contentType + ")");
+                }
                 
                 if (progressCallback != null) {
                     DownloadProgress progress = new DownloadProgress();
@@ -139,6 +144,11 @@ public class MusicDownloader {
                 
                 if (response.statusCode() >= 200 && response.statusCode() < 300) {
                     byte[] data = response.body();
+                    String contentType = response.headers().firstValue("Content-Type").orElse("");
+                    if (contentType.toLowerCase(java.util.Locale.ROOT).contains("text/html") ||
+                            !MusicCache.isLikelyMp3(data)) {
+                        throw new IOException("Response is not MP3 audio (Content-Type: " + contentType + ")");
+                    }
                     outputStream.write(data);
                     outputStream.flush();
                     

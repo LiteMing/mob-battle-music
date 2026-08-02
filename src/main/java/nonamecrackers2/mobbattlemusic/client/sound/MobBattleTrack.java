@@ -17,9 +17,14 @@ public class MobBattleTrack extends AbstractSoundInstance implements TickableSou
 	
 	public MobBattleTrack(ResourceLocation sound, int fadeTime)
 	{
+		this(sound, fadeTime, true);
+	}
+
+	public MobBattleTrack(ResourceLocation sound, int fadeTime, boolean looping)
+	{
 		super(sound, BattleMusicManager.DEFAULT_SOUND_SOURCE, SoundInstance.createUnseededRandom());
 		this.fadeTime = fadeTime;
-		this.looping = true;
+		this.looping = looping;
 		this.delay = 0;
 		this.volume = 0.0F;
 		this.relative = true;
@@ -41,6 +46,11 @@ public class MobBattleTrack extends AbstractSoundInstance implements TickableSou
 	public void setTargetedVolume(float volume)
 	{
 		this.targetedVolume = volume;
+	}
+
+	public ResourceLocation getTrackLocation()
+	{
+		return this.location;
 	}
 	
 	@Override
