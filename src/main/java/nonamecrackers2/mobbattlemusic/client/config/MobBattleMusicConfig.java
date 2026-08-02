@@ -39,6 +39,7 @@ public class MobBattleMusicConfig
 		public final ForgeConfigSpec.ConfigValue<Double> playerFadeTime;
 		public final ForgeConfigSpec.ConfigValue<Boolean> playerTrackEnabled;
 		public final ForgeConfigSpec.ConfigValue<Integer> calmDownTime;
+		public final ForgeConfigSpec.ConfigValue<Integer> idleResumeDelay;
 		public final ForgeConfigSpec.ConfigValue<Boolean> punchingCountsAsViolence;
 		
 		// External Music Config
@@ -72,7 +73,9 @@ public class MobBattleMusicConfig
 			this.musicTrackEmptyTime = this.createRangedIntValue(15, 1, 300, "musicTrackEmptyTime", false, "Specifies the time (in seconds) that a music track must not be playing for it to stop completely. Higher time will make it so music tracks won't restart as much if they fade back in for whatever reason");
 			
 			this.calmDownTime = this.createRangedIntValue(5, 1, 300, "calmDownTime", false, "Specifies the time (in seconds) after there is no longer a nearby threat for the aggressive/player music tracks to stop playing. Effectively acts as the player 'calming down' after being attacked");
-			
+
+			this.idleResumeDelay = this.createRangedIntValue(15, 0, 300, "idleResumeDelay", false, "Specifies how long idle playlists remain suppressed after a higher-priority non-idle track stops");
+
 			builder.comment("Non-aggressive music track").push("non_aggro");
 			
 			this.nonAggressiveTrackEnabled = this.createValue(true, "nonAggressiveTrackEnabled", false, "Specifies if the non-aggressive music track should play at all");

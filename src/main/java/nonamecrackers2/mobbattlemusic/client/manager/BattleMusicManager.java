@@ -70,6 +70,7 @@ public class BattleMusicManager {
 	private final Map<TrackType, ExternalUrlMusicTrack> externalTracks = Maps.newHashMap(); // For external URL tracks
 	private final Map<ResourceLocation, Long> idleNextStartMillis = Maps.newHashMap();
 	private final Map<ResourceLocation, ResumeState> externalResumeStates = Maps.newHashMap();
+	private long idleSuppressedUntilMillis;
 	private @Nullable ResourceLocation timelineTrack;
 	private String timelineUrl = "";
 	private long timelineLastPosition = -1L;
@@ -218,13 +219,16 @@ public class BattleMusicManager {
 		// 更新音轨
 		List<TrackType> tracks = MusicTracksManager.getInstance().getTracks();
 
+		long now = System.currentTimeMillis();
 		TrackType priority = null;
 		for (TrackType type : tracks) {
-			if (type.canPlay(selection) && isStartAllowed(type)) {
+			if (type.canPlay(selection) && isStartAllowed(type, now)) {
 				priority = type;
 				break;
 			}
 		}
+		if (priority != null && !priority.isIdlePlayback())
+			this.idleSuppressedUntilMillis = now + MobBattleMusicConfig.CLIENT.idleResumeDelay.get() * 1000L;
 		this.priorityTrack = priority;
 
 		for (TrackType type : tracks) {
@@ -382,11 +386,12 @@ public class BattleMusicManager {
 		}
 	}
 
-	private boolean isStartAllowed(TrackType type)
+	private boolean isStartAllowed(TrackType type, long now)
 	{
 		if (!type.isIdlePlayback())
 			return true;
-		return System.currentTimeMillis() >= this.idleNextStartMillis.getOrDefault(type.getTrack(), 0L);
+		return now >= this.idleSuppressedUntilMillis &&
+				now >= this.idleNextStartMillis.getOrDefault(type.getTrack(), 0L);
 	}
 
 	private void scheduleIdleNextStart(TrackType type)
@@ -493,6 +498,7 @@ public class BattleMusicManager {
 		}
 		this.externalResumeStates.clear();
 		this.idleNextStartMillis.clear();
+		this.idleSuppressedUntilMillis = 0L;
 		this.timelineTrack = null;
 		this.timelineUrl = "";
 		this.timelineLastPosition = -1L;
