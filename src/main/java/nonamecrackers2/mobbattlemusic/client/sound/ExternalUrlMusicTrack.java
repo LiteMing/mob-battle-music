@@ -108,7 +108,9 @@ public class ExternalUrlMusicTrack {
         }
         if (!url.equals(handler.getCurrentlyPlayingUrl()))
             return true;
-        return !handler.isPreparingCurrentMusic() && !player.isPlaying() && !player.isPaused();
+        // AUD-43: liveness predicate; isPlaying() (audible) would treat a
+        // paused track as stopped
+        return !handler.isPreparingCurrentMusic() && !player.hasActiveTrack();
     }
     
     /**

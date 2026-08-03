@@ -249,14 +249,16 @@ public final class WorldPlaybackChannel
 		// reflects reality. The channel state is the convergence target and is
 		// never modified here.
 		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
-		boolean playing = handler.isPlaying() || handler.isPreparingCurrentMusic();
+		// AUD-43: liveness is independent of pause/mute; isPlaying() (audible)
+		// would report a paused track as ended
+		boolean alive = handler.getPlayer().hasActiveTrack() || handler.isPreparingCurrentMusic();
 		switch (WorldPlaybackChannel.state()) {
 			case STOPPED -> {
-				if (playing)
+				if (alive)
 					beginPlayback(handler);
 			}
 			case PLAYING -> {
-				if (playing) {
+				if (alive) {
 					if (WorldPlaybackChannel.handle == null)
 						beginPlayback(handler);
 				} else {
@@ -266,7 +268,7 @@ public final class WorldPlaybackChannel
 			case MUTED -> {
 				// mute keeps the clock running; playback starting while muted
 				// still needs a handle for invalidation and marker counting
-				if (playing && WorldPlaybackChannel.handle == null)
+				if (alive && WorldPlaybackChannel.handle == null)
 					beginPlayback(handler);
 			}
 			case PAUSED -> { }
