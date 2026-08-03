@@ -289,13 +289,18 @@ public class ExternalMusicHandler {
         this.audioIo.execute(() -> {
             if (request != this.seekRequest.get())
                 return;
+            // AUD-52 v1.3/R5: record the playback generation before the seek;
+            // only a watermark stamp from a strictly newer generation counts
+            long generationBefore = this.player.getPlaybackGeneration();
             this.seekMusic(positionMillis);
             // AUD-52 v1.2: wait for the new line's first watermark fill (the
             // output actually reached the target position); capped at 1500ms
             long deadline = System.currentTimeMillis() + 1500L;
             long watermarkReached = 0L;
             while (watermarkReached == 0L && System.currentTimeMillis() < deadline) {
-                watermarkReached = this.player.getLastWatermarkReachedAtMillis();
+                StreamMusicPlayer.WatermarkStamp stamp = this.player.getWatermarkStamp();
+                if (stamp.generation() > generationBefore)
+                    watermarkReached = stamp.millis();
                 if (watermarkReached == 0L) {
                     try {
                         Thread.sleep(5);

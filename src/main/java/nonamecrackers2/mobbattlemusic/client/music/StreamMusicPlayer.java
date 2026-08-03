@@ -70,9 +70,14 @@ public class StreamMusicPlayer {
     private volatile long lineWatermarkBytes;
     // AUD-30 v1.5: cumulative underrun count since the last playback start
     private volatile long underruns;
-    // AUD-52 修订: first time the line fill reached the watermark in the
-    // current generation (seek cost measurement)
-    private volatile long lastWatermarkReachedAtMillis;
+    // AUD-52 v1.3/R5: the cross-generation watermark timestamp is published
+    // together with its generation tag as one immutable record, written with
+    // the local generation variable of startPlayback (never with a re-read of
+    // playbackGeneration, which stop() may have advanced already)
+    public record WatermarkStamp(long generation, long millis) {
+        public static final WatermarkStamp EMPTY = new WatermarkStamp(-1L, 0L);
+    }
+    private volatile WatermarkStamp watermarkStamp = WatermarkStamp.EMPTY;
     // AUD-48 v1.5: underrun transient-window suppression and the downward
     // adaptive path (consecutive 10s without an underrun -> -10ms, floor 60ms)
     private static final long UNDERRUN_TRANSIENT_BUFFERS = 8L;
@@ -80,7 +85,9 @@ public class StreamMusicPlayer {
     private static final long WATERMARK_DOWN_PERIOD_MILLIS = 10_000L;
     private volatile long bufferIndex;
     private volatile long resumeBufferIndex = -1L;
-    private volatile long lastUnderrunAtMillis;
+    // AUD-48 v1.6: the last-underrun timestamp shares the lifecycle of the
+    // adaptive watermark (static, cleared only by resetAdaptiveWatermark)
+    private static volatile long lastUnderrunAtMillis;
     
     /**
      * AUD-44/45: a single gain envelope, shape
@@ -321,11 +328,14 @@ public class StreamMusicPlayer {
                                 decodedFormat.getFrameRate() * decodedFormat.getFrameSize()
                                         * watermarkMillis / 1000.0D));
                         underruns = 0L;
-                        lastWatermarkReachedAtMillis = 0L;
+                        // AUD-52 v1.3/R5: the watermark stamp is reset for the
+                        // new generation; it will be published with the local
+                        // generation variable once the fill reaches the
+                        // watermark
+                        this.watermarkStamp = WatermarkStamp.EMPTY;
                         // AUD-48 v1.5: transient-window tracking starts per generation
                         bufferIndex = 0L;
                         resumeBufferIndex = -1L;
-                        lastUnderrunAtMillis = 0L;
                         // AUD-47: a freshly opened line starts its frame counter at
                         // zero; record the frame rate for position derivation
                         lineFrameRate = decodedFormat.getFrameRate();
@@ -346,7 +356,9 @@ public class StreamMusicPlayer {
                         while (generation == playbackGeneration.get() && playing &&
                                 (bytesRead = decodedStream.read(buffer)) != -1) {
                             // Handle pause (manual or game pause)
-                            boolean wasGamePaused = gamePaused;
+                            // AUD-48 v1.6: paused and gamePaused are treated
+                            // alike for the underrun transient window
+                            boolean wasSuspended = paused || gamePaused;
                             while ((paused || gamePaused) && generation == playbackGeneration.get() && playing) {
                                 try {
                                     Thread.sleep(100);
@@ -357,7 +369,7 @@ public class StreamMusicPlayer {
                             }
                             // AUD-48 v1.5: remember the resume point for the
                             // underrun transient window
-                            if (wasGamePaused && !gamePaused)
+                            if (wasSuspended && !(paused || gamePaused))
                                 this.resumeBufferIndex = this.bufferIndex;
 
                             if (generation != playbackGeneration.get() || !playing)
@@ -368,14 +380,14 @@ public class StreamMusicPlayer {
                             long nowMillis = System.currentTimeMillis();
                             long currentWatermark = StreamMusicPlayer.adaptiveWatermarkMillis > 0L
                                     ? StreamMusicPlayer.adaptiveWatermarkMillis : 60L;
-                            if (currentWatermark > 60L && this.lastUnderrunAtMillis > 0L
-                                    && nowMillis - this.lastUnderrunAtMillis >= WATERMARK_DOWN_PERIOD_MILLIS) {
+                            if (currentWatermark > 60L && StreamMusicPlayer.lastUnderrunAtMillis > 0L
+                                    && nowMillis - StreamMusicPlayer.lastUnderrunAtMillis >= WATERMARK_DOWN_PERIOD_MILLIS) {
                                 long lowered = Math.max(60L, currentWatermark - WATERMARK_DOWN_MILLIS);
                                 StreamMusicPlayer.adaptiveWatermarkMillis = lowered;
                                 this.lineWatermarkBytes = Math.max(1L, Math.round(
                                         this.lineFrameRate * decodedFormat.getFrameSize()
                                                 * lowered / 1000.0D));
-                                this.lastUnderrunAtMillis = nowMillis;
+                                StreamMusicPlayer.lastUnderrunAtMillis = nowMillis;
                                 LOGGER.debug("[MBM] AUD-48 v1.5 watermark lowered to {}ms", lowered);
                             }
 
@@ -389,7 +401,7 @@ public class StreamMusicPlayer {
                             if (totalBytesWritten > 0L && !transientWindow
                                     && playbackLine.available() >= playbackLine.getBufferSize()) {
                                 underruns++;
-                                this.lastUnderrunAtMillis = System.currentTimeMillis();
+                                StreamMusicPlayer.lastUnderrunAtMillis = System.currentTimeMillis();
                                 // AUD-48 v1.4: adaptive watermark, +20ms per
                                 // underrun, capped at 150ms; persists across
                                 // startPlayback via the static field
@@ -411,11 +423,15 @@ public class StreamMusicPlayer {
                                 int capacity = playbackLine.getBufferSize();
                                 int filled = capacity - playbackLine.available();
                                 if (filled <= this.lineWatermarkBytes || filled < BUFFER_SIZE) {
-                                    // AUD-52 修订: first time this generation's
-                                    // fill reaches the watermark (seek cost)
-                                    if (this.lastWatermarkReachedAtMillis == 0L
+                                    // AUD-52 v1.3/R5: publish the watermark
+                                    // stamp once per generation, using the
+                                    // local generation variable - never a
+                                    // re-read of playbackGeneration (stop()
+                                    // advances it before the new line opens)
+                                    if (this.watermarkStamp.generation() < 0L
                                             && filled >= this.lineWatermarkBytes)
-                                        this.lastWatermarkReachedAtMillis = System.currentTimeMillis();
+                                        this.watermarkStamp = new WatermarkStamp(generation,
+                                                System.currentTimeMillis());
                                     break;
                                 }
                                 Thread.sleep(2);
@@ -496,6 +512,11 @@ public class StreamMusicPlayer {
         lineFrameRate = 0.0F;
         lineWatermarkBytes = 0L;
         underruns = 0L;
+        // AUD-52 v1.3/R5: stop() invalidates the cross-generation stamp
+        this.watermarkStamp = WatermarkStamp.EMPTY;
+        // AUD-48 v1.6: transient-window bases reset with the generation
+        bufferIndex = 0L;
+        resumeBufferIndex = -1L;
         
         SourceDataLine activeLine = line;
         line = null;
@@ -552,9 +573,15 @@ public class StreamMusicPlayer {
         return this.playCalls.get();
     }
 
-    // AUD-52 修订: first watermark fill of the current generation (seek cost)
-    public long getLastWatermarkReachedAtMillis() {
-        return this.lastWatermarkReachedAtMillis;
+    // AUD-52 v1.3/R5: the watermark stamp (generation + millis), published as
+    // one immutable record; EMPTY means no stamp for the current generation
+    public WatermarkStamp getWatermarkStamp() {
+        return this.watermarkStamp;
+    }
+
+    // AUD-52 v1.3/R5: playbackGeneration accessor for generation checks
+    public long getPlaybackGeneration() {
+        return this.playbackGeneration.get();
     }
 
     // AUD-48 v1.4: has the adaptive watermark converged above the 60ms start?
@@ -562,9 +589,11 @@ public class StreamMusicPlayer {
         return StreamMusicPlayer.adaptiveWatermarkMillis > 0L;
     }
 
-    // AUD-48 v1.4: reset the converged watermark (world unload)
+    // AUD-48 v1.4/v1.6: reset the converged watermark and its co-state (world
+    // unload); both share the same lifecycle scope
     public static void resetAdaptiveWatermark() {
         StreamMusicPlayer.adaptiveWatermarkMillis = 0L;
+        StreamMusicPlayer.lastUnderrunAtMillis = 0L;
     }
 
     public long getDurationMillis() {

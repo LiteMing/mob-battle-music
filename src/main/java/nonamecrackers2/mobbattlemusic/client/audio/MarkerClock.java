@@ -35,6 +35,13 @@ public final class MarkerClock
 	// AUD-50 v1.1: explicit anchor validity - a migration edge carried by its
 	// own boolean state, never inferred from the converged ClockState
 	private static volatile boolean anchorValid;
+	// AUD-50 v1.2: explicit re-anchor request, set only on the PAUSED ->
+	// PLAYING migration edge, cleared after the re-anchor executes
+	private static volatile boolean reanchorRequested;
+	// AUD-52 v1.3: give-up state, independent of the clock state - never
+	// expressed via FROZEN, never clears the anchor, never triggers a
+	// re-anchor; cleared only by beginPlayback (track switch) and invalidate
+	private static volatile boolean correctionDisabled;
 
 	private MarkerClock() {}
 
@@ -63,6 +70,9 @@ public final class MarkerClock
 		MarkerClock.state = ClockState.STOPPED;
 		// AUD-50 v1.1: invalidating the clock invalidates the anchor
 		MarkerClock.anchorValid = false;
+		// AUD-52 v1.3: invalidation also clears the give-up state
+		MarkerClock.correctionDisabled = false;
+		MarkerClock.reanchorRequested = false;
 	}
 
 	public static void setState(ClockState state)
@@ -79,6 +89,45 @@ public final class MarkerClock
 		return MarkerClock.anchorValid;
 	}
 
+	// R4: a track switch invalidates the anchor - the new track is not yet
+	// anchored; only the anchor bit is touched
+	public static void invalidateAnchor()
+	{
+		MarkerClock.anchorValid = false;
+	}
+
+	// AUD-50 v1.2: explicit re-anchor request API
+	public static void requestReanchor()
+	{
+		MarkerClock.reanchorRequested = true;
+	}
+
+	public static boolean reanchorRequested()
+	{
+		return MarkerClock.reanchorRequested;
+	}
+
+	public static void clearReanchorRequest()
+	{
+		MarkerClock.reanchorRequested = false;
+	}
+
+	// AUD-52 v1.3: give-up state accessors
+	public static void disableCorrection()
+	{
+		MarkerClock.correctionDisabled = true;
+	}
+
+	public static void enableCorrection()
+	{
+		MarkerClock.correctionDisabled = false;
+	}
+
+	public static boolean isCorrectionDisabled()
+	{
+		return MarkerClock.correctionDisabled;
+	}
+
 	public static ClockState state()
 	{
 		return MarkerClock.state;
@@ -91,12 +140,14 @@ public final class MarkerClock
 
 	/**
 	 * Drift in seconds: positive = local playback ahead of the server anchor.
+	 * R4: "no usable anchor for this track" is NO DATA - reported as NaN,
+	 * never as zero drift (zero is a legal, and the healthiest-looking, value).
 	 */
 	public static double driftSeconds(String trackId, long localPositionMillis)
 	{
 		ClockSource clockSource = MarkerClock.source;
 		if (clockSource == null || !clockSource.trackId().equals(trackId))
-			return 0.0D;
+			return Double.NaN;
 		double serverPosition = serverPositionSeconds(clockSource);
 		return localPositionMillis / 1000.0D - serverPosition + MarkerClock.effectiveInjectedDrift();
 	}
@@ -130,8 +181,10 @@ public final class MarkerClock
 	 */
 	public static void tick(String trackId, long localPositionMillis, CorrectionSink sink)
 	{
-		// AUD-50/AUD-50 v1.1: state guard plus anchor validity, first line
-		if (MarkerClock.state != ClockState.RUNNING || !MarkerClock.anchorValid)
+		// AUD-50/AUD-50 v1.1/AUD-52 v1.3: state guard, anchor validity and
+		// give-up guard, first line
+		if (MarkerClock.state != ClockState.RUNNING || !MarkerClock.anchorValid
+				|| MarkerClock.correctionDisabled)
 			return;
 		ClockSource clockSource = MarkerClock.source;
 		if (clockSource == null || !clockSource.trackId().equals(trackId))

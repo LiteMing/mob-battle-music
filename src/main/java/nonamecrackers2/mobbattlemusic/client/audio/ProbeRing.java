@@ -11,10 +11,12 @@ import org.apache.logging.log4j.Logger;
 
 /**
  * AUD-54: fixed-size ring buffer of numeric probe snapshots (400 ticks,
- * ~20 seconds). Sampling stores raw numbers only - no allocation, no string
- * formatting, no I/O on the tick thread. Formatting copies the array under
- * the lock and formats outside it (AUD-54 追加). The field set is a superset
- * of the single-frame probe (debug session reuses the last frame).
+ * ~20 seconds). Sampling performs one record allocation plus derived-value
+ * computation per tick - no string formatting and no I/O on the tick thread;
+ * those happen only at dump time (honest accounting, AUD-39 追加). Formatting
+ * copies the array under the lock and formats outside it (AUD-54 追加). The
+ * field set is a superset of the single-frame probe (debug session reuses the
+ * last frame).
  */
 public final class ProbeRing
 {
@@ -106,7 +108,9 @@ public final class ProbeRing
 				.append(" gateOwner=").append(s.gateOwner())
 				.append(" audible=").append(s.audiblePosMillis())
 				.append(" decoded=").append(s.decodedPosMillis())
-				.append(" drift=").append(s.driftMillis())
+				// R4: no anchor -> drift is n/a, never a fabricated zero
+				.append(" drift=").append(s.driftMillis() == Long.MIN_VALUE
+						? "n/a" : String.valueOf(s.driftMillis()))
 				.append(" lastSync=").append(s.lastSyncMillis())
 				.append(" injectedTtl=").append(s.injectedTtlMillis())
 				.append(" seeks=").append(s.seeks())
