@@ -17,6 +17,9 @@ final class PlaylistScreenLayout
 	static final int TITLE_H = 20;
 	static final int TAB_H = 20;
 	static final int ACTION_H = 26;
+	// K11-B: the main-channel player dock occupies the bottom 56px - the
+	// frame ends above it so lists/action bar never overlap the dock
+	static final int DOCK_H = 56;
 
 	private static final int MIN_SIDEBAR_W = 84;
 	private static final int MIN_MAIN_W = 92;
@@ -51,7 +54,8 @@ final class PlaylistScreenLayout
 		int frameX = PADDING;
 		int frameY = PADDING;
 		int frameWidth = Math.max(1, screenWidth - PADDING * 2);
-		int frameHeight = Math.max(1, screenHeight - PADDING * 2);
+		// K11-B: reserve the player dock height at the bottom
+		int frameHeight = Math.max(1, screenHeight - PADDING * 2 - DOCK_H);
 		int titleY = frameY;
 		int tabsY = titleY + TITLE_H + GAP;
 		int contentY = tabsY + TAB_H + GAP;

@@ -233,14 +233,18 @@ public class BattleMusicManager {
 			}
 		}
 
-		// K10-B: MAN hold - while the user holds the main-channel dock (MAN
-		// owner), the AUTO selection engine must NOT overwrite, fade out,
-		// stop or restart the manually chosen track. Threat/combat-session
-		// bookkeeping and timeline markers still run (they observe, they do
-		// not select). Returning to AUTO requires the explicit dock action.
-		boolean manHold = WorldPlaybackChannel.playbackOwner() == WorldPlaybackChannel.PlaybackOwner.MAN;
-		if (manHold) {
-			LOGGER.debug("[MBM] MAN hold active - AUTO selection suspended");
+		// K11-B: any non-AUTO owner holds the deck - AUTO must never write
+		// the player while the user (MAN) or the server (CUE) drives it.
+		// Threat/combat-session bookkeeping and timeline markers still run
+		// (they observe, they do not select). Returning to AUTO requires an
+		// explicit action (MAN: the dock badge; CUE: server release only).
+		boolean autoHold = WorldPlaybackChannel.playbackOwner() != WorldPlaybackChannel.PlaybackOwner.AUTO;
+		if (autoHold) {
+			// K11-B: keep the external wrapper collection in sync with the
+			// session player so marker ticking follows manual selections
+			syncExternalTrackWrappersToSession();
+			LOGGER.debug("[MBM] {} hold active - AUTO selection suspended",
+					WorldPlaybackChannel.playbackOwner());
 			tickTimelineMarkers();
 			return;
 		}
@@ -274,6 +278,35 @@ public class BattleMusicManager {
 			});
 		}
 		tickTimelineMarkers();
+	}
+
+	/**
+	 * K11-B: while a non-AUTO owner holds the deck, the selection engine does
+	 * not rebuild wrappers - this mirrors the session player into the
+	 * external wrapper collection so timeline markers keep ticking on manual
+	 * selections. Wrappers are adopted (never played).
+	 */
+	private void syncExternalTrackWrappersToSession()
+	{
+		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
+		String url = handler.getCurrentlyPlayingUrl();
+		if (url == null || handler.isPreparingCurrentMusic())
+			return;
+		MusicTracksManager manager = MusicTracksManager.getInstance();
+		for (TrackType type : manager.getTracks()) {
+			ResourceLocation location = type.getTrack();
+			if (!manager.isExternalUrl(location))
+				continue;
+			if (url.equals(manager.getExternalUrl(location))) {
+				ExternalUrlMusicTrack existing = this.externalTracks.get(type);
+				if (existing == null || !existing.getUrl().equals(url))
+					this.externalTracks.put(type, ExternalUrlMusicTrack.adopt(url, type.getFadeTime()));
+				return;
+			}
+		}
+		// the session URL matches no selected track type - drop stale
+		// wrappers so marker ticking does not run against a dead entry
+		this.externalTracks.clear();
 	}
 
 	private void tickTimelineMarkers()

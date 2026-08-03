@@ -1290,19 +1290,21 @@ public class MusicPlaylistScreen extends Screen
 		if (mouseY < dockY())
 			return false;
 		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
-		// K10-B: the owner badge is the explicit way back to AUTO
+		// K11-B: the owner badge returns to AUTO for MAN only - CUE is owned
+		// by the server and cannot be downgraded from the GUI
 		if (mouseX >= 8 && mouseX <= 48 && mouseY >= dockY() + 20 && mouseY <= dockY() + 32
-				&& WorldPlaybackChannel.playbackOwner() != WorldPlaybackChannel.PlaybackOwner.AUTO) {
+				&& WorldPlaybackChannel.playbackOwner() == WorldPlaybackChannel.PlaybackOwner.MAN) {
 			WorldPlaybackChannel.setPlaybackOwner(WorldPlaybackChannel.PlaybackOwner.AUTO);
 			return true;
 		}
-		// progress seek
+		// progress seek - a manual seek takes MAN ownership (K11-B)
 		int progressLeft = 150;
 		int progressRight = this.width - 220;
 		int progressY = dockY() + 36;
 		if (mouseY >= progressY - 4 && mouseY <= progressY + 8
 				&& mouseX >= progressLeft && mouseX <= progressRight) {
 			if (dockCanSeek() && handler.getDurationMillis() > 0L) {
+				WorldPlaybackChannel.setManIntent(WorldPlaybackChannel.ManIntent.PLAYING);
 				this.dockSeekDragging = true;
 				updateDockSeek(mouseX);
 			}
@@ -1317,15 +1319,22 @@ public class MusicPlaylistScreen extends Screen
 				return true;
 			}
 			if (mouseX >= x + 36 && mouseX < x + 76) {
-				if (handler.isPlaying())
+				// K11-B: play/pause from the dock always takes MAN ownership
+				// (persistent intent, even when the current track was AUTO)
+				if (handler.isPlaying()) {
+					WorldPlaybackChannel.setManIntent(WorldPlaybackChannel.ManIntent.PAUSED);
 					handler.pauseMusic();
-				else
+				} else {
+					WorldPlaybackChannel.setManIntent(WorldPlaybackChannel.ManIntent.PLAYING);
 					handler.resumeMusic();
+				}
 				return true;
 			}
 			if (mouseX >= x + 76 && mouseX < x + 110) {
-				// K10-B: stop keeps the MAN hold - the AUTO engine stays
-				// suspended until the user explicitly returns to AUTO
+				// K11-B: stop takes MAN ownership with an explicit STOPPED
+				// intent - the AUTO engine stays suspended until the user
+				// returns to AUTO (badge) or plays again
+				WorldPlaybackChannel.setManIntent(WorldPlaybackChannel.ManIntent.STOPPED);
 				handler.stopMusic();
 				return true;
 			}
@@ -1389,10 +1398,14 @@ public class MusicPlaylistScreen extends Screen
 				return;
 			for (int step = 1; step <= entries.size(); step++) {
 				int candidate = Math.floorMod(index + direction * step, entries.size());
-				String url = entries.get(candidate).url();
+				MusicTracksManager.ExternalPlaylistEntry entry = entries.get(candidate);
+				String url = entry.url();
 				if (!url.startsWith("sound:")) {
-					WorldPlaybackChannel.setPlaybackOwner(WorldPlaybackChannel.PlaybackOwner.MAN);
-					WorldPlaybackChannel.setCurrentIntent(url);
+					// K11-B: the session handle/source follow the manual
+					// selection (markers and dock source display stay correct)
+					WorldPlaybackChannel.adoptManualSelection(url,
+							track.configLocation().toString(), entry.id(),
+							MusicTracksManager.playlistRevision(track.configLocation()));
 					handler.playMusic(url, track.fadeTime());
 					return;
 				}

@@ -97,7 +97,17 @@ public final class WorldPlaybackChannel
 		MAN,
 		CUE
 	}
+	// K11-B: the manual control intent - Stop/Pause from AUTO must still take
+	// ownership (persistent), and the dock needs an explicit stopped state
+	public enum ManIntent
+	{
+		IDLE,
+		PLAYING,
+		PAUSED,
+		STOPPED
+	}
 	private static volatile PlaybackOwner playbackOwner = PlaybackOwner.AUTO;
+	private static volatile ManIntent manIntent = ManIntent.IDLE;
 	// AUD-46/AUD-49: unified gated transition (fade out -> gain-zero poll ->
 	// action -> fade in). Single slot; new requests fail explicitly (AUD-49 #4).
 	private static @Nullable PendingGate pendingGate;
@@ -431,6 +441,7 @@ public final class WorldPlaybackChannel
 		WorldPlaybackChannel.playbackSessionGeneration = 0L;
 		// K9-4: a real logout clears the selection owner
 		WorldPlaybackChannel.playbackOwner = PlaybackOwner.AUTO;
+		WorldPlaybackChannel.manIntent = ManIntent.IDLE;
 		// K8-A: a real logout invalidates every in-flight gate and intent
 		WorldPlaybackChannel.currentIntentUrl = null;
 		WorldPlaybackChannel.intentVersion++;
@@ -467,11 +478,45 @@ public final class WorldPlaybackChannel
 	public static void setPlaybackOwner(PlaybackOwner owner)
 	{
 		WorldPlaybackChannel.playbackOwner = owner == null ? PlaybackOwner.AUTO : owner;
+		if (WorldPlaybackChannel.playbackOwner != PlaybackOwner.MAN)
+			WorldPlaybackChannel.manIntent = ManIntent.IDLE;
 	}
 
 	public static PlaybackOwner playbackOwner()
 	{
 		return WorldPlaybackChannel.playbackOwner;
+	}
+
+	// K11-B: explicit manual intents - stop/pause from the dock stay
+	// persistent until the user plays again or returns to AUTO
+	public static void setManIntent(ManIntent intent)
+	{
+		if (WorldPlaybackChannel.playbackOwner != PlaybackOwner.MAN)
+			WorldPlaybackChannel.playbackOwner = PlaybackOwner.MAN;
+		WorldPlaybackChannel.manIntent = intent == null ? ManIntent.IDLE : intent;
+	}
+
+	public static ManIntent manIntent()
+	{
+		return WorldPlaybackChannel.manIntent;
+	}
+
+	/**
+	 * K11-B: the dock's manual selection updates the SESSION handle and
+	 * source reference (marker ticking and the dock's source display follow
+	 * the new URL), takes MAN ownership and marks the intent PLAYING.
+	 */
+	public static void adoptManualSelection(String url, String playlistId, String entryKey, int revision)
+	{
+		PlaybackHandle created = PlaybackHandle.create(url);
+		created.setSourceRef(new SourceRef(playlistId, entryKey, revision));
+		WorldPlaybackChannel.handle = created;
+		WorldPlaybackChannel.firedThisTrack = 0L;
+		WorldPlaybackChannel.lastMarkerPosition = -1L;
+		WorldPlaybackChannel.setCurrentIntent(url);
+		WorldPlaybackChannel.playbackOwner = PlaybackOwner.MAN;
+		WorldPlaybackChannel.manIntent = ManIntent.PLAYING;
+		LOGGER.debug("[MBM] manual selection adopted: {} @ {}:{}", url, playlistId, entryKey);
 	}
 
 	public static long levelGeneration()
