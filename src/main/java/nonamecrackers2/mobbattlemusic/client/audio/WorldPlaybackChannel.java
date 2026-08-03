@@ -272,8 +272,11 @@ public final class WorldPlaybackChannel
 				WorldPlaybackChannel.levelGeneration,
 				WorldPlaybackChannel.playbackSessionGeneration,
 				player.getPlaybackGeneration(),
-				StreamMusicPlayer.getOpenLines(),
-				StreamMusicPlayer.getPlaybackThreads(),
+				// K10-C: per-player line/thread counts
+				player.getOpenLines(),
+				player.getPlaybackThreads(),
+				handler.getPreviewPlayer().getOpenLines(),
+				handler.getPreviewPlayer().getPlaybackThreads(),
 				handler.getPlaybackRequestCount(),
 				handler.getStopRequestCount(),
 				WorldPlaybackChannel.currentIntentUrl(),

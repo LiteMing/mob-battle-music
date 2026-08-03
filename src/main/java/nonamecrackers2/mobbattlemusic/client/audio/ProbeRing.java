@@ -40,7 +40,12 @@ public final class ProbeRing
 			int handles, long markersFired, long playCalls,
 			// K8-B: lifecycle generations and line/thread diagnostics
 			long levelGen, long sessionGen, long playerGen,
-			int openLines, int playbackThreads, long playRequests, long stopRequests,
+			// K10-C: per-player line/thread counts - main and preview are
+			// separate (legal parallel playback must not trip either player's
+			// single-line invariant)
+			int mainOpenLines, int mainPlaybackThreads,
+			int previewOpenLines, int previewPlaybackThreads,
+			long playRequests, long stopRequests,
 			String currentIntent,
 			// K9-3: persistent gains
 			float userGain, float previewGain) {}
@@ -143,15 +148,21 @@ public final class ProbeRing
 				.append(" levelGen=").append(s.levelGen())
 				.append(" sessionGen=").append(s.sessionGen())
 				.append(" playerGen=").append(s.playerGen())
-				.append(" playbackThreads=").append(s.playbackThreads())
-				.append(" openLines=").append(s.openLines())
+				.append(" mainPlaybackThreads=").append(s.mainPlaybackThreads())
+				.append(" mainOpenLines=").append(s.mainOpenLines())
+				.append(" previewPlaybackThreads=").append(s.previewPlaybackThreads())
+				.append(" previewOpenLines=").append(s.previewOpenLines())
 				.append(" playRequests=").append(s.playRequests())
 				.append(" stopRequests=").append(s.stopRequests())
 				.append(" intent=").append(s.currentIntent() == null ? "-" : s.currentIntent())
 				.append(" userGain=").append(String.format(Locale.ROOT, "%.2f", s.userGain()))
 				.append(" previewGain=").append(String.format(Locale.ROOT, "%.2f", s.previewGain()));
-		if (s.openLines() > 1)
-			builder.append(" ERROR openLines>1 single-line invariant violated");
+		// K10-C: per-player invariant checks - parallel main+preview playback
+		// is legal and must NOT trip either check
+		if (s.mainOpenLines() > 1)
+			builder.append(" ERROR mainOpenLines>1 single-line invariant violated");
+		if (s.previewOpenLines() > 1)
+			builder.append(" ERROR previewOpenLines>1 single-line invariant violated");
 		builder.append('\n');
 	}
 

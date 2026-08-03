@@ -59,8 +59,11 @@ public class ExternalMusicHandler {
     private ExternalMusicHandler() {
         this.cache = new MusicCache();
         this.downloader = new MusicDownloader();
-        this.player = new StreamMusicPlayer();
-        this.previewPlayer = new StreamMusicPlayer();
+        // K10-C: the main player shares the static MUTE_ENV (world channel
+        // mute reaches it); the preview player gets a PRIVATE mute envelope
+        // so main-channel mutes never silence previews
+        this.player = new StreamMusicPlayer(true);
+        this.previewPlayer = new StreamMusicPlayer(false);
         this.ongoingDownloads = new ConcurrentHashMap<>();
         this.currentlyPlayingUrl = null;
         this.previewUrl = null;
@@ -439,23 +442,33 @@ public class ExternalMusicHandler {
         return cache.getCachedFile(url);
     }
     
-    // K9-3: apply the persisted gains from config to both players at startup
-    // and whenever the user drags a volume slider (config already updated).
-    // When preview follows main, the preview player's user gain mirrors the
-    // main gain; otherwise it stays at 1.0 and the preview gain is independent.
+    // K9-3/K10-C: apply the persisted gains from config to both players at
+    // startup and whenever the user drags a volume slider (config already
+    // updated). When preview follows main, ONLY the preview user gain mirrors
+    // the main gain (previewGain stays 1.0) - the chain multiplies
+    // userGain x previewGain, so following through a single factor avoids
+    // squaring the volume. Otherwise the preview user gain is 1.0 and the
+    // preview gain is fully independent.
     public void applyGainConfig() {
         double mainGain = MobBattleMusicConfig.CLIENT.mbmUserGain.get();
         double previewGain = MobBattleMusicConfig.CLIENT.previewGain.get();
         boolean follows = MobBattleMusicConfig.CLIENT.previewFollowsMain.get();
         this.player.setUserGain((float) mainGain);
-        this.previewPlayer.setUserGain((float) (follows ? mainGain : 1.0));
-        this.previewPlayer.setPreviewGain((float) previewGain);
+        if (follows) {
+            this.previewPlayer.setUserGain((float) mainGain);
+            this.previewPlayer.setPreviewGain(1.0f);
+        } else {
+            this.previewPlayer.setUserGain(1.0f);
+            this.previewPlayer.setPreviewGain((float) previewGain);
+        }
     }
 
     public float getMainUserGain() {
         return this.player.getUserGain();
     }
 
+    // the audible preview gain (user x preview factors, one of which is 1.0
+    // by construction)
     public float getPreviewGainNow() {
         return this.previewPlayer.getPreviewGain() * this.previewPlayer.getUserGain();
     }

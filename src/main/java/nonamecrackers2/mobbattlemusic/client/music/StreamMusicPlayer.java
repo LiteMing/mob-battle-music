@@ -33,10 +33,10 @@ public class StreamMusicPlayer {
     private static final Logger LOGGER = LogManager.getLogger("mobbattlemusic/StreamMusicPlayer");
     private static final int BUFFER_SIZE = 4096;
     // K8-B: single-lifecycle primitive for one playback generation. Invariant:
-    // open SourceDataLine count <= 1 AND live playback generation count <= 1.
-    // closeLineOnce() is the only closer and is idempotent (closeRequested
-    // gates it), so stop() and the playback thread's finally never race into
-    // a double close.
+    // open SourceDataLine count <= 1 AND live playback generation count <= 1
+    // PER PLAYER. closeLineOnce() is the only closer and is idempotent
+    // (closeRequested gates it), so stop() and the playback thread's finally
+    // never race into a double close.
     private static final class PlaybackGeneration {
         final long id;
         volatile SourceDataLine line;
@@ -44,12 +44,6 @@ public class StreamMusicPlayer {
         volatile boolean closed;
         PlaybackGeneration(long id) { this.id = id; }
     }
-    // K8-B: live diagnostics for the probe: open lines and running playback
-    // threads across all players (main + preview)
-    private static final java.util.concurrent.atomic.AtomicInteger OPEN_LINES =
-            new java.util.concurrent.atomic.AtomicInteger();
-    private static final java.util.concurrent.atomic.AtomicInteger PLAYBACK_THREADS =
-            new java.util.concurrent.atomic.AtomicInteger();
 
     private Thread playbackThread;
     private volatile boolean playing = false;
@@ -60,16 +54,24 @@ public class StreamMusicPlayer {
     // AUD-54: play() invocation count for the probe ring (N2 forensics)
     private final java.util.concurrent.atomic.AtomicLong playCalls = new java.util.concurrent.atomic.AtomicLong();
     // AUD-44: independent gain envelopes; current is advanced only by the
-    // playback thread (AUD-45). MUTE_ENV is shared with the built-in leg.
+    // playback thread (AUD-45). MUTE_ENV is the main channel's shared mute
+    // envelope (sound leg + main player); K10-C: the preview player owns a
+    // PRIVATE mute envelope so the main channel's mute never silences it.
     private final Envelope trackEnv = new Envelope(0.0f);
     private final Envelope seekEnv = new Envelope(1.0f);
     public static final Envelope MUTE_ENV = new Envelope(1.0f);
+    private final Envelope muteEnv;
     // K9-3: independent persistent user gain (main playback) and preview gain.
     // These are NOT trackEnv - they are pure multipliers in the gain chain and
     // survive track switches, seeks and gates untouched. The preview player's
     // chain uses both (preview follows main multiplies both).
     private final Envelope userGainEnv = new Envelope(1.0f);
     private final Envelope previewGainEnv = new Envelope(1.0f);
+    // K10-C: per-player open-line and playback-thread counters - the probe
+    // reports main and preview separately (legal parallel playback must not
+    // trip the single-line invariant of either player)
+    private final java.util.concurrent.atomic.AtomicInteger openLines = new java.util.concurrent.atomic.AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicInteger playbackThreads = new java.util.concurrent.atomic.AtomicInteger();
     // AUD-49 #5/#8: fade-in duration for the next track start, set by a gated
     // switch whose action only stops the old source; consumed by play() and
     // expired after 2000ms if unconsumed. 0 = the default fadeTime applies.
@@ -230,6 +232,20 @@ public class StreamMusicPlayer {
         StreamMusicPlayer.gateOwnershipCheck = check == null ? env -> false : check;
     }
     
+    public StreamMusicPlayer() {
+        this(true);
+    }
+
+    /**
+     * K10-C: sharedMute=true binds this player's mute envelope to the static
+     * MUTE_ENV (main playback + sound leg); sharedMute=false gives the player
+     * its own mute envelope so the world channel's mute never silences it
+     * (preview player).
+     */
+    public StreamMusicPlayer(boolean sharedMute) {
+        this.muteEnv = sharedMute ? MUTE_ENV : new Envelope(1.0f);
+    }
+
     /**
      * Play an MP3 stream with fade-in
      * @param inputStream The MP3 input stream
@@ -284,7 +300,7 @@ public class StreamMusicPlayer {
         totalDurationMillis = Math.max(0L, durationHintMillis);
         decodedBytesPerSecond = 0.0D;
         
-        PLAYBACK_THREADS.incrementAndGet();
+        this.playbackThreads.incrementAndGet();
         playbackThread = new Thread(() -> {
             SourceDataLine playbackLine = null;
             try {
@@ -368,7 +384,7 @@ public class StreamMusicPlayer {
                         // open-lines counter is incremented here and
                         // decremented exactly once by closeLineOnce
                         generation.line = playbackLine;
-                        OPEN_LINES.incrementAndGet();
+                        this.openLines.incrementAndGet();
                         long watermarkMillis = StreamMusicPlayer.adaptiveWatermarkMillis > 0L
                                 ? StreamMusicPlayer.adaptiveWatermarkMillis : 60L;
                         lineWatermarkBytes = Math.max(1L, Math.round(
@@ -517,7 +533,7 @@ public class StreamMusicPlayer {
                             // AUD-44: sample-zeroing is allowed only once the
                             // mute envelope has reached zero (no hard cut while
                             // fading)
-                            if (MUTE_ENV.current() <= 0.001f)
+                            if (this.muteEnv.current() <= 0.001f)
                                 Arrays.fill(buffer, 0, bytesRead, (byte)0);
                             playbackLine.write(buffer, 0, bytesRead);
                             // K8-B: generation check after the potentially
@@ -561,7 +577,7 @@ public class StreamMusicPlayer {
                     paused = false;
                     this.currentGeneration = null;
                 }
-                PLAYBACK_THREADS.decrementAndGet();
+                this.playbackThreads.decrementAndGet();
                 LOGGER.debug("Playback thread finished");
             }
         });
@@ -596,7 +612,7 @@ public class StreamMusicPlayer {
      * closeRequested flag arbitrates the race. The open-lines counter is
      * decremented exactly once here.
      */
-    private static void closeLineOnce(PlaybackGeneration generation) {
+    private void closeLineOnce(PlaybackGeneration generation) {
         if (generation == null)
             return;
         synchronized (generation) {
@@ -617,7 +633,7 @@ public class StreamMusicPlayer {
         }
         synchronized (generation) {
             if (generation.line != null) {
-                OPEN_LINES.decrementAndGet();
+                this.openLines.decrementAndGet();
                 generation.line = null;
             }
             generation.closed = true;
@@ -935,7 +951,7 @@ public class StreamMusicPlayer {
             float masterVolume = mc.options.getSoundSourceVolume(SoundSource.MASTER);
             float musicVolume = mc.options.getSoundSourceVolume(SoundSource.RECORDS);
             float finalGain = masterVolume * musicVolume
-                    * this.trackEnv.current() * MUTE_ENV.current() * this.seekEnv.current()
+                    * this.trackEnv.current() * this.muteEnv.current() * this.seekEnv.current()
                     * this.userGainEnv.current() * this.previewGainEnv.current();
             if (playbackLine.isControlSupported(FloatControl.Type.MASTER_GAIN)) {
                 FloatControl gainControl = (FloatControl) playbackLine.getControl(FloatControl.Type.MASTER_GAIN);
@@ -968,15 +984,16 @@ public class StreamMusicPlayer {
         return this.previewGainEnv.current();
     }
 
-    // K8-B: live diagnostics for the probe ring - open SourceDataLine count
-    // and running playback thread count across all players
-    public static int getOpenLines()
+    // K10-C: live diagnostics for the probe ring - open SourceDataLine count
+    // and running playback thread count of THIS player (main and preview are
+    // reported separately; each must stay <= 1 independently)
+    public int getOpenLines()
     {
-        return OPEN_LINES.get();
+        return this.openLines.get();
     }
 
-    public static int getPlaybackThreads()
+    public int getPlaybackThreads()
     {
-        return PLAYBACK_THREADS.get();
+        return this.playbackThreads.get();
     }
 }

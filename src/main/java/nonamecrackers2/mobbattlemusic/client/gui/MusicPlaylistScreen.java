@@ -1002,8 +1002,10 @@ public class MusicPlaylistScreen extends Screen
 			MobBattleMusicConfig.CLIENT.mbmUserGain.set((double) value);
 			ExternalMusicHandler.getInstance().getPlayer().setUserGain(value);
 			if (this.previewFollowsMain) {
+				// K10-C: following mirrors ONE factor (user gain); the preview
+				// gain stays 1.0 so the chain never squares the volume
 				ExternalMusicHandler.getInstance().getPreviewPlayer().setUserGain(value);
-				MobBattleMusicConfig.CLIENT.previewGain.set((double) value);
+				ExternalMusicHandler.getInstance().getPreviewPlayer().setPreviewGain(1.0f);
 			}
 		} else {
 			this.previewGainValue = value;
@@ -1017,11 +1019,15 @@ public class MusicPlaylistScreen extends Screen
 		this.previewFollowsMain = !this.previewFollowsMain;
 		MobBattleMusicConfig.CLIENT.previewFollowsMain.set(this.previewFollowsMain);
 		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
-		handler.getPreviewPlayer().setUserGain(this.previewFollowsMain ? this.mainGainValue : 1.0F);
 		if (this.previewFollowsMain) {
-			MobBattleMusicConfig.CLIENT.previewGain.set((double) this.mainGainValue);
-			this.previewGainValue = this.mainGainValue;
-			handler.getPreviewPlayer().setPreviewGain(this.mainGainValue);
+			// K10-C: exactly one factor inherits the main gain
+			handler.getPreviewPlayer().setUserGain(this.mainGainValue);
+			handler.getPreviewPlayer().setPreviewGain(1.0f);
+			this.previewGainValue = 1.0F;
+			MobBattleMusicConfig.CLIENT.previewGain.set(1.0D);
+		} else {
+			handler.getPreviewPlayer().setUserGain(1.0f);
+			handler.getPreviewPlayer().setPreviewGain(this.previewGainValue);
 		}
 		saveVolumeConfig();
 	}
