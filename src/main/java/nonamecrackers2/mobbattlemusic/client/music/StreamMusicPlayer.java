@@ -57,9 +57,12 @@ public class StreamMusicPlayer {
     // current line; getLongFramePosition() counts frames already played
     private volatile long positionOffsetMillis;
     private volatile float lineFrameRate;
-    // AUD-48: output watermark (target fill in bytes, default 120ms); the
+    // AUD-48: output watermark (target fill in bytes, default 150ms); the
     // line capacity (500ms) is separate and acts as the underrun reserve
     private volatile long lineWatermarkBytes;
+    // AUD-30 v1.5: count of writes where the line buffer was fully drained
+    // (available() == getBufferSize()); reset at each playback start
+    private volatile long underruns;
     
     /**
      * AUD-44/45: a single gain envelope, shape
@@ -272,7 +275,8 @@ public class StreamMusicPlayer {
                         playbackLine.open(decodedFormat, (int)Math.min(Integer.MAX_VALUE, capacityBytes));
                         LOGGER.info("Audio line opened, buffer size: {}", playbackLine.getBufferSize());
                         lineWatermarkBytes = Math.max(1L, Math.round(
-                                decodedFormat.getFrameRate() * decodedFormat.getFrameSize() * 0.12D));
+                                decodedFormat.getFrameRate() * decodedFormat.getFrameSize() * 0.15D));
+                        underruns = 0L;
                         // AUD-47: a freshly opened line starts its frame counter at
                         // zero; record the frame rate for position derivation
                         lineFrameRate = decodedFormat.getFrameRate();
@@ -305,6 +309,10 @@ public class StreamMusicPlayer {
                             if (generation != playbackGeneration.get() || !playing)
                                 break;
 
+                            // AUD-30 v1.5: count fully-drained writes before
+                            // the throttling check
+                            if (playbackLine.available() >= playbackLine.getBufferSize())
+                                underruns++;
                             // AUD-48: write throttling to the target watermark.
                             // Yield briefly while the fill exceeds the
                             // watermark; never fill the buffer. When playback
@@ -395,6 +403,7 @@ public class StreamMusicPlayer {
         positionOffsetMillis = 0L;
         lineFrameRate = 0.0F;
         lineWatermarkBytes = 0L;
+        underruns = 0L;
         
         SourceDataLine activeLine = line;
         line = null;
@@ -440,6 +449,11 @@ public class StreamMusicPlayer {
 
     public long getLineWatermarkBytes() {
         return this.lineWatermarkBytes;
+    }
+
+    // AUD-30 v1.5: cumulative underrun count since the last playback start
+    public long getUnderruns() {
+        return this.underruns;
     }
 
     public long getDurationMillis() {

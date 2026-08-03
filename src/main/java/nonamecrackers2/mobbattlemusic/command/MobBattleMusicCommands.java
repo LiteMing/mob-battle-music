@@ -277,13 +277,14 @@ public class MobBattleMusicCommands
 				.append(" decoded=").append(formatSeconds(decodedPos))
 				.append(" outLatency=").append(Math.max(0L, decodedPos - audiblePos)).append("ms").append('\n');
 
-		// AUD-30 v1.3/AUD-48: output line capacity, fill and watermark
+		// AUD-30 v1.3/v1.5: output line capacity, fill, watermark, underruns
 		int lineBuffer = main.getLineBufferBytes();
 		int lineAvailable = main.getLineAvailableBytes();
 		long lineWatermark = main.getLineWatermarkBytes();
 		output.append("world.line buffer=").append(lineBuffer)
 				.append("B fill=").append(Math.max(0, lineBuffer - lineAvailable)).append("B")
-				.append(" watermark=").append(lineWatermark).append("B").append('\n');
+				.append(" watermark=").append(lineWatermark).append("B")
+				.append(" underruns=").append(main.getUnderruns()).append('\n');
 
 		// AUD-30 v1.3/AUD-48: active filters and dry/wet mix envelope
 		java.util.List<String> activeFilters = AudioFilterManager.activeMbmFilters().stream()

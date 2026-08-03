@@ -80,12 +80,17 @@ public final class PcmFilterChain
 
 	public void process(byte[] buffer, int length)
 	{
+		// AUD-48 v1.1: the envelope advances even when the chain bypasses,
+		// so a pending fade-in is never starved by an empty chain
+		MIX.advance();
 		if (this.processors.isEmpty() && this.transitionFrom == null && MIX.current() <= 0.001f)
 			return;
 		int alignedLength = length - length % this.frameSize;
-		// AUD-48: the mix envelope advances on the playback thread
-		MIX.advance();
+		// AUD-48 v1.1: the crossfade progress is computed once per buffer
 		PcmFilterChain transition = this.transitionFrom;
+		double transitionProgress = transition == null ? 1.0D
+				: (System.currentTimeMillis() - this.transitionStartMillis)
+						/ (double)CHAIN_TRANSITION_MILLIS;
 		for (int offset = 0; offset < alignedLength; offset += this.frameSize) {
 			for (int channel = 0; channel < this.channels; channel++) {
 				int sampleOffset = offset + channel * 2;
@@ -100,13 +105,11 @@ public final class PcmFilterChain
 					double oldValue = dry;
 					for (Processor processor : transition.processors)
 						oldValue = processor.process(channel, oldValue);
-					double progress = (System.currentTimeMillis() - this.transitionStartMillis)
-							/ (double)CHAIN_TRANSITION_MILLIS;
-					if (progress >= 1.0D) {
+					if (transitionProgress >= 1.0D) {
 						this.transitionFrom = null;
 						transition = null;
 					} else {
-						value = oldValue * (1.0D - progress) + value * progress;
+						value = oldValue * (1.0D - transitionProgress) + value * transitionProgress;
 					}
 				}
 				// AUD-48: dry/wet crossfade, out = dry x (1 - mix) + wet x mix
@@ -166,12 +169,13 @@ public final class PcmFilterChain
 	}
 
 	// AUD-44-shaped envelope (current, target, startValue, startMillis,
-	// durationMillis), advanced only on the playback thread
+	// durationMillis), advanced only on the playback thread. AUD-48 v1.1:
+	// steady-state default is 0.0 (no filters).
 	private static final class MixEnvelope
 	{
-		private volatile float current = 1.0f;
-		private volatile float target = 1.0f;
-		private volatile float startValue = 1.0f;
+		private volatile float current = 0.0f;
+		private volatile float target = 0.0f;
+		private volatile float startValue = 0.0f;
 		private volatile long startMillis;
 		private volatile long durationMillis;
 

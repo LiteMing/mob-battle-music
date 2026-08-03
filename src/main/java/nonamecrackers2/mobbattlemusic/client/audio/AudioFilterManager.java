@@ -33,6 +33,9 @@ public final class AudioFilterManager
 	private static final Map<ResourceLocation, AudioFilterDefinition> RUNTIME_DEFINITIONS = new LinkedHashMap<>();
 	private static final AtomicLong REVISION = new AtomicLong();
 	private static volatile List<AudioFilterDefinition> active = List.of();
+	// AUD-48 v1.1: chain removal is the action after the mix envelope reaches
+	// zero; while a deactivation fades, active stays unchanged
+	private static volatile List<AudioFilterDefinition> pendingDeactivation = List.of();
 	private static boolean configEnabled;
 
 	private AudioFilterManager() {}
@@ -106,6 +109,14 @@ public final class AudioFilterManager
 
 	public static void tick(Player player)
 	{
+		// AUD-48 v1.1: when a deactivation fade has completed, remove the
+		// chain now (the old chain was still evaluated while mix > 0.001)
+		if (!pendingDeactivation.isEmpty() && PcmFilterChain.mixCurrent() <= 0.001f) {
+			active = pendingDeactivation;
+			pendingDeactivation = List.of();
+			REVISION.incrementAndGet();
+			GlobalAudioFilterManager.onDefinitionsChanged(active);
+		}
 		List<AudioFilterDefinition> next = new ArrayList<>();
 		for (AudioFilterDefinition definition : definitions()) {
 			if (next.size() >= MAX_STACKED_FILTERS)
@@ -117,15 +128,28 @@ public final class AudioFilterManager
 		if (!immutable.equals(active)) {
 			boolean wasActive = !active.isEmpty();
 			boolean nowActive = !immutable.isEmpty();
-			// AUD-48: the dry/wet mix envelope follows activation state;
-			// in 150ms, out 350ms - never a full switch inside one buffer
-			if (!wasActive && nowActive)
+			if (!wasActive && nowActive) {
+				// AUD-48: activation fades the mix in (150ms); the chain can
+				// be installed immediately - it is evaluated as the wet
+				// component of the crossfade
 				PcmFilterChain.setMixTarget(1.0f, PcmFilterChain.mixInMillis());
-			else if (wasActive && !nowActive)
+				active = immutable;
+				pendingDeactivation = List.of();
+				REVISION.incrementAndGet();
+				GlobalAudioFilterManager.onDefinitionsChanged(immutable);
+			} else if (wasActive && !nowActive) {
+				// AUD-48 v1.1: deactivation only fades the mix; the chain is
+				// removed once the mix reaches zero - never in the same tick
+				// as setMixTarget(0)
 				PcmFilterChain.setMixTarget(0.0f, PcmFilterChain.mixOutMillis());
-			active = immutable;
-			REVISION.incrementAndGet();
-			GlobalAudioFilterManager.onDefinitionsChanged(immutable);
+				pendingDeactivation = immutable;
+			} else {
+				// Recomposition while active: install immediately; per-processor
+				// state is preserved or a >=20ms crossfade runs
+				active = immutable;
+				REVISION.incrementAndGet();
+				GlobalAudioFilterManager.onDefinitionsChanged(immutable);
+			}
 		}
 	}
 
@@ -139,6 +163,7 @@ public final class AudioFilterManager
 		if (!active.isEmpty()) {
 			// AUD-48: fade the filter out (350ms) rather than cutting
 			PcmFilterChain.setMixTarget(0.0f, PcmFilterChain.mixOutMillis());
+			pendingDeactivation = List.of();
 			active = List.of();
 			REVISION.incrementAndGet();
 			GlobalAudioFilterManager.onDefinitionsChanged(active);
