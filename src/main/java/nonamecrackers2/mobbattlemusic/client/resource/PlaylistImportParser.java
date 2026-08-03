@@ -34,7 +34,19 @@ public final class PlaylistImportParser
 
 	private PlaylistImportParser() {}
 
-	public record ImportLine(String raw, String title) {}
+	/**
+	 * K10-D: import line abstraction - parsers produce plain lines, GUI
+	 * layers may attach extra metadata (e.g. the source binding of JSON
+	 * imports) by implementing this interface.
+	 */
+	public interface ImportLine
+	{
+		String raw();
+
+		String title();
+	}
+
+	public static record PlainImportLine(String raw, String title) implements ImportLine {}
 
 	/**
 	 * Parse an M3U/M3U8 file. #EXTINF lines carry the display title; plain
@@ -57,7 +69,7 @@ public final class PlaylistImportParser
 						pendingTitle = extractExtinfTitle(line);
 					continue;
 				}
-				lines.add(new ImportLine(line, pendingTitle.isEmpty() ? null : pendingTitle));
+				lines.add(new PlainImportLine(line, pendingTitle.isEmpty() ? null : pendingTitle));
 				pendingTitle = "";
 			}
 		} catch (IOException e) {
@@ -85,7 +97,7 @@ public final class PlaylistImportParser
 		for (String token : text.trim().split("[\\s,;]+")) {
 			if (token.isEmpty())
 				continue;
-			lines.add(new ImportLine(token, null));
+			lines.add(new PlainImportLine(token, null));
 		}
 		return lines;
 	}
@@ -132,7 +144,7 @@ public final class PlaylistImportParser
 			List<ImportLine> lines = new ArrayList<>();
 			if (root.has("entries"))
 				for (JsonElement element : root.getAsJsonArray("entries"))
-					lines.add(new ImportLine(element.getAsString(), null));
+					lines.add(new PlainImportLine(element.getAsString(), null));
 			result.put(binding, lines);
 			return result;
 		}
@@ -152,7 +164,7 @@ public final class PlaylistImportParser
 			List<ImportLine> lines = new ArrayList<>();
 			try {
 				for (JsonElement urlElement : entry.getValue().getAsJsonArray())
-					lines.add(new ImportLine(urlElement.getAsString(), null));
+					lines.add(new PlainImportLine(urlElement.getAsString(), null));
 			} catch (IllegalStateException e) {
 				LOGGER.warn("MBM JSON section {} entry {} is not an array; skipped", section, entry.getKey());
 				continue;

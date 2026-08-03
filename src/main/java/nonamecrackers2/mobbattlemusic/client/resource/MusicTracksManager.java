@@ -699,21 +699,26 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		List<String> existing = urlsByTarget.computeIfAbsent(binding.storageKey(), key -> Lists.newArrayList());
 		List<String> committed = new java.util.ArrayList<>();
 		int invalid = 0;
+		int batchDuplicates = 0;
 		for (String raw : urls) {
 			String reference = normalizeLocalMusicReference(raw);
 			if (reference == null) {
 				invalid++;
 				continue;
 			}
-			if (existing.contains(reference))
+			// K10-D: duplicates WITHIN the batch are skipped too
+			if (existing.contains(reference) || committed.contains(reference)) {
+				batchDuplicates++;
 				continue;
+			}
 			committed.add(reference);
 		}
 		if (invalid > 0)
 			return PlaylistControlResult.failure("Import aborted: " + invalid +
 					" invalid reference(s); nothing was changed");
 		if (committed.isEmpty())
-			return PlaylistControlResult.success("Import skipped: all entries already present");
+			return PlaylistControlResult.success("Import skipped: all entries already present" +
+					(batchDuplicates > 0 ? " (" + batchDuplicates + " batch duplicates skipped)" : ""));
 		existing.addAll(committed);
 		List<List<IdleCondition>> conditions = entryConditions(binding, true);
 		while (conditions.size() < existing.size())

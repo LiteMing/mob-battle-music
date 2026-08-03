@@ -62,13 +62,18 @@ public class PlaylistImportScreen extends Screen
 	{
 		final String raw;
 		final @Nullable String title;
+		// K10-D: JSON-imported rows keep their source binding; null rows use
+		// the screen's selected target
+		final @Nullable MusicTracksManager.DynamicBinding binding;
 		RowStatus status;
 		String error;
 
-		Row(String raw, @Nullable String title, RowStatus status, String error)
+		Row(String raw, @Nullable String title, @Nullable MusicTracksManager.DynamicBinding binding,
+				RowStatus status, String error)
 		{
 			this.raw = raw;
 			this.title = title;
+			this.binding = binding;
 			this.status = status;
 			this.error = error;
 		}
@@ -137,39 +142,112 @@ public class PlaylistImportScreen extends Screen
 		this.confirmButton = this.addRenderableWidget(Button.builder(
 				Component.literal("Import (atomic)"), button -> commit())
 				.bounds(this.listLeft + this.listWidth - 114, this.listTop + this.listHeight + 32, 110, 20).build());
+		// K10-D: the first open must already show validated rows - the
+		// constructor's addFile only collected raw entries
+		this.refreshStatuses();
 		this.updateConfirmState();
 	}
 
 	private void addFile(Path file)
 	{
+		// K10-D: directories are imported recursively; file parsing runs on a
+		// background thread so a 1000-entry import never blocks the main
+		// thread (the result is applied back on the main thread)
+		if (java.nio.file.Files.isDirectory(file)) {
+			java.util.List<Path> collected = new java.util.ArrayList<>();
+			try (java.util.stream.Stream<Path> walk = java.nio.file.Files.walk(file)) {
+				walk.filter(java.nio.file.Files::isRegularFile)
+						.filter(PlaylistImportScreen::isImportableFile)
+						.forEach(collected::add);
+			} catch (Exception e) {
+				this.filesInfo.add(file.toString() + ": " + e.toString());
+			}
+			for (Path child : collected)
+				this.addFile(child);
+			return;
+		}
 		String name = file.getFileName() == null ? file.toString() : file.getFileName().toString();
 		String lower = name.toLowerCase(Locale.ROOT);
-		try {
-			if (lower.endsWith(".m3u") || lower.endsWith(".m3u8"))
-				this.addLines(PlaylistImportParser.parseM3U(file), name);
-			else if (lower.endsWith(".json"))
-				this.addJsonFile(file, name);
-			else
-				this.addLines(PlaylistImportParser.parseText(java.nio.file.Files.readString(file)), name);
-		} catch (Exception e) {
-			this.filesInfo.add(name + ": " + e.toString());
+		if (lower.endsWith(".m3u") || lower.endsWith(".m3u8") || lower.endsWith(".json")) {
+			java.util.concurrent.CompletableFuture.supplyAsync(() -> parseFile(file, name))
+					.thenAcceptAsync(lines -> {
+						this.addLines(lines, name);
+						this.refreshStatuses();
+						this.updateConfirmState();
+						this.statusMessage = "Parsed " + name;
+					}, Minecraft.getInstance());
+		} else if (isAudioFile(lower)) {
+			// K10-D: local audio files are visible as rows but cannot be
+			// streamed - they are marked INVALID with a clear reason
+			this.rows.add(new Row(file.toString(), name, null, RowStatus.INVALID,
+					"local audio files cannot be streamed; use http(s) URLs"));
+			this.refreshStatuses();
+			this.updateConfirmState();
+		} else {
+			this.filesInfo.add(name + ": unsupported file type");
 		}
 	}
 
-	private void addJsonFile(Path file, String name)
+	private java.util.List<ImportLine> parseFile(Path file, String name)
 	{
-		var bindings = PlaylistImportParser.parseMbmJson(file);
-		int count = 0;
-		for (List<ImportLine> lines : bindings.values())
-			count += this.addLines(lines, name);
-		if (count == 0)
-			this.filesInfo.add(name + ": no importable entries");
+		String lower = name.toLowerCase(Locale.ROOT);
+		if (lower.endsWith(".m3u") || lower.endsWith(".m3u8"))
+			return PlaylistImportParser.parseM3U(file);
+		if (lower.endsWith(".json"))
+			return flattenJson(PlaylistImportParser.parseMbmJson(file));
+		try {
+			return PlaylistImportParser.parseText(java.nio.file.Files.readString(file));
+		} catch (Exception e) {
+			return java.util.List.of();
+		}
+	}
+
+	// K10-D: JSON rows keep their source binding and commit back into it
+	// instead of being flattened into the screen's single target
+	private static java.util.List<ImportLine> flattenJson(java.util.Map<String, List<ImportLine>> bindings)
+	{
+		java.util.List<ImportLine> lines = new java.util.ArrayList<>();
+		for (var entry : bindings.entrySet()) {
+			MusicTracksManager.DynamicBinding binding = MusicTracksManager.DynamicBinding.parse(entry.getKey());
+			if (binding == null)
+				continue;
+			for (ImportLine line : entry.getValue())
+				lines.add(new BoundImportLine(line.raw(), line.title(), binding));
+		}
+		return lines;
+	}
+
+	private record BoundImportLine(String raw, String title,
+			MusicTracksManager.DynamicBinding binding) implements ImportLine
+	{
+		@Override
+		public String raw() { return this.raw; }
+
+		@Override
+		public String title() { return this.title; }
+	}
+
+	private static boolean isImportableFile(Path file)
+	{
+		String lower = file.getFileName() == null ? "" : file.getFileName().toString().toLowerCase(Locale.ROOT);
+		return lower.endsWith(".m3u") || lower.endsWith(".m3u8") || lower.endsWith(".json")
+				|| isAudioFile(lower);
+	}
+
+	private static boolean isAudioFile(String lower)
+	{
+		return lower.endsWith(".mp3") || lower.endsWith(".ogg") || lower.endsWith(".wav")
+				|| lower.endsWith(".flac") || lower.endsWith(".m4a");
 	}
 
 	private int addLines(List<ImportLine> lines, String source)
 	{
-		for (ImportLine line : lines)
-			this.rows.add(new Row(line.raw(), line.title(), RowStatus.NEW, ""));
+		for (ImportLine line : lines) {
+			if (line instanceof BoundImportLine bound)
+				this.rows.add(new Row(bound.raw(), bound.title(), bound.binding(), RowStatus.NEW, ""));
+			else
+				this.rows.add(new Row(line.raw(), line.title(), null, RowStatus.NEW, ""));
+		}
 		return lines.size();
 	}
 
@@ -201,20 +279,30 @@ public class PlaylistImportScreen extends Screen
 	private void refreshStatuses()
 	{
 		MusicTracksManager manager = MusicTracksManager.getInstance();
-		MusicTracksManager.DynamicBinding binding = currentBinding();
-		List<String> existing = binding == null ? List.of()
-				: manager.getLocalUrlsSnapshot(binding);
+		MusicTracksManager.DynamicBinding uiBinding = currentBinding();
+		// K10-D: deduplication checks run against the row's own target
+		// binding (JSON rows keep theirs; unbound rows use the UI target) AND
+		// against the rows already committed in this batch
+		java.util.Map<MusicTracksManager.DynamicBinding, List<String>> snapshots = new java.util.LinkedHashMap<>();
+		java.util.Set<String> batchSeen = new java.util.HashSet<>();
 		for (Row row : this.rows) {
+			MusicTracksManager.DynamicBinding target = row.binding != null ? row.binding : uiBinding;
+			List<String> existing = snapshots.get(target);
+			if (existing == null) {
+				existing = target == null ? List.of() : manager.getLocalUrlsSnapshot(target);
+				snapshots.put(target, existing);
+			}
 			String reference = manager.normalizeReferenceForValidation(row.raw);
 			if (reference == null) {
 				row.status = RowStatus.INVALID;
 				row.error = "invalid music reference";
-			} else if (existing.contains(reference)) {
+			} else if (existing.contains(reference) || batchSeen.contains(reference)) {
 				row.status = RowStatus.DUPLICATE;
-				row.error = "already in playlist";
+				row.error = "already in playlist (or duplicate in this batch)";
 			} else {
 				row.status = RowStatus.NEW;
 				row.error = "";
+				batchSeen.add(reference);
 			}
 		}
 	}
@@ -264,26 +352,47 @@ public class PlaylistImportScreen extends Screen
 
 	private void commit()
 	{
-		MusicTracksManager.DynamicBinding binding = currentBinding();
-		if (binding == null)
-		{
-			this.statusMessage = "Invalid import target";
-			return;
+		MusicTracksManager.DynamicBinding uiBinding = currentBinding();
+		// K10-D: rows are committed grouped by their own binding - JSON rows
+		// go back into their source binding, unbound rows into the UI target
+		java.util.Map<MusicTracksManager.DynamicBinding, List<String>> byBinding = new java.util.LinkedHashMap<>();
+		int skipped = 0;
+		for (Row row : this.rows) {
+			if (row.status != RowStatus.NEW)
+				continue;
+			MusicTracksManager.DynamicBinding target = row.binding != null ? row.binding : uiBinding;
+			if (target == null) {
+				skipped++;
+				continue;
+			}
+			byBinding.computeIfAbsent(target, key -> new java.util.ArrayList<>()).add(row.raw);
 		}
-		List<String> urls = new ArrayList<>();
-		for (Row row : this.rows)
-			if (row.status == RowStatus.NEW)
-				urls.add(row.raw);
-		MusicTracksManager.PlaylistControlResult result =
-				MusicTracksManager.getInstance().importLocalUrls(binding, urls);
-		this.statusMessage = result.message();
-		if (result.success())
-		{
-			this.refreshStatuses();
-			this.updateConfirmState();
-			if (this.parent instanceof MusicPlaylistScreen screen)
-				screen.refreshAfterImport();
+		MusicTracksManager manager = MusicTracksManager.getInstance();
+		int importedTotal = 0;
+		String lastMessage = "";
+		boolean anyFailure = false;
+		for (var entry : byBinding.entrySet()) {
+			MusicTracksManager.PlaylistControlResult result =
+					manager.importLocalUrls(entry.getKey(), entry.getValue());
+			lastMessage = result.message();
+			// the result message embeds the committed count; import is
+			// all-or-nothing per binding, so a failure means that binding
+			// was left untouched
+			if (result.success())
+				importedTotal += entry.getValue().size();
+			else
+				anyFailure = true;
 		}
+		if (byBinding.isEmpty())
+			this.statusMessage = "Nothing to import" + (skipped > 0 ? " (" + skipped + " rows had no valid target)" : "");
+		else if (anyFailure)
+			this.statusMessage = "Import failed for at least one binding: " + lastMessage;
+		else
+			this.statusMessage = "Imported " + importedTotal + " entries" + (skipped > 0 ? " (" + skipped + " skipped)" : "");
+		this.refreshStatuses();
+		this.updateConfirmState();
+		if (this.parent instanceof MusicPlaylistScreen screen)
+			screen.refreshAfterImport();
 	}
 
 	@Override
@@ -305,6 +414,10 @@ public class PlaylistImportScreen extends Screen
 			graphics.drawString(this.font, row.status.name().charAt(0) + " ", this.listLeft + 6, y + 4, color);
 			String title = row.title == null || row.title.isEmpty() ? row.raw : row.title;
 			graphics.drawString(this.font, title, this.listLeft + 24, y + 4, 0xFFFFFF);
+			// K10-D: JSON rows show their source binding tag
+			if (row.binding != null)
+				graphics.drawString(this.font, "[" + row.binding.storageKey() + "]", this.listLeft + 24, y + 4,
+						0xFFE5C07B);
 			graphics.drawString(this.font, row.raw, this.listLeft + 24, y + 14, 0x8B929C);
 		}
 		int summaryY = this.listTop + this.listHeight + 58;
