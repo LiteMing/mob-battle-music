@@ -148,7 +148,7 @@ dependencies {
     minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
     
     annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
-    
+
     // External URL Music Playback Dependencies
     // MP3 SPI for JavaSound (allows direct MP3 playback)
     implementation 'com.googlecode.soundlibs:mp3spi:1.9.5.4'
