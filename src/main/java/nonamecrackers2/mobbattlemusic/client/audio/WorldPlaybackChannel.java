@@ -53,6 +53,11 @@ public final class WorldPlaybackChannel
 	private static long lastClockReportMillis;
 	private static long lastMarkerPosition = -1L;
 	private static long firedThisTrack;
+	// AUD-24 v1.1: fade-out window before a correction seek (~120ms at 20tps)
+	private static final int SEEK_FADE_TICKS = 3;
+	private static @Nullable PendingSeek pendingSeek;
+	
+	private static record PendingSeek(long targetMillis, int elapsedTicks) {}
 	
 	private WorldPlaybackChannel() {}
 	
@@ -172,11 +177,13 @@ public final class WorldPlaybackChannel
 		ExternalMusicHandler.getInstance().stopMusic();
 		ExternalMusicHandler.getInstance().getPlayer().resumeFromGame();
 		ExternalMusicHandler.getInstance().getPlayer().setMutedForGame(false);
+		ExternalMusicHandler.getInstance().getPlayer().setTargetVolume(1.0F);
 		MobBattleTrack.setMainPlaybackMuted(false);
 		clearHandle();
 		MarkerClock.invalidate();
 		WorldPlaybackChannel.firedThisTrack = 0L;
 		WorldPlaybackChannel.lastMarkerPosition = -1L;
+		WorldPlaybackChannel.pendingSeek = null;
 		if (WorldPlaybackChannel.state != ChannelState.STOPPED) {
 			WorldPlaybackChannel.state = ChannelState.STOPPED;
 			LOGGER.debug("[MBM] world channel -> STOPPED");
@@ -326,40 +333,57 @@ public final class WorldPlaybackChannel
 		if (MarkerClock.isActive())
 			MarkerClock.tick(url, positionMillis, CORRECTION_SINK);
 		
+		// AUD-24 v1.1: execute a pending fade-out/seek/fade-in sequence
+		advancePendingSeek(handler);
+		
 		// Marker counting for the probe (AUD-27: the actual firing stays in the
 		// main-playback selection engine; this is observation only)
 		countFiredMarkers(ref, url, positionMillis);
 	}
 	
-	// AUD-24: correction executor. The 1-3s tier needs audio-layer rate control
-	// (PCM resampling in StreamMusicPlayer), which is outside the P3 file list;
-	// the decision and drift are still recorded and surfaced by the probe.
+	// AUD-24 v1.1: the seek correction is wrapped in a ~120ms fade-out before
+	// the hard seek and a fade-in afterwards, to avoid clicks. The fade curve
+	// is bounded by the player's existing fade time.
+	private static void advancePendingSeek(ExternalMusicHandler handler)
+	{
+		PendingSeek pending = WorldPlaybackChannel.pendingSeek;
+		if (pending == null)
+			return;
+		int elapsed = pending.elapsedTicks() + 1;
+		if (elapsed < WorldPlaybackChannel.SEEK_FADE_TICKS) {
+			WorldPlaybackChannel.pendingSeek = new PendingSeek(pending.targetMillis(), elapsed);
+			return;
+		}
+		WorldPlaybackChannel.pendingSeek = null;
+		if (handler.seekMusic(pending.targetMillis())) {
+			MarkerClock.clearInjectedDrift();
+			WorldPlaybackChannel.lastMarkerPosition = -1L;
+			WorldPlaybackChannel.firedThisTrack = 0L;
+			LOGGER.debug("[MBM] AUD-24 seek to {}ms", pending.targetMillis());
+		}
+		// AUD-24 v1.1: fade back in
+		handler.getPlayer().setTargetVolume(1.0F);
+	}
+	
+	// AUD-24 v1.1: two-tier correction executor. |drift| > 1s seeks with a
+	// ~120ms fade-out/fade-in; rate correction is explicitly forbidden.
 	private static final MarkerClock.CorrectionSink CORRECTION_SINK = new MarkerClock.CorrectionSink()
 	{
 		@Override
 		public void noCorrection(double drift)
 		{
-			// AUD-24: |drift| <= 1s -> no intervention
-		}
-		
-		@Override
-		public void rateCorrection(double rateDelta, double drift)
-		{
-			// AUD-24: 1s < |drift| <= 3s -> +-5% rate correction; executor pending
-			LOGGER.debug("[MBM] AUD-24 rate correction requested {} (executor pending) drift={}s",
-					rateDelta, String.format(java.util.Locale.ROOT, "%+.2f", drift));
+			// AUD-24 v1.1: |drift| <= 1s -> no intervention
 		}
 		
 		@Override
 		public void seek(double serverPositionSeconds, double drift)
 		{
-			// AUD-24: |drift| > 3s -> direct seek to the server-anchored position
 			long targetMillis = Math.round(serverPositionSeconds * 1000.0D);
-			if (ExternalMusicHandler.getInstance().seekMusic(targetMillis)) {
-				MarkerClock.clearInjectedDrift();
-				WorldPlaybackChannel.lastMarkerPosition = -1L;
-				WorldPlaybackChannel.firedThisTrack = 0L;
-				LOGGER.debug("[MBM] AUD-24 seek to {}ms (drift={}s)", targetMillis,
+			if (WorldPlaybackChannel.pendingSeek == null) {
+				// AUD-24 v1.1: fade out ~120ms before seeking
+				ExternalMusicHandler.getInstance().getPlayer().setTargetVolume(0.0F);
+				WorldPlaybackChannel.pendingSeek = new PendingSeek(targetMillis, 0);
+				LOGGER.debug("[MBM] AUD-24 correction seek to {}ms queued (drift={}s)", targetMillis,
 						String.format(java.util.Locale.ROOT, "%+.2f", drift));
 			}
 		}

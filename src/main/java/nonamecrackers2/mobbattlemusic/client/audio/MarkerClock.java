@@ -19,11 +19,9 @@ public final class MarkerClock
 		FROZEN
 	}
 
-	// AUD-24 thresholds - fixed, must not be adjusted
+	// AUD-24 v1.1 thresholds - fixed, must not be adjusted
 	public static final double DRIFT_TOLERANCE_SECONDS = 1.0D;
-	public static final double RATE_CORRECTION_THRESHOLD_SECONDS = 3.0D;
-	public static final double RATE_CORRECTION_FACTOR = 0.05D;
-	// AUD-24: resync packet period (configurable in the spec; fixed here)
+	// AUD-24 v1.1: resync period is fixed at 5 seconds
 	public static final long SYNC_INTERVAL_MILLIS = 5000L;
 
 	private static final Logger LOGGER = LogManager.getLogger("mobbattlemusic/MarkerClock");
@@ -106,8 +104,8 @@ public final class MarkerClock
 	}
 
 	/**
-	 * AUD-24 three-tier correction decision, evaluated per tick by the main
-	 * playback channel.
+	 * AUD-24 v1.1 two-tier correction decision, evaluated per tick by the main
+	 * playback channel: |drift| <= 1s no intervention, |drift| > 1s seek.
 	 */
 	public static void tick(String trackId, long localPositionMillis, CorrectionSink sink)
 	{
@@ -115,16 +113,12 @@ public final class MarkerClock
 		if (clockSource == null || !clockSource.trackId().equals(trackId))
 			return;
 		double drift = driftSeconds(trackId, localPositionMillis);
-		double abs = Math.abs(drift);
-		if (abs <= MarkerClock.DRIFT_TOLERANCE_SECONDS) {
-			// AUD-24: |drift| <= 1s -> no intervention
+		if (Math.abs(drift) <= MarkerClock.DRIFT_TOLERANCE_SECONDS) {
+			// AUD-24 v1.1: |drift| <= 1s -> no intervention
 			sink.noCorrection(drift);
-		} else if (abs <= MarkerClock.RATE_CORRECTION_THRESHOLD_SECONDS) {
-			// AUD-24: 1s < |drift| <= 3s -> soft +-5% playback rate correction, no seek
-			sink.rateCorrection(drift > 0.0D ? -MarkerClock.RATE_CORRECTION_FACTOR
-					: MarkerClock.RATE_CORRECTION_FACTOR, drift);
 		} else {
-			// AUD-24: |drift| > 3s -> direct seek to the server-anchored position
+			// AUD-24 v1.1: |drift| > 1s -> direct seek to the server-anchored
+			// position, wrapped in a ~120ms fade-out/fade-in
 			sink.seek(serverPositionSeconds(clockSource), drift);
 		}
 	}
@@ -135,8 +129,6 @@ public final class MarkerClock
 	public interface CorrectionSink
 	{
 		void noCorrection(double drift);
-
-		void rateCorrection(double rateDelta, double drift);
 
 		void seek(double serverPositionSeconds, double drift);
 	}
@@ -150,11 +142,6 @@ public final class MarkerClock
 	public static void clearInjectedDrift()
 	{
 		MarkerClock.injectedDriftSeconds = 0.0D;
-	}
-
-	public static double injectedDriftSeconds()
-	{
-		return MarkerClock.injectedDriftSeconds;
 	}
 
 	public static void recordFiredMarkers(long count)
