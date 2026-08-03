@@ -88,6 +88,9 @@ public class StreamMusicPlayer {
     // AUD-48 v1.6: the last-underrun timestamp shares the lifecycle of the
     // adaptive watermark (static, cleared only by resetAdaptiveWatermark)
     private static volatile long lastUnderrunAtMillis;
+    // K3 P2-1: the down-path timing base, one bit one meaning - an underrun
+    // restarts it, a lowering restarts it; cleared only with the watermark
+    private static volatile long lastWatermarkDownAtMillis;
     
     /**
      * AUD-44/45: a single gain envelope, shape
@@ -357,37 +360,43 @@ public class StreamMusicPlayer {
                                 (bytesRead = decodedStream.read(buffer)) != -1) {
                             // Handle pause (manual or game pause)
                             // AUD-48 v1.6: paused and gamePaused are treated
-                            // alike for the underrun transient window
-                            boolean wasSuspended = paused || gamePaused;
+                            // alike for the underrun transient window.
+                            // K3 P1-3: park instead of sleep - resume latency
+                            // drops from up to 100ms (sleep quantum) to ~0
+                            boolean suspended = false;
                             while ((paused || gamePaused) && generation == playbackGeneration.get() && playing) {
-                                try {
-                                    Thread.sleep(100);
-                                } catch (InterruptedException e) {
-                                    Thread.currentThread().interrupt();
+                                suspended = true;
+                                java.util.concurrent.locks.LockSupport.park(this);
+                                if (Thread.interrupted())
                                     break;
-                                }
                             }
                             // AUD-48 v1.5: remember the resume point for the
                             // underrun transient window
-                            if (wasSuspended && !(paused || gamePaused))
+                            if (suspended && !(paused || gamePaused))
                                 this.resumeBufferIndex = this.bufferIndex;
 
                             if (generation != playbackGeneration.get() || !playing)
                                 break;
 
-                            // AUD-48 v1.5: the adaptive watermark has a downward
-                            // path - 10s without an underrun lowers it by 10ms
+                            // AUD-48 v1.5/v1.6: the adaptive watermark has a
+                            // downward path - 10s without an underrun lowers it
+                            // by 10ms. K3 P2-1: the timing base is a separate
+                            // flag (lastWatermarkDownAtMillis), not the
+                            // underrun moment - one bit, one meaning. This
+                            // runs on the playback thread, so the watermark
+                            // only adapts while music is actually playing.
                             long nowMillis = System.currentTimeMillis();
                             long currentWatermark = StreamMusicPlayer.adaptiveWatermarkMillis > 0L
                                     ? StreamMusicPlayer.adaptiveWatermarkMillis : 60L;
-                            if (currentWatermark > 60L && StreamMusicPlayer.lastUnderrunAtMillis > 0L
-                                    && nowMillis - StreamMusicPlayer.lastUnderrunAtMillis >= WATERMARK_DOWN_PERIOD_MILLIS) {
+                            if (currentWatermark > 60L && StreamMusicPlayer.lastWatermarkDownAtMillis > 0L
+                                    && nowMillis - StreamMusicPlayer.lastWatermarkDownAtMillis
+                                            >= WATERMARK_DOWN_PERIOD_MILLIS) {
                                 long lowered = Math.max(60L, currentWatermark - WATERMARK_DOWN_MILLIS);
                                 StreamMusicPlayer.adaptiveWatermarkMillis = lowered;
                                 this.lineWatermarkBytes = Math.max(1L, Math.round(
                                         this.lineFrameRate * decodedFormat.getFrameSize()
                                                 * lowered / 1000.0D));
-                                StreamMusicPlayer.lastUnderrunAtMillis = nowMillis;
+                                StreamMusicPlayer.lastWatermarkDownAtMillis = nowMillis;
                                 LOGGER.debug("[MBM] AUD-48 v1.5 watermark lowered to {}ms", lowered);
                             }
 
@@ -402,6 +411,9 @@ public class StreamMusicPlayer {
                                     && playbackLine.available() >= playbackLine.getBufferSize()) {
                                 underruns++;
                                 StreamMusicPlayer.lastUnderrunAtMillis = System.currentTimeMillis();
+                                // K3 P2-1: an underrun restarts the down-path
+                                // timing base
+                                StreamMusicPlayer.lastWatermarkDownAtMillis = System.currentTimeMillis();
                                 // AUD-48 v1.4: adaptive watermark, +20ms per
                                 // underrun, capped at 150ms; persists across
                                 // startPlayback via the static field
@@ -517,6 +529,9 @@ public class StreamMusicPlayer {
         // AUD-48 v1.6: transient-window bases reset with the generation
         bufferIndex = 0L;
         resumeBufferIndex = -1L;
+        // K3 P1-3: a parked playback thread must be woken so it can observe
+        // the generation change and exit its pause spin
+        java.util.concurrent.locks.LockSupport.unpark(this.playbackThread);
         
         SourceDataLine activeLine = line;
         line = null;
@@ -530,12 +545,14 @@ public class StreamMusicPlayer {
      * AUD-47: audible position, derived from the frames the line has actually
      * played (SourceDataLine.getLongFramePosition), plus the start/seek offset.
      * A stopped (paused) line does not advance its frame counter.
+     * K3 P0-a: with no usable line the position is UNKNOWN (-1), never a
+     * fabricated offset - consumers must not treat -1 as zero.
      */
     public long getPositionMillis() {
         SourceDataLine activeLine = line;
         float rate = this.lineFrameRate;
         if (activeLine == null || !activeLine.isOpen() || rate <= 0.0F)
-            return positionOffsetMillis;
+            return -1L;
         long frames = activeLine.getLongFramePosition();
         return positionOffsetMillis + Math.round(frames * 1000.0D / rate);
     }
@@ -594,6 +611,7 @@ public class StreamMusicPlayer {
     public static void resetAdaptiveWatermark() {
         StreamMusicPlayer.adaptiveWatermarkMillis = 0L;
         StreamMusicPlayer.lastUnderrunAtMillis = 0L;
+        StreamMusicPlayer.lastWatermarkDownAtMillis = 0L;
     }
 
     public long getDurationMillis() {
@@ -659,6 +677,8 @@ public class StreamMusicPlayer {
         if (line != null && line.isOpen()) {
             line.start();
         }
+        // K3 P1-3: wake the paused playback thread immediately
+        java.util.concurrent.locks.LockSupport.unpark(this.playbackThread);
     }
     
     /**
@@ -684,6 +704,8 @@ public class StreamMusicPlayer {
         if (line != null && line.isOpen()) {
             line.start();
         }
+        // K3 P1-3: wake the paused playback thread immediately
+        java.util.concurrent.locks.LockSupport.unpark(this.playbackThread);
         LOGGER.debug("Resumed music after game unpause");
     }
     

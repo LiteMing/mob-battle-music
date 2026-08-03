@@ -143,6 +143,9 @@ public final class MobBattleMusicClientCommands
 			return "n/a";
 		int index = MusicTracksManager.getInstance().getExternalPlaylistSelectedIndex(playlistId);
 		long position = handler.getPositionMillis();
+		// K3 P0-a: unknown position (-1) must not be treated as zero
+		if (position < 0L)
+			return "n/a";
 		for (TimelineMarker marker : TimelineMarkerStore.markers(playlistId, url, index)) {
 			if (marker.timeMillis() > position)
 				return marker.eventId() + "@" + String.format(Locale.ROOT, "%.1fs",

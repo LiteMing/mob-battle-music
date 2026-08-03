@@ -106,7 +106,9 @@ public final class ProbeRing
 				.append(" seek=").append(String.format(Locale.ROOT, "%.2f", s.seekGain()))
 				.append(" trackTarget=").append(String.format(Locale.ROOT, "%.2f", s.trackTarget()))
 				.append(" gateOwner=").append(s.gateOwner())
-				.append(" audible=").append(s.audiblePosMillis())
+				// K3 P0-a: unknown audible position (-1) is n/a, not 0
+				.append(" audible=").append(s.audiblePosMillis() < 0L
+						? "n/a" : String.valueOf(s.audiblePosMillis()))
 				.append(" decoded=").append(s.decodedPosMillis())
 				// R4: no anchor -> drift is n/a, never a fabricated zero
 				.append(" drift=").append(s.driftMillis() == Long.MIN_VALUE

@@ -58,14 +58,21 @@ public final class WorldPlaybackChannel
 	// AUD-52: seek rate limit / hysteresis accounting
 	private static long lastSeekAtMillis;
 	private static long seekSettleUntilMillis;
-	// AUD-52 v1.3/R3: give-up uses a sliding window of the last three seek
-	// completion times; correction is disabled only when all three fall within
-	// 60s (the realign after a seek fabricates zero drift, so drift cannot
-	// judge whether correction is effective - frequency must)
+	// AUD-52 v1.3/R3/K3 P1-1: give-up uses a sliding window of the last three
+	// seek completion times; correction is disabled only when all three fall
+	// within 20s (the realign after a seek fabricates zero drift, so drift
+	// cannot judge whether correction is effective - frequency must). Recovery
+	// is automatic with backoff 60s -> 40s -> 80s -> ... (cap 300s).
+	private static final long GIVE_UP_WINDOW_MILLIS = 20_000L;
+	private static final long GIVE_UP_BACKOFF_FIRST_MILLIS = 60_000L;
+	private static final long GIVE_UP_BACKOFF_STEP_MILLIS = 40_000L;
+	private static final long GIVE_UP_BACKOFF_CAP_MILLIS = 300_000L;
 	private static final long[] RECENT_SEEK_COMPLETIONS = new long[3];
 	private static int recentSeekIndex;
 	private static int recentSeekCount;
 	private static boolean giveUpWarned;
+	private static long correctionDisabledAtMillis;
+	private static long correctionBackoffMillis = GIVE_UP_BACKOFF_FIRST_MILLIS;
 	// AUD-52 修订: seek cost measurement (queue time -> first watermark fill)
 	private static long seekQueuedAtMillis;
 	private static long seekQueuedTargetMillis;
@@ -114,29 +121,27 @@ public final class WorldPlaybackChannel
 		advancePendingGate();
 		// AUD-49 #8: a pending start fade-in expires after 2000ms
 		StreamMusicPlayer.expirePendingTrackFadeInMillis(System.currentTimeMillis());
-		// AUD-50 v1.2/R1: the re-anchor is an explicit request, set when
-		// LEAVING a state in which the local position stalls - the physical
-		// meaning of the source state, not an enumeration of (from, to) pairs
+		// K3 P1-1: automatic recovery from correction give-up with backoff;
+		// re-enabling clears the frequency window so it cannot re-trigger
+		// immediately
+		long nowMillis = System.currentTimeMillis();
+		if (MarkerClock.isCorrectionDisabled() && WorldPlaybackChannel.correctionDisabledAtMillis > 0L
+				&& nowMillis - WorldPlaybackChannel.correctionDisabledAtMillis
+						>= WorldPlaybackChannel.correctionBackoffMillis) {
+			MarkerClock.enableCorrection();
+			WorldPlaybackChannel.recentSeekCount = 0;
+			long nextBackoff = WorldPlaybackChannel.correctionBackoffMillis == GIVE_UP_BACKOFF_FIRST_MILLIS
+					? GIVE_UP_BACKOFF_STEP_MILLIS
+					: Math.min(GIVE_UP_BACKOFF_CAP_MILLIS,
+							WorldPlaybackChannel.correctionBackoffMillis + GIVE_UP_BACKOFF_STEP_MILLIS);
+			WorldPlaybackChannel.correctionBackoffMillis = nextBackoff;
+			LOGGER.info("[MBM] AUD-52 correction re-enabled (backoff {}ms)", nextBackoff);
+		}
+		// AUD-50 v1.2/R1: the re-anchor request is set when LEAVING a state in
+		// which the local position stalls - the physical meaning of the source
+		// state, not an enumeration of (from, to) pairs
 		if (previous == ChannelState.PAUSED && target != ChannelState.PAUSED)
 			MarkerClock.requestReanchor();
-		if (MarkerClock.reanchorRequested()) {
-			PlaybackHandle active = WorldPlaybackChannel.handle;
-			ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
-			long localPosition = handler.getPositionMillis();
-			boolean prerequisites = active != null
-					&& MarkerClock.isActive()
-					&& !WorldPlaybackChannel.isGatedTransitionActive()
-					&& handler.getPlayer().hasActiveTrack()
-					&& !handler.isStopRequested()
-					&& localPosition > 0L;
-			if (prerequisites) {
-				// AUD-50: re-anchor from the local position, never seek
-				long now = System.currentTimeMillis();
-				MarkerClock.realign(active.track(), now - localPosition, now);
-				MarkerClock.clearReanchorRequest();
-			}
-			// prerequisites not met: the request survives to the next tick
-		}
 		
 		// One-time side effects are allowed on the edge only (AUD-9 v1.3)
 		if (edge && target == ChannelState.STOPPED)
@@ -148,6 +153,32 @@ public final class WorldPlaybackChannel
 		
 		// Handle observation only, never a playback action
 		syncHandle();
+		
+		// K3 P1-2: the re-anchor block runs AFTER syncHandle() - the handle
+		// must be in its post-observation state (a just-created handle for a
+		// new track must not be re-anchored against the previous track's
+		// position). The track identity is checked explicitly.
+		if (MarkerClock.reanchorRequested()) {
+			PlaybackHandle active = WorldPlaybackChannel.handle;
+			ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
+			long localPosition = handler.getPositionMillis();
+			boolean prerequisites = active != null
+					&& MarkerClock.isActive()
+					&& !WorldPlaybackChannel.isGatedTransitionActive()
+					&& handler.getPlayer().hasActiveTrack()
+					&& !handler.isStopRequested()
+					// K3 P1-2: the anchor target must be the currently playing
+					// track, not a stale handle from the previous one
+					&& active.track().equals(handler.getCurrentlyPlayingUrl())
+					&& localPosition > 0L;
+			if (prerequisites) {
+				// AUD-50: re-anchor from the local position, never seek
+				long now = System.currentTimeMillis();
+				MarkerClock.realign(active.track(), now - localPosition, now);
+				MarkerClock.clearReanchorRequest();
+			}
+			// prerequisites not met: the request survives to the next tick
+		}
 		// AUD-19 + clock driving (AUD-24/AUD-25) + marker counting
 		tickClockAndInvalidation();
 		
@@ -159,6 +190,10 @@ public final class WorldPlaybackChannel
 		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
 		StreamMusicPlayer player = handler.getPlayer();
 		long audiblePos = handler.getPositionMillis();
+		// K3 P0-a: an unknown position is recorded as -1 (n/a in the dump),
+		// never fabricated as zero
+		if (audiblePos < 0L)
+			audiblePos = -1L;
 		long decodedPos = handler.getDecodedPositionMillis();
 		String currentUrl = handler.getCurrentlyPlayingUrl();
 		// R4: "no usable anchor" is NO DATA - Long.MIN_VALUE signals n/a in
@@ -366,6 +401,12 @@ public final class WorldPlaybackChannel
 		// unconditionally (AUD-45 v1.2) even if another writer left the target
 		// at the same value
 		env.forceFade(0.0f, fadeOutMillis);
+		// K3 P0-c: a correction-seek gate invalidates the anchor - while a
+		// seek is queued the local position cannot be used for server-time
+		// conversion (spec requires this explicitly; no behavioural-equivalence
+		// substitute)
+		if (env == ExternalMusicHandler.getInstance().getPlayer().seekEnv())
+			MarkerClock.invalidateAnchor();
 		long createdAt = System.currentTimeMillis();
 		WorldPlaybackChannel.pendingGate = new PendingGate(env, action, fadeInMillis, createdAt,
 				createdAt + fadeOutMillis + GATE_TIMEOUT_GRACE_MILLIS, actionName);
@@ -531,9 +572,11 @@ public final class WorldPlaybackChannel
 		WorldPlaybackChannel.firedThisTrack = 0L;
 		WorldPlaybackChannel.lastMarkerPosition = -1L;
 		// AUD-52 v1.3: a track switch re-enables correction and clears the
-		// frequency window
+		// frequency window and the backoff state
 		MarkerClock.enableCorrection();
 		WorldPlaybackChannel.recentSeekCount = 0;
+		WorldPlaybackChannel.correctionDisabledAtMillis = 0L;
+		WorldPlaybackChannel.correctionBackoffMillis = GIVE_UP_BACKOFF_FIRST_MILLIS;
 		// R4: the new track is not yet anchored - the old anchor must not
 		// masquerade as a healthy zero-drift state
 		MarkerClock.invalidateAnchor();
@@ -610,6 +653,10 @@ public final class WorldPlaybackChannel
 		if (url == null || !url.equals(active.track()))
 			return;
 		long positionMillis = handler.getPositionMillis();
+		// K3 P0-a: no usable line -> position unknown (-1); correction and
+		// marker counting must not participate with -1 in arithmetic
+		if (positionMillis < 0L)
+			return;
 		
 		// AUD-24: periodic resync every 5 seconds
 		long now = System.currentTimeMillis();
@@ -621,13 +668,16 @@ public final class WorldPlaybackChannel
 		// RUNNING, the anchor is valid and the player is actually audible
 		// (AUD-51 追加: never during a pending stop). R6: while MUTED, only
 		// once the mute envelope has fully reached zero - the fade-out window
-		// must never be layered under a correction fade
+		// must never be layered under a correction fade. K3 P0-c: never while
+		// a seek is in flight or a gate is active
 		boolean mutedNotSilent = WorldPlaybackChannel.state() == ChannelState.MUTED
 				&& StreamMusicPlayer.MUTE_ENV.current() > 0.001f;
 		if (MarkerClock.isActive() && MarkerClock.state() == MarkerClock.ClockState.RUNNING
 				&& MarkerClock.anchorValid()
 				&& handler.getPlayer().isPlaying()
 				&& !handler.isStopRequested()
+				&& !handler.isSeekInFlight()
+				&& !WorldPlaybackChannel.isGatedTransitionActive()
 				&& !mutedNotSilent)
 			MarkerClock.tick(url, positionMillis, CORRECTION_SINK);
 		
@@ -658,16 +708,21 @@ public final class WorldPlaybackChannel
 		public void seek(double serverPositionSeconds, double drift)
 		{
 			long now = System.currentTimeMillis();
-			// AUD-52 v1.3/R3: give-up is decided by the frequency window - the
-			// last three seek completions all within 60s
+			// AUD-52 v1.3/R3/K3 P1-1: give-up is decided by the frequency window
+			// - the last three seek completions all within 20s
 			if (WorldPlaybackChannel.recentSeekCount >= 3) {
+				// P2-3: with count==3 the oldest completion sits at
+				// index-3 (mod 3); the offset is NOT a no-op - the written
+				// index points at the NEXT slot, so the oldest of the three
+				// is three slots back
 				long oldest = WorldPlaybackChannel.RECENT_SEEK_COMPLETIONS[
 						Math.floorMod(WorldPlaybackChannel.recentSeekIndex - 3, 3)];
-				if (now - oldest <= 60_000L) {
+				if (now - oldest <= GIVE_UP_WINDOW_MILLIS) {
 					if (!WorldPlaybackChannel.giveUpWarned) {
 						WorldPlaybackChannel.giveUpWarned = true;
 						MarkerClock.disableCorrection();
-						LOGGER.warn("[MBM] AUD-52 correction disabled for this track (3 seeks within 60s)");
+						WorldPlaybackChannel.correctionDisabledAtMillis = now;
+						LOGGER.warn("[MBM] AUD-52 correction disabled for this track (3 seeks within 20s)");
 					}
 					return;
 				}

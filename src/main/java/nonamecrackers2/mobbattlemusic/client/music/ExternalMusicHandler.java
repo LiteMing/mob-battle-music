@@ -42,6 +42,10 @@ public class ExternalMusicHandler {
     // caller thread before dispatch, predicates read it instead of observing
     // the async side effect
     private volatile boolean stopRequested;
+    // K3 P0-b: a correction seek is in flight (queued on the audio-I/O
+    // executor, not yet completed); set on the caller thread before dispatch,
+    // cleared by the newest request's completion only
+    private volatile boolean seekInFlight;
     private volatile String currentlyPlayingUrl;
     private volatile Path currentlyPlayingPath;
     private volatile long currentDurationHintMillis;
@@ -286,33 +290,47 @@ public class ExternalMusicHandler {
      */
     public void seekMusicAsync(long positionMillis, java.util.function.LongConsumer onComplete) {
         long request = this.seekRequest.incrementAndGet();
+        // K3 P0-b: sync-visible in-flight intent, set on the caller thread
+        // before dispatch
+        this.seekInFlight = true;
         this.audioIo.execute(() -> {
-            if (request != this.seekRequest.get())
-                return;
-            // AUD-52 v1.3/R5: record the playback generation before the seek;
-            // only a watermark stamp from a strictly newer generation counts
-            long generationBefore = this.player.getPlaybackGeneration();
-            this.seekMusic(positionMillis);
-            // AUD-52 v1.2: wait for the new line's first watermark fill (the
-            // output actually reached the target position); capped at 1500ms
-            long deadline = System.currentTimeMillis() + 1500L;
-            long watermarkReached = 0L;
-            while (watermarkReached == 0L && System.currentTimeMillis() < deadline) {
-                StreamMusicPlayer.WatermarkStamp stamp = this.player.getWatermarkStamp();
-                if (stamp.generation() > generationBefore)
-                    watermarkReached = stamp.millis();
-                if (watermarkReached == 0L) {
-                    try {
-                        Thread.sleep(5);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        break;
+            try {
+                if (request != this.seekRequest.get())
+                    return;
+                // AUD-52 v1.3/R5: record the playback generation before the seek;
+                // only a watermark stamp from a strictly newer generation counts
+                long generationBefore = this.player.getPlaybackGeneration();
+                this.seekMusic(positionMillis);
+                // AUD-52 v1.2: wait for the new line's first watermark fill (the
+                // output actually reached the target position); capped at 1500ms
+                long deadline = System.currentTimeMillis() + 1500L;
+                long watermarkReached = 0L;
+                while (watermarkReached == 0L && System.currentTimeMillis() < deadline) {
+                    StreamMusicPlayer.WatermarkStamp stamp = this.player.getWatermarkStamp();
+                    if (stamp.generation() > generationBefore)
+                        watermarkReached = stamp.millis();
+                    if (watermarkReached == 0L) {
+                        try {
+                            Thread.sleep(5);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
                     }
                 }
+                if (onComplete != null)
+                    onComplete.accept(watermarkReached);
+            } finally {
+                // K3 P0-b: only the newest seek request clears the flag
+                if (request == this.seekRequest.get())
+                    this.seekInFlight = false;
             }
-            if (onComplete != null)
-                onComplete.accept(watermarkReached);
         });
+    }
+
+    // K3 P0-b: is a correction seek currently in flight?
+    public boolean isSeekInFlight() {
+        return this.seekInFlight;
     }
 
     public long getPositionMillis() {
