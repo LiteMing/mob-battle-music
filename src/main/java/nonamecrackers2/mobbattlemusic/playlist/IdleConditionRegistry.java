@@ -31,7 +31,9 @@ public final class IdleConditionRegistry
 						.map(key -> key.location().toString().equals(argument)).orElse(false));
 		register(MobBattleMusicMod.id("structure"), "Structure", IdleConditionRegistry::insideStructure);
 		register(MobBattleMusicMod.id("underwater"), "Underwater", (player, argument) -> player.isUnderWater());
-		// K9-2: entity condition - any matching mob type within 12 blocks
+		// K9-2/K10-A: entity condition - any matching mob type within 12
+		// blocks; pure Minecraft API only (this registry must load on
+		// dedicated servers - no client classes)
 		register(MobBattleMusicMod.id("entity"), "Entity", (player, argument) -> {
 			ResourceLocation id = ResourceLocation.tryParse(argument);
 			if (id == null)
@@ -40,14 +42,12 @@ public final class IdleConditionRegistry
 					player.getBoundingBox().inflate(12.0D),
 					mob -> mob.isAlive() && mob.getType() == BuiltInRegistries.ENTITY_TYPE.get(id)).isEmpty();
 		});
-		// K9-2: scene condition - combat / idle / underwater current state
+		// K9-2/K10-A: scene condition - combat / idle / underwater current
+		// state, evaluated with pure Minecraft API only (no client state)
 		register(MobBattleMusicMod.id("scene"), "Scene", (player, argument) -> {
 			boolean combatNearby = !player.level().getEntitiesOfClass(Mob.class,
 					player.getBoundingBox().inflate(12.0D),
-					mob -> mob.isAlive() && (mob.isAggressive()
-							|| mob.getTarget() == player
-							|| nonamecrackers2.mobbattlemusic.client.util.AggressiveEntityStateClient
-									.isServerAggressive(mob.getUUID()))).isEmpty();
+					mob -> mob.isAlive() && (mob.isAggressive() || mob.getTarget() == player)).isEmpty();
 			return switch (argument == null ? "" : argument) {
 				case "combat" -> combatNearby;
 				case "idle" -> !combatNearby;
@@ -89,17 +89,35 @@ public final class IdleConditionRegistry
 	public static synchronized boolean isRegistered(String id)
 	{
 		try {
-			return DEFINITIONS.containsKey(new ResourceLocation(id));
+			return DEFINITIONS.containsKey(normalizeId(id));
 		} catch (Exception e) {
 			return false;
 		}
 	}
 
 	/**
-	 * K9-2: AND/OR group evaluation. The list is split at OR joins: a
+	 * K10-A: condition ids written without a namespace are assumed to live in
+	 * the mod's namespace - the GUI hint/default values ("dimension", "biome",
+	 * ...) must resolve exactly like the registered "mobbattlemusic:dimension".
+	 */
+	public static ResourceLocation normalizeId(String raw)
+	{
+		if (raw == null || raw.isBlank())
+			return null;
+		ResourceLocation parsed = ResourceLocation.tryParse(raw);
+		if (parsed == null)
+			return null;
+		return parsed.getNamespace().equals("minecraft") && parsed.getPath().equals(raw)
+				? new ResourceLocation(MobBattleMusicMod.MODID, raw)
+				: parsed;
+	}
+
+	/**
+	 * K10-A: AND/OR group evaluation. The list is split at OR joins: a
 	 * condition whose join is OR starts a new OR-block; blocks OR together
 	 * while conditions inside a block AND together. All-AND lists evaluate
-	 * exactly as before.
+	 * exactly as before. Inversion IS applied here (testOne is the raw
+	 * pre-inversion match for diagnostics only).
 	 */
 	public static synchronized boolean test(Player player, List<IdleCondition> conditions)
 	{
@@ -111,7 +129,9 @@ public final class IdleConditionRegistry
 				anyBlock |= currentBlock;
 				currentBlock = true;
 			}
-			currentBlock &= testOne(player, condition);
+			boolean raw = testOne(player, condition);
+			boolean effective = condition.inverted() ? !raw : raw;
+			currentBlock &= effective;
 			first = false;
 		}
 		anyBlock |= currentBlock;

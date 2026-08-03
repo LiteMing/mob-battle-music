@@ -43,12 +43,14 @@ public class ConditionInspectorScreen extends Screen
 	private Button joinToggleButton;
 	private Button invertToggleButton;
 	private Button addButton;
+	private Button updateButton;
 	private Button testButton;
 	private Button cancelButton;
 	private EditBox typeBox;
 	private EditBox argumentBox;
 	private IdleCondition.Join pendingJoin = IdleCondition.Join.AND;
 	private boolean pendingInverted;
+	private int selectedConditionIndex = -1;
 	private String statusMessage = "";
 
 	public ConditionInspectorScreen(Screen parent, MusicTracksManager.DynamicBinding binding, int entryIndex,
@@ -94,6 +96,12 @@ public class ConditionInspectorScreen extends Screen
 		this.addButton = this.addRenderableWidget(Button.builder(
 				Component.literal("Add"), button -> addCondition())
 				.bounds(this.listLeft + 490, LIST_TOP + this.listHeight + 6, 60, 20).build());
+		this.updateButton = this.addRenderableWidget(Button.builder(
+				Component.literal("Update selected"), button -> updateCondition())
+				.bounds(this.listLeft + 556, LIST_TOP + this.listHeight + 6, 60, 20)
+				.tooltip(net.minecraft.client.gui.components.Tooltip.create(
+						Component.literal("Click a row to load it into the editor; update replaces it")))
+				.build());
 		this.testButton = this.addRenderableWidget(Button.builder(
 				Component.literal("Test current environment"), button -> runDiagnostics())
 				.bounds(this.listLeft + 4, LIST_TOP + this.listHeight + 32, 200, 20).build());
@@ -125,6 +133,7 @@ public class ConditionInspectorScreen extends Screen
 		this.invertToggleButton.setMessage(Component.literal(invertLabel));
 		this.invertToggleButton.active = !this.serverMode;
 		this.addButton.active = !this.serverMode;
+		this.updateButton.active = !this.serverMode && this.selectedConditionIndex >= 0;
 	}
 
 	private void addCondition()
@@ -140,11 +149,47 @@ public class ConditionInspectorScreen extends Screen
 		this.runDiagnostics();
 	}
 
+	// K10-A: load a row into the editor (inline edit of join/inverted/type/argument)
+	private void selectCondition(int index)
+	{
+		if (index < 0 || index >= this.conditions.size())
+			return;
+		IdleCondition condition = this.conditions.get(index);
+		this.selectedConditionIndex = index;
+		this.typeBox.setValue(condition.type());
+		this.argumentBox.setValue(condition.argument());
+		this.pendingJoin = condition.join();
+		this.pendingInverted = condition.inverted();
+		this.updateEditorState();
+	}
+
+	private void updateCondition()
+	{
+		if (this.selectedConditionIndex < 0 || this.selectedConditionIndex >= this.conditions.size()) {
+			this.statusMessage = "Select a condition row first";
+			return;
+		}
+		String type = this.typeBox.getValue().trim();
+		if (type.isEmpty() || !IdleConditionRegistry.isRegistered(type)) {
+			this.statusMessage = "Unknown condition type: " + type;
+			return;
+		}
+		IdleCondition updated = new IdleCondition(type, this.argumentBox.getValue().trim(),
+				this.pendingInverted, this.pendingJoin);
+		this.conditions.set(this.selectedConditionIndex, updated);
+		this.statusMessage = "Updated condition #" + (this.selectedConditionIndex + 1);
+		this.runDiagnostics();
+	}
+
 	private void deleteCondition(int index)
 	{
 		if (index < 0 || index >= this.conditions.size())
 			return;
 		this.conditions.remove(index);
+		if (this.selectedConditionIndex == index)
+			this.selectedConditionIndex = -1;
+		else if (this.selectedConditionIndex > index)
+			this.selectedConditionIndex--;
 		this.statusMessage = "Deleted condition #" + (index + 1);
 		this.runDiagnostics();
 	}
@@ -158,7 +203,9 @@ public class ConditionInspectorScreen extends Screen
 				this.diagnostics.add(new IdleConditionRegistry.MatchResult(false, "no player in world"));
 				continue;
 			}
-			this.diagnostics.add(IdleConditionRegistry.diagnose(mc.player, condition));
+			// K10-A: client-side diagnostics (structure works in singleplayer
+			// through the integrated server level)
+			this.diagnostics.add(ClientConditionDiagnostics.diagnose(mc.player, condition));
 		}
 	}
 
@@ -190,7 +237,8 @@ public class ConditionInspectorScreen extends Screen
 			int rowIndex = this.scrollOffset + i;
 			IdleCondition condition = this.conditions.get(rowIndex);
 			int y = LIST_TOP + i * ROW_HEIGHT;
-			graphics.fill(this.listLeft, y, this.listLeft + this.listWidth, y + ROW_HEIGHT - 2, 0xFF1E2329);
+			int rowColor = rowIndex == this.selectedConditionIndex ? 0xFF293B4A : 0xFF1E2329;
+			graphics.fill(this.listLeft, y, this.listLeft + this.listWidth, y + ROW_HEIGHT - 2, rowColor);
 			String join = rowIndex > 0 ? (condition.join() == IdleCondition.Join.OR ? "OR  " : "AND ") : "";
 			String inv = condition.inverted() ? " NOT" : "";
 			String text = join + condition.type() + inv +
@@ -220,11 +268,14 @@ public class ConditionInspectorScreen extends Screen
 	public boolean mouseClicked(double mouseX, double mouseY, int button)
 	{
 		if (button == 0 && !this.serverMode
-				&& mouseX >= this.listLeft + this.listWidth - 24 && mouseX < this.listLeft + this.listWidth
-				&& mouseY >= LIST_TOP) {
+				&& mouseX >= this.listLeft && mouseX < this.listLeft + this.listWidth
+				&& mouseY >= LIST_TOP && mouseY < LIST_TOP + this.listHeight) {
 			int row = (int) ((mouseY - LIST_TOP) / ROW_HEIGHT) + this.scrollOffset;
 			if (row >= 0 && row < this.conditions.size()) {
-				this.deleteCondition(row);
+				if (mouseX >= this.listLeft + this.listWidth - 24)
+					this.deleteCondition(row);
+				else
+					this.selectCondition(row);
 				return true;
 			}
 		}
