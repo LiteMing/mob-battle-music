@@ -46,11 +46,10 @@ public final class WorldPlaybackChannel
 	private static final java.util.Set<MobBattleTrack> ENGINE_TRACKS =
 			java.util.concurrent.ConcurrentHashMap.newKeySet();
 	
+	// AUD-9 v1.3: the channel state is the idempotent convergence target
+	// recomputed every tick from (session, focused) (AUD-41)
 	private static volatile ChannelState state = ChannelState.STOPPED;
 	private static volatile @Nullable PlaybackHandle handle;
-	private static SessionState session = SessionState.NO_WORLD;
-	private static boolean focused = true;
-	private static boolean initialized;
 	private static long lastClockReportMillis;
 	private static long lastMarkerPosition = -1L;
 	private static long firedThisTrack;
@@ -63,36 +62,30 @@ public final class WorldPlaybackChannel
 	private WorldPlaybackChannel() {}
 	
 	/**
-	 * Called once per client tick (AUD-5). Audio actions only run on state
-	 * transitions (AUD-9); handle observation, invalidation and clock
-	 * correction run every tick.
+	 * Called once per client tick (AUD-5). AUD-9 v1.3: computes the target
+	 * state and converges idempotently every tick; edge detection is used only
+	 * for logging and one-time side effects (stop, resync report).
 	 */
 	public static void update(SessionState newSession, boolean newFocused)
 	{
-		boolean edge = !initialized || newSession != WorldPlaybackChannel.session
-				|| newFocused != WorldPlaybackChannel.focused;
-		WorldPlaybackChannel.initialized = true;
-		WorldPlaybackChannel.session = newSession;
-		WorldPlaybackChannel.focused = newFocused;
+		ChannelState target = targetOf(newSession, newFocused);
+		ChannelState previous = WorldPlaybackChannel.state;
+		boolean edge = target != previous;
+		WorldPlaybackChannel.state = target;
 		
-		if (edge) {
-			switch (newSession) {
-				// AUD-13: NO_WORLD / DISCONNECTED -> stop() (+ DISCONNECTED clears handles)
-				case NO_WORLD, DISCONNECTED -> stop();
-				// AUD-13: SINGLEPLAYER_PAUSED -> pause()
-				case SINGLEPLAYER_PAUSED -> pause();
-				// AUD-13: SINGLEPLAYER_RUNNING -> play() / maintain
-				case SINGLEPLAYER_RUNNING -> play();
-				// AUD-13: LAN_HOST / MULTIPLAYER -> keep playing while focused,
-				// mute() when unfocused or a pause screen is open
-				case LAN_HOST, MULTIPLAYER -> {
-					if (WorldPlaybackChannel.focused)
-						unmute();
-					else
-						mute();
-				}
-			}
-		}
+		if (edge)
+			LOGGER.debug("[MBM] channel target {} -> {}", previous, target);
+		
+		// AUD-41: unconditional projection of all four flags, every tick
+		converge(target);
+		
+		// One-time side effects are allowed on the edge only (AUD-9 v1.3)
+		if (edge && target == ChannelState.STOPPED)
+			stopMusic();
+		// AUD-25: leaving PAUSED requests a resync
+		if (edge && previous == ChannelState.PAUSED
+				&& (target == ChannelState.PLAYING || target == ChannelState.MUTED))
+			reportPlaybackStart();
 		
 		// Handle observation only, never a playback action
 		syncHandle();
@@ -100,80 +93,93 @@ public final class WorldPlaybackChannel
 		tickClockAndInvalidation();
 	}
 	
+	// AUD-41: target state table, exactly as specified
+	private static ChannelState targetOf(SessionState session, boolean focused)
+	{
+		return switch (session) {
+			case NO_WORLD, DISCONNECTED -> ChannelState.STOPPED;
+			case SINGLEPLAYER_PAUSED -> ChannelState.PAUSED;
+			case SINGLEPLAYER_RUNNING -> ChannelState.PLAYING;
+			case LAN_HOST, MULTIPLAYER -> focused ? ChannelState.PLAYING : ChannelState.MUTED;
+		};
+	}
+	
+	// AUD-41: convergence action table. Every tick, all four columns are
+	// projected unconditionally; no current-state comparison, no incremental
+	// dispatch. Idempotent by construction (flag writes and hardware ops are
+	// no-ops when the value/state is already applied).
+	private static void converge(ChannelState target)
+	{
+		StreamMusicPlayer player = ExternalMusicHandler.getInstance().getPlayer();
+		switch (target) {
+			case STOPPED -> {
+				player.resumeFromGame();          // gamePaused = false
+				player.setMutedForGame(false);    // gameMuted = false
+				MobBattleTrack.setMainPlaybackMuted(false);
+				MarkerClock.invalidate();
+			}
+			case PAUSED -> {
+				player.pauseForGame();            // gamePaused = true
+				player.setMutedForGame(false);
+				MobBattleTrack.setMainPlaybackMuted(false);
+				MarkerClock.setState(MarkerClock.ClockState.FROZEN);
+			}
+			case PLAYING -> {
+				player.resumeFromGame();          // gamePaused = false
+				player.setMutedForGame(false);
+				MobBattleTrack.setMainPlaybackMuted(false);
+				MarkerClock.setState(MarkerClock.ClockState.RUNNING);
+			}
+			case MUTED -> {
+				// AUD-41: gamePaused must be explicitly false here; the v1.2
+				// deadlock was unmute() omitting the resume
+				player.resumeFromGame();
+				player.setMutedForGame(true);
+				MobBattleTrack.setMainPlaybackMuted(true);
+				applyMuteToSoundEngineTracks();
+				MarkerClock.setState(MarkerClock.ClockState.RUNNING);
+			}
+		}
+	}
+	
+	// AUD-28 contract methods: single-step convergence projections. The tick
+	// entry drives them continuously via update(); these remain as contract
+	// surfaces and are idempotent.
 	public static void play()
 	{
-		// AUD-13: SINGLEPLAYER_RUNNING -> play() / maintain. Track selection and
-		// starting playback stays with the existing selection engine; this method
-		// only restores a paused or muted channel. Actual playback state is
-		// observed every tick by syncHandle().
-		switch (WorldPlaybackChannel.state) {
-			case PAUSED -> resume();
-			case MUTED -> unmute();
-			default -> { }
-		}
+		converge(ChannelState.PLAYING);
 	}
 	
 	public static void pause()
 	{
-		// AUD-10: pause freezes the clock (audio output suspended, position held)
-		if (WorldPlaybackChannel.state == ChannelState.STOPPED)
-			return;
-		ExternalMusicHandler.getInstance().getPlayer().pauseForGame();
-		// Pause and mute are mutually exclusive; clear any mute residue
-		ExternalMusicHandler.getInstance().getPlayer().setMutedForGame(false);
-		MobBattleTrack.setMainPlaybackMuted(false);
-		WorldPlaybackChannel.state = ChannelState.PAUSED;
-		// AUD-25: pause freezes the clock; markers must not fire
-		MarkerClock.setState(MarkerClock.ClockState.FROZEN);
-		LOGGER.debug("[MBM] world channel -> PAUSED");
+		converge(ChannelState.PAUSED);
 	}
 	
 	public static void resume()
 	{
-		// AUD-10: unfreezes the clock
-		if (WorldPlaybackChannel.state == ChannelState.STOPPED)
-			return;
-		ExternalMusicHandler.getInstance().getPlayer().resumeFromGame();
-		WorldPlaybackChannel.state = ChannelState.PLAYING;
-		MarkerClock.setState(MarkerClock.ClockState.RUNNING);
-		// AUD-25: resume must request a resync from the server
-		reportPlaybackStart();
-		LOGGER.debug("[MBM] world channel -> PLAYING");
+		converge(ChannelState.PLAYING);
 	}
 	
 	public static void mute()
 	{
-		// AUD-10: mute keeps the clock running - unfreeze first, then silence
-		if (WorldPlaybackChannel.state == ChannelState.STOPPED)
-			return;
-		ExternalMusicHandler.getInstance().getPlayer().resumeFromGame();
-		// External URL leg: self-managed gain (AUD-11), effective immediately
-		ExternalMusicHandler.getInstance().getPlayer().setMutedForGame(true);
-		// Built-in sound leg: flag consumed by the tickNonPaused mixin...
-		MobBattleTrack.setMainPlaybackMuted(true);
-		// ...and direct per-channel gain for the paused-engine window, where the
-		// engine no longer refreshes volumes (AUD-11 verification conclusion)
-		applyMuteToSoundEngineTracks();
-		WorldPlaybackChannel.state = ChannelState.MUTED;
-		// AUD-25: mute keeps the clock running
-		MarkerClock.setState(MarkerClock.ClockState.RUNNING);
-		LOGGER.debug("[MBM] world channel -> MUTED");
+		converge(ChannelState.MUTED);
 	}
 	
 	public static void unmute()
 	{
-		if (WorldPlaybackChannel.state == ChannelState.STOPPED)
-			return;
-		ExternalMusicHandler.getInstance().getPlayer().setMutedForGame(false);
-		MobBattleTrack.setMainPlaybackMuted(false);
-		// Built-in leg volume is recalculated by the tickNonPaused mixin on the
-		// next frame; unmute() only runs while the engine is unpaused
-		WorldPlaybackChannel.state = ChannelState.PLAYING;
-		MarkerClock.setState(MarkerClock.ClockState.RUNNING);
-		LOGGER.debug("[MBM] world channel -> PLAYING");
+		converge(ChannelState.PLAYING);
 	}
 	
 	public static void stop()
+	{
+		stopMusic();
+	}
+	
+	/**
+	 * One-time audio stop: destroys the playback source and clears handles.
+	 * Invoked on the STOPPED edge (AUD-9 v1.3); safe to call repeatedly.
+	 */
+	private static void stopMusic()
 	{
 		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
 		// AUD-42 #4: flags are cleared before stopMusic() and independently of
@@ -188,19 +194,15 @@ public final class WorldPlaybackChannel
 		WorldPlaybackChannel.firedThisTrack = 0L;
 		WorldPlaybackChannel.lastMarkerPosition = -1L;
 		WorldPlaybackChannel.pendingSeek = null;
-		if (WorldPlaybackChannel.state != ChannelState.STOPPED) {
-			WorldPlaybackChannel.state = ChannelState.STOPPED;
-			LOGGER.debug("[MBM] world channel -> STOPPED");
-		}
+		LOGGER.debug("[MBM] world channel -> STOPPED (audio stopped)");
 	}
 	
 	public static void reset()
 	{
-		stop();
-		WorldPlaybackChannel.initialized = false;
-		WorldPlaybackChannel.session = SessionState.NO_WORLD;
-		WorldPlaybackChannel.focused = true;
+		// Force the next update() to treat the first tick as an edge
+		WorldPlaybackChannel.state = null;
 		WorldPlaybackChannel.lastClockReportMillis = 0L;
+		stopMusic();
 	}
 	
 	/**
@@ -244,22 +246,20 @@ public final class WorldPlaybackChannel
 	private static void syncHandle()
 	{
 		// Observation only: track the actual playback so the probe (AUD-30)
-		// reflects reality. PAUSED/MUTED are migration-controlled and untouched.
+		// reflects reality. The channel state is the convergence target and is
+		// never modified here.
 		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
 		boolean playing = handler.isPlaying() || handler.isPreparingCurrentMusic();
-		switch (WorldPlaybackChannel.state) {
+		switch (WorldPlaybackChannel.state()) {
 			case STOPPED -> {
-				if (playing) {
+				if (playing)
 					beginPlayback(handler);
-					WorldPlaybackChannel.state = ChannelState.PLAYING;
-				}
 			}
 			case PLAYING -> {
 				if (playing) {
 					if (WorldPlaybackChannel.handle == null)
 						beginPlayback(handler);
 				} else {
-					WorldPlaybackChannel.state = ChannelState.STOPPED;
 					clearHandle();
 				}
 			}
@@ -285,7 +285,6 @@ public final class WorldPlaybackChannel
 		WorldPlaybackChannel.handle = created;
 		WorldPlaybackChannel.firedThisTrack = 0L;
 		WorldPlaybackChannel.lastMarkerPosition = -1L;
-		MarkerClock.setState(MarkerClock.ClockState.RUNNING);
 		// AUD-22: report the playback start so the server can anchor the clock
 		reportPlaybackStart();
 	}
@@ -318,7 +317,7 @@ public final class WorldPlaybackChannel
 			}
 		}
 		
-		if (WorldPlaybackChannel.state != ChannelState.PLAYING && WorldPlaybackChannel.state != ChannelState.MUTED)
+		if (WorldPlaybackChannel.state() != ChannelState.PLAYING && WorldPlaybackChannel.state() != ChannelState.MUTED)
 			return;
 		
 		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
@@ -426,13 +425,13 @@ public final class WorldPlaybackChannel
 	private static void invalidatePlayback(@Nullable SourceRef ref)
 	{
 		// AUD-19: immediate stop, no fade-out; the selection engine decides the
-		// next track within the same tick
+		// next track within the same tick. The convergence target is not
+		// touched - update() recomputes it from (session, focused) next tick.
 		ExternalMusicHandler.getInstance().stopMusic();
 		clearHandle();
 		MarkerClock.invalidate();
 		WorldPlaybackChannel.firedThisTrack = 0L;
 		WorldPlaybackChannel.lastMarkerPosition = -1L;
-		WorldPlaybackChannel.state = ChannelState.STOPPED;
 		LOGGER.debug("[MBM] world channel -> STOPPED (invalidated)");
 		// AUD-30 v1.2: fixed-format invalidation log. deltaMs is measured in
 		// code from the data-layer commit stamp to the audio stop above;
@@ -455,7 +454,9 @@ public final class WorldPlaybackChannel
 	
 	public static ChannelState state()
 	{
-		return WorldPlaybackChannel.state;
+		// reset() may null the field to force an edge on the next update()
+		ChannelState current = WorldPlaybackChannel.state;
+		return current == null ? ChannelState.STOPPED : current;
 	}
 	
 	public static @Nullable PlaybackHandle handle()
