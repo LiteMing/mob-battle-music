@@ -105,3 +105,37 @@ debug session 能输出的字段，ring 必须全部包含。格式化不得在�
 的情况下进行。
 
 ### AUD-39【追加】明知与现行 spec 冲突的改动，不得先落地再请求决策；必须先提出条款修订，获批后再实现。
+
+### AUD-50【修订 v1.2】区分「位置脱钩」与「不可闻」
+
+nchorValid 的语义定义为「本地播放位置可用于换算服务端时间」。仅以下
+事件清位：进入 PAUSED、stopMusic/invalidate、seek 门控开始。MUTED
+不得清位，且 MUTED 下时钟保持 RUNNING、纠偏正常参与（静音期是纠偏的
+最优时机）。
+
+### AUD-50【追加 v1.2】重锚必须是显式请求，不得从 anchorValid 反推
+
+新增 eanchorRequested，仅由「PAUSED → PLAYING」迁移沿置位，重锚执行后
+清位。重锚块的前置条件另加：非门控进行中、hasActiveTrack()、
+非 stopRequested、localPosition > 0。
+
+### AUD-52【修订 v1.3】放弃状态必须独立于时钟状态
+
+give-up 使用独立的 correctionDisabled 布尔，不得通过 setState(FROZEN)
+表达，不得清 nchorValid，不得触发重锚。该标志仅由 eginPlayback
+（换曲）清除。
+
+### AUD-48【追加 v1.6】状态生命周期对齐
+
+自适应水位的所有协同状态（水位值、末次 underrun 时刻、瞬态窗口基准）
+必须具有相同的生命周期作用域。underrun 瞬态窗口对 paused 与
+gamePaused 一视同仁。
+
+### AUD-52【追加 v1.3】跨代时间戳必须带代号
+
+lastWatermarkReachedAtMillis 一类"本代首次到达"的时间戳必须与
+playbackGeneration 一同发布，消费方必须校验代号；stop() 必须清零。
+
+### AUD-38【追加】走查表须含失败/边界路径。
+
+### AUD-39【追加】注释与代码不符视同静默偏差。
