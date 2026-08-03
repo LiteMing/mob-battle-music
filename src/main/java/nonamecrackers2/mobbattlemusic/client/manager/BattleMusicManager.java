@@ -87,6 +87,8 @@ public class BattleMusicManager {
 	private int threatRefreshTimer;
 	private int threatRemovalTimer;
 	private @Nullable LivingEntity panickingFrom;
+	// K8-A: the first-tick adoption reconciliation runs exactly once per level
+	private boolean adoptionChecked;
 
 	public BattleMusicManager(Minecraft mc, ClientLevel level) {
 		this.minecraft = mc;
@@ -125,6 +127,13 @@ public class BattleMusicManager {
 	}
 
 	public void tick() {
+		// K8-A: the adoption reconciliation runs on the first tick of this
+		// level, before any priority decision - the session player may already
+		// be playing from the previous dimension
+		if (!this.adoptionChecked) {
+			this.adoptionChecked = true;
+			adoptCurrentSessionPlayback();
+		}
 		// Handle threat timers
 		boolean flag = true;
 		if (this.panickingFrom != null) {
@@ -379,6 +388,9 @@ public class BattleMusicManager {
 						if (resumePosition <= 0L)
 							resumePosition = wrapSynchronizedPosition(url, synchronizedPosition);
 						externalTrack = new ExternalUrlMusicTrack(url, type.getFadeTime(), resumePosition);
+						// K8-A: declare the playback intent before starting -
+						// every intent change invalidates in-flight gates
+						WorldPlaybackChannel.setCurrentIntent(url);
 						externalTrack.play();
 						this.externalTracks.put(type, externalTrack);
 						this.notifyTrackSwitch(tracksManager.describeTrack(trackLocation, url));
@@ -689,6 +701,82 @@ public class BattleMusicManager {
 		this.panickingFrom = mob;
 		this.threatRefreshTimer = time;
 		this.maxThreatRefreshTime = time;
+	}
+
+	/**
+	 * K8-A: the level-scoped manager is going away (level unload). Clear all
+	 * non-audio state of THIS level scope. When preservePlayback is true the
+	 * session player (ExternalMusicHandler) is left untouched - it keeps
+	 * playing across the dimension change and the new level's manager adopts
+	 * it; never call wrapper.stop() in that case (it stops the session
+	 * player). Built-in Minecraft-sound tracks are always stopped: they are
+	 * level-scoped sound instances.
+	 */
+	public void disposeForLevelTransition(boolean preservePlayback) {
+		var iterator = this.tracks.values().iterator();
+		while (iterator.hasNext()) {
+			var track = iterator.next();
+			WorldPlaybackChannel.unregisterEngineTrack(track);
+			track.stop();
+			iterator.remove();
+		}
+		var externalIterator = this.externalTracks.values().iterator();
+		while (externalIterator.hasNext()) {
+			var track = externalIterator.next();
+			// preserve: the wrapper dies with this level but the session
+			// player must NOT be stopped (stop() reaches the handler)
+			if (!preservePlayback)
+				track.stop();
+			externalIterator.remove();
+		}
+		this.externalResumeStates.clear();
+		this.idleNextStartMillis.clear();
+		this.idleSuppressedUntilMillis = 0L;
+		this.initialIdleCooldownApplied = false;
+		this.timelineTrack = null;
+		this.timelineUrl = "";
+		this.timelineLastPosition = -1L;
+		this.panickingFrom = null;
+		this.maxThreatRefreshTime = 0;
+		this.threatRefreshTimer = 0;
+		this.threatRemovalTimer = 0;
+		this.reportedPlayerOpponent = null;
+		this.playerSessionReportInitialized = false;
+		LOGGER.debug("[MBM] level manager disposed (preservePlayback={})", preservePlayback);
+	}
+
+	/**
+	 * K8-A: the new level's manager reconciles with the session player on its
+	 * first tick. If the session is already playing a URL that this level's
+	 * selection engine also wants, adopt it WITHOUT calling play() - playCalls
+	 * delta stays zero and the position is never reset. A different target is
+	 * not adopted; the normal flow queues exactly one gated switch once the
+	 * conditions stabilize.
+	 */
+	private void adoptCurrentSessionPlayback() {
+		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
+		String sessionUrl = handler.getCurrentlyPlayingUrl();
+		if (sessionUrl == null || handler.isStopRequested())
+			return;
+		MusicTracksManager tracksManager = MusicTracksManager.getInstance();
+		for (TrackType type : tracksManager.getTracks()) {
+			ResourceLocation location = type.getTrack();
+			if (!tracksManager.isExternalUrl(location))
+				continue;
+			if (sessionUrl.equals(tracksManager.getExternalUrl(location))
+					&& !this.externalTracks.containsKey(type)) {
+				// same URL: adopt - the wrapper reflects the session's
+				// playback without re-triggering the player
+				ExternalUrlMusicTrack adopted = ExternalUrlMusicTrack.adopt(sessionUrl, type.getFadeTime());
+				this.externalTracks.put(type, adopted);
+				WorldPlaybackChannel.setCurrentIntent(sessionUrl);
+				LOGGER.info("[MBM] adopted existing session playback for {} (no re-play)", sessionUrl);
+				return;
+			}
+		}
+		// different target (or nothing selected): no adoption - the normal
+		// selection flow will gate-switch exactly once
+		LOGGER.debug("[MBM] no adoption - session URL {} not selected by new level", sessionUrl);
 	}
 
 	public void reload() {

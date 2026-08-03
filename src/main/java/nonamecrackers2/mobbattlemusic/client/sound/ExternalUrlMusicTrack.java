@@ -34,6 +34,17 @@ public class ExternalUrlMusicTrack {
     }
     
     /**
+     * K8-A: create a wrapper that reflects a session player already playing
+     * this URL (cross-dimension adopt). started=true means play() will never
+     * re-trigger the player; isStopped() reflects the real session liveness.
+     */
+    public static ExternalUrlMusicTrack adopt(String url, int fadeTime) {
+        ExternalUrlMusicTrack track = new ExternalUrlMusicTrack(url, fadeTime, 0L);
+        track.started = true;
+        return track;
+    }
+
+    /**
      * Start playing the track with fade-in
      */
     public void play() {

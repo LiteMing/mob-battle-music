@@ -80,6 +80,15 @@ public final class WorldPlaybackChannel
 	// K6-B: session generation - bumped per playback session; a stale S2C
 	// response (older generation) must never overwrite a newer track's anchor
 	private static volatile long playbackSessionGeneration;
+	// K8-A: level generation - bumped per client level load; async tasks
+	// carrying a level token from an older level are stale
+	private static volatile long levelGeneration;
+	// K8-A: the current playback intent (selected URL) and its version. The
+	// version is bumped on every intent change; gated actions verify it at
+	// execution time so a gate queued for an old intent cannot act on a new
+	// one (or restart playback in a new dimension)
+	private static volatile String currentIntentUrl;
+	private static volatile long intentVersion;
 	// AUD-46/AUD-49: unified gated transition (fade out -> gain-zero poll ->
 	// action -> fade in). Single slot; new requests fail explicitly (AUD-49 #4).
 	private static @Nullable PendingGate pendingGate;
@@ -91,7 +100,7 @@ public final class WorldPlaybackChannel
 
 	
 	private static record PendingGate(StreamMusicPlayer.Envelope env, Runnable action, long fadeInMillis,
-			long createdAtMillis, long deadlineMillis, String actionName) {}
+			long createdAtMillis, long deadlineMillis, String actionName, long intentVersionAtQueue) {}
 	
 	private WorldPlaybackChannel() {}
 	
@@ -267,14 +276,16 @@ public final class WorldPlaybackChannel
 		return WorldPlaybackChannel.tickCounter;
 	}
 	
-	// AUD-41: target state table, exactly as specified
+	// AUD-41: target state table, exactly as specified. K8-A: LEVEL_TRANSITION
+	// preserves the current source - the channel picks PLAYING/MUTED by focus
+	// and never stops or restarts
 	private static ChannelState targetOf(SessionState session, boolean focused)
 	{
 		return switch (session) {
 			case NO_WORLD, DISCONNECTED -> ChannelState.STOPPED;
 			case SINGLEPLAYER_PAUSED -> ChannelState.PAUSED;
 			case SINGLEPLAYER_RUNNING -> ChannelState.PLAYING;
-			case LAN_HOST, MULTIPLAYER -> focused ? ChannelState.PLAYING : ChannelState.MUTED;
+			case LAN_HOST, MULTIPLAYER, LEVEL_TRANSITION -> focused ? ChannelState.PLAYING : ChannelState.MUTED;
 		};
 	}
 	
@@ -394,6 +405,9 @@ public final class WorldPlaybackChannel
 		ClockOffsetEstimator.reset();
 		ClockOffsetProbeScheduler.reset();
 		WorldPlaybackChannel.playbackSessionGeneration = 0L;
+		// K8-A: a real logout invalidates every in-flight gate and intent
+		WorldPlaybackChannel.currentIntentUrl = null;
+		WorldPlaybackChannel.intentVersion++;
 		WorldPlaybackChannel.lastSeekAtMillis = 0L;
 		WorldPlaybackChannel.recentSeekCount = 0;
 		WorldPlaybackChannel.recentSeekIndex = 0;
@@ -403,6 +417,45 @@ public final class WorldPlaybackChannel
 		WorldPlaybackChannel.correctionBackoffMillis = GIVE_UP_BACKOFF_FIRST_MILLIS;
 		WorldPlaybackChannel.seekSettleUntilMillis = 0L;
 		stopMusic();
+	}
+
+	// K8-A: a client level loaded - every async task carrying an older level
+	// token is stale from now on
+	public static void bumpLevelGeneration()
+	{
+		WorldPlaybackChannel.levelGeneration++;
+		LOGGER.debug("[MBM] level generation bumped to {}", WorldPlaybackChannel.levelGeneration);
+	}
+
+	// K8-A: the selection engine (or the adoption path) declares the current
+	// playback intent; every intent change invalidates in-flight gates
+	public static void setCurrentIntent(String url)
+	{
+		WorldPlaybackChannel.currentIntentUrl = url;
+		WorldPlaybackChannel.intentVersion++;
+		LOGGER.debug("[MBM] playback intent set to {} (intentVersion={})", url,
+				WorldPlaybackChannel.intentVersion);
+	}
+
+	public static long levelGeneration()
+	{
+		return WorldPlaybackChannel.levelGeneration;
+	}
+
+	public static long intentVersion()
+	{
+		return WorldPlaybackChannel.intentVersion;
+	}
+
+	public static @Nullable String currentIntentUrl()
+	{
+		return WorldPlaybackChannel.currentIntentUrl;
+	}
+
+	// K8-B: session generation accessor for lifecycle-tagged diagnostics
+	public static long sessionGeneration()
+	{
+		return WorldPlaybackChannel.playbackSessionGeneration;
 	}
 	
 	/**
@@ -433,7 +486,8 @@ public final class WorldPlaybackChannel
 			MarkerClock.invalidateAnchor();
 		long createdAt = System.currentTimeMillis();
 		WorldPlaybackChannel.pendingGate = new PendingGate(env, action, fadeInMillis, createdAt,
-				createdAt + fadeOutMillis + GATE_TIMEOUT_GRACE_MILLIS, actionName);
+				createdAt + fadeOutMillis + GATE_TIMEOUT_GRACE_MILLIS, actionName,
+				WorldPlaybackChannel.intentVersion);
 		LOGGER.debug("[MBM] gated transition queued (fadeOut={}ms, action={})", fadeOutMillis, actionName);
 		return true;
 	}
@@ -479,6 +533,15 @@ public final class WorldPlaybackChannel
 					System.currentTimeMillis() - gate.createdAtMillis(),
 					String.format(java.util.Locale.ROOT, "%.3f", gate.env().current()),
 					gate.actionName());
+		// K8-A: the gate action carries the intent version it was queued for;
+		// an intent change while gated (track switch, new dimension adopt)
+		// must not let the old action run (it would restart or stop playback
+		// for a stale target)
+		if (gate.intentVersionAtQueue() != WorldPlaybackChannel.intentVersion) {
+			LOGGER.warn("[MBM] gate '{}' skipped (intent changed while gated)", gate.actionName());
+			gate.env().hardReset(1.0f);
+			return;
+		}
 		gate.action().run();
 		// AUD-49 #5: the fade-in must not fade silence. When the action
 		// started a source (e.g. seek), fade in now; when it only stopped the

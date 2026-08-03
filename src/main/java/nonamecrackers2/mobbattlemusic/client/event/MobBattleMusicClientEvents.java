@@ -87,7 +87,35 @@ public class MobBattleMusicClientEvents
 		AggressiveEntityStateClient.clear();
 		IdleConditionStateClient.clear();
 		AudioFilterManager.deactivate();
+		// K8-A: a real logout leaves immediately - the next evaluate() goes
+		// straight to DISCONNECTED/NO_WORLD, never through the transition
+		// grace period
+		MbmSessionState.markLoggedOut();
 		WorldPlaybackChannel.reset();
+	}
+
+	// K8-A: a client level unloads on dimension changes AND on real exit. The
+	// level-scoped manager must dispose its non-audio state; the session
+	// player is preserved while the connection still exists (cross-dimension),
+	// and must NOT be stopped here (a real logout already reset the channel).
+	@SubscribeEvent
+	public static void onClientLevelUnload(net.minecraftforge.event.level.LevelEvent.Unload event)
+	{
+		if (event.getLevel() instanceof net.minecraft.client.multiplayer.ClientLevel clientLevel) {
+			Minecraft mc = Minecraft.getInstance();
+			boolean connectionAlive = mc.getConnection() != null;
+			clientLevel.getCapability(MobBattleMusicClientCapabilities.MUSIC_MANAGER)
+					.ifPresent(manager -> manager.disposeForLevelTransition(connectionAlive));
+		}
+	}
+
+	// K8-A: a new client level loads - bump the level generation so every
+	// async task carrying a lifecycle token from an older level is stale
+	@SubscribeEvent
+	public static void onClientLevelLoad(net.minecraftforge.event.level.LevelEvent.Load event)
+	{
+		if (event.getLevel() instanceof net.minecraft.client.multiplayer.ClientLevel)
+			WorldPlaybackChannel.bumpLevelGeneration();
 	}
 	
 	@SubscribeEvent
