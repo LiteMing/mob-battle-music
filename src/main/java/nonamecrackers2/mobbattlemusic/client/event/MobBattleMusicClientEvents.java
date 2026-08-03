@@ -42,9 +42,56 @@ public class MobBattleMusicClientEvents
 			com.mojang.blaze3d.platform.InputConstants.UNKNOWN.getValue(),
 			"key.categories.mobbattlemusic");
 
+	// K9-1: chained GLFW drop callback - the mod never overwrites another
+	// mod's callback
+	private static org.lwjgl.glfw.GLFWDropCallbackI previousDropCallback;
+
+	private static void installDropCallback()
+	{
+		Minecraft mc = Minecraft.getInstance();
+		if (mc == null || mc.getWindow() == null)
+			return;
+		long window = mc.getWindow().getWindow();
+		if (window == 0L)
+			return;
+		org.lwjgl.glfw.GLFWDropCallbackI previous = org.lwjgl.glfw.GLFW.glfwSetDropCallback(window,
+				MobBattleMusicClientEvents::handleFileDrop);
+		MobBattleMusicClientEvents.previousDropCallback = previous;
+	}
+
+	private static void handleFileDrop(long windowHandle, int count, long pathsPointer)
+	{
+		java.util.List<java.nio.file.Path> files = new java.util.ArrayList<>();
+		org.lwjgl.PointerBuffer paths = org.lwjgl.system.MemoryUtil.memPointerBuffer(pathsPointer, count);
+		for (int i = 0; i < count; i++) {
+			String path = org.lwjgl.system.MemoryUtil.memUTF8(paths.get(i));
+			if (path == null)
+				continue;
+			java.nio.file.Path file = java.nio.file.Paths.get(path);
+			String lower = file.getFileName() == null ? "" : file.getFileName().toString().toLowerCase();
+			if (lower.endsWith(".m3u") || lower.endsWith(".m3u8") || lower.endsWith(".json"))
+				files.add(file);
+		}
+		if (!files.isEmpty()) {
+			Minecraft mc = Minecraft.getInstance();
+			if (mc.screen instanceof nonamecrackers2.mobbattlemusic.client.gui.PlaylistImportScreen)
+				((nonamecrackers2.mobbattlemusic.client.gui.PlaylistImportScreen) mc.screen).addDroppedFiles(files);
+			else
+				nonamecrackers2.mobbattlemusic.client.gui.PlaylistImportScreen.openWithFiles(null, files);
+		}
+		if (MobBattleMusicClientEvents.previousDropCallback != null)
+			MobBattleMusicClientEvents.previousDropCallback.invoke(windowHandle, count, pathsPointer);
+	}
+
 	public static void onRegisterKeyMappings(net.minecraftforge.client.event.RegisterKeyMappingsEvent event)
 	{
 		event.register(DUMP_PROBE);
+	}
+
+	public static void onClientSetup(net.minecraftforge.fml.event.lifecycle.FMLClientSetupEvent event)
+	{
+		// K9-1: file drag-drop into the window opens the import preview
+		event.enqueueWork(MobBattleMusicClientEvents::installDropCallback);
 	}
 
 	public static void registerConfigScreen(RegisterConfigScreensEvent event)

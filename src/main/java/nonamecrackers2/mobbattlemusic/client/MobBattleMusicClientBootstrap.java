@@ -20,6 +20,7 @@ public class MobBattleMusicClientBootstrap
 		modEventBus.addListener(MobBattleMusicClientEvents::registerConfigScreen);
 		modEventBus.addListener(MobBattleMusicClientEvents::registerConfigMenuButton);
 		modEventBus.addListener(MobBattleMusicClientEvents::onRegisterKeyMappings);
+		modEventBus.addListener(MobBattleMusicClientEvents::onClientSetup);
 		modEventBus.addListener(MobBattleMusicClientBootstrap::clientSetup);
 		
 		IEventBus forgeBus = MinecraftForge.EVENT_BUS;

@@ -682,6 +682,68 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		return PlaylistControlResult.success("Added local " + binding.displayName() + " music #" +
 				urlsByTarget.get(binding.storageKey()).size());
 	}
+
+	/**
+	 * K9-1: transactional import - parse/validate EVERY entry first, then
+	 * commit the whole batch in one write. A single invalid reference aborts
+	 * before anything is written: an import failure never mutates the
+	 * existing playlists. Entries already present in the target list are
+	 * skipped (re-importing produces no duplicates).
+	 */
+	public PlaylistControlResult importLocalUrls(DynamicBinding binding, List<String> urls) {
+		this.loadLocalSceneUrls();
+		Map<String, List<String>> urlsByTarget = this.localUrls(binding.kind());
+		List<String> existing = urlsByTarget.computeIfAbsent(binding.storageKey(), key -> Lists.newArrayList());
+		List<String> committed = new java.util.ArrayList<>();
+		int invalid = 0;
+		for (String raw : urls) {
+			String reference = normalizeLocalMusicReference(raw);
+			if (reference == null) {
+				invalid++;
+				continue;
+			}
+			if (existing.contains(reference))
+				continue;
+			committed.add(reference);
+		}
+		if (invalid > 0)
+			return PlaylistControlResult.failure("Import aborted: " + invalid +
+					" invalid reference(s); nothing was changed");
+		if (committed.isEmpty())
+			return PlaylistControlResult.success("Import skipped: all entries already present");
+		existing.addAll(committed);
+		List<List<IdleCondition>> conditions = entryConditions(binding, true);
+		while (conditions.size() < existing.size())
+			conditions.add(List.of());
+		this.saveLocalSceneUrls();
+		this.refreshLocalDynamicTracks();
+		this.rebuildTracksWithDynamic();
+		this.syncExternalPlaylistCatalogToServer();
+		MusicTracksManager.bumpPlaylistRevision(dynamicConfigLocation(DynamicSource.LOCAL, binding));
+		return PlaylistControlResult.success("Imported " + committed.size() +
+				" music entries into " + binding.displayName());
+	}
+
+	/**
+	 * K9-1: export one binding's entries as the MBM playlist export JSON
+	 * (round-trips through PlaylistImportParser.parseMbmJson).
+	 */
+	public String exportLocalBindingJson(DynamicBinding binding) {
+		this.loadLocalSceneUrls();
+		List<String> urls = this.localUrls(binding.kind()).getOrDefault(binding.storageKey(), List.of());
+		return PlaylistImportParser.buildExportJson(binding.storageKey(), urls);
+	}
+
+	// K9-1: current entries of a binding (import preview deduplication)
+	public List<String> getLocalUrlsSnapshot(DynamicBinding binding) {
+		this.loadLocalSceneUrls();
+		return this.localUrls(binding.kind()).getOrDefault(binding.storageKey(), List.of());
+	}
+
+	// K9-1: expose the reference normalization for import preview validation
+	public String normalizeReferenceForValidation(String raw) {
+		return this.normalizeLocalMusicReference(raw);
+	}
 	
 	public PlaylistControlResult deleteLocalSceneUrl(String scene, int index) {
 		DynamicBinding binding = DynamicBinding.scene(scene);

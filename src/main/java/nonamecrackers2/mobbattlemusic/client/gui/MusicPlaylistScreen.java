@@ -1,6 +1,8 @@
 package nonamecrackers2.mobbattlemusic.client.gui;
 
+import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -101,6 +103,8 @@ public class MusicPlaylistScreen extends Screen
 	private Button saveButton;
 	private Button cancelButton;
 	private Button addBindingButton;
+	private Button importButton;
+	private Button exportButton;
 	private EditBox sceneBox;
 	private EditBox targetBox;
 	private EditBox searchBox;
@@ -308,6 +312,13 @@ public class MusicPlaylistScreen extends Screen
 						Math.max(24, iw - half - PlaylistScreenLayout.GAP), 20).build());
 		this.addBindingButton = this.addRenderableWidget(Button.builder(text("button.add_bind"), button -> useSelectedSource())
 				.bounds(ix, editY + 58, iw, 20).build());
+		// K9-1: transactional import preview + export (MBM JSON round-trip)
+		this.importButton = this.addRenderableWidget(Button.builder(text("button.import"),
+				button -> this.minecraft.setScreen(new PlaylistImportScreen(this)))
+				.bounds(ix, editY + 82, iw, 20).build());
+		this.exportButton = this.addRenderableWidget(Button.builder(text("button.export"),
+				button -> exportSelectedBinding())
+				.bounds(ix, editY + 106, iw, 20).build());
 		this.copyUrlButton = this.addRenderableWidget(Button.builder(text("button.copy_url"), button -> copySelectedUrl())
 				.bounds(ix, detailActionY, iw, 20).build());
 		this.timelineEditorButton.setTooltip(net.minecraft.client.gui.components.Tooltip.create(text("button.timeline_editor")));
@@ -1264,6 +1275,34 @@ public class MusicPlaylistScreen extends Screen
 	private Row selectedRow()
 	{
 		return this.selected < 0 || this.selected >= this.rows.size() ? null : this.rows.get(this.selected);
+	}
+
+	// K9-1: export the selected binding as MBM playlist JSON (importable via
+	// PlaylistImportScreen -> round-trip)
+	private void exportSelectedBinding()
+	{
+		MusicTracksManager.DynamicBinding binding = selectedBinding();
+		if (binding == null || this.editMode != EditMode.LOCAL) {
+			message(text("message.export_requires_local_binding"));
+			return;
+		}
+		String json = MusicTracksManager.getInstance().exportLocalBindingJson(binding);
+		Path path = this.minecraft.gameDirectory.toPath()
+				.resolve("mobbattlemusic_export_" + binding.storageKey().replace(':', '_') + ".json");
+		try {
+			Files.writeString(path, json, StandardCharsets.UTF_8);
+			message(text("message.exported_to", path.getFileName().toString()));
+		} catch (IOException e) {
+			message(text("message.export_failed"));
+		}
+	}
+
+	// K9-1: called by PlaylistImportScreen after an atomic commit
+	public void refreshAfterImport()
+	{
+		this.rebuildRows();
+		this.loadSelectedSettings(true);
+		this.updateButtonState();
 	}
 
 	private MusicTracksManager.DynamicBinding selectedBinding()
