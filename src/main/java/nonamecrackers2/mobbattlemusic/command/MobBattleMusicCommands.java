@@ -2,9 +2,11 @@ package nonamecrackers2.mobbattlemusic.command;
 
 import java.util.Collection;
 import java.util.LinkedHashSet;
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
+import com.mojang.brigadier.arguments.DoubleArgumentType;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.LongArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
@@ -24,12 +26,25 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
+import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.event.RegisterCommandsEvent;
+import net.minecraftforge.fml.DistExecutor;
 import net.minecraftforge.registries.ForgeRegistries;
 import nonamecrackers2.mobbattlemusic.MobBattleMusicMod;
+import nonamecrackers2.mobbattlemusic.client.audio.MarkerClock;
+import nonamecrackers2.mobbattlemusic.client.audio.MbmSessionState;
+import nonamecrackers2.mobbattlemusic.client.audio.PlaybackHandle;
+import nonamecrackers2.mobbattlemusic.client.audio.PreviewChannel;
+import nonamecrackers2.mobbattlemusic.client.audio.SourceRef;
+import nonamecrackers2.mobbattlemusic.client.audio.WorldPlaybackChannel;
+import nonamecrackers2.mobbattlemusic.client.music.ExternalMusicHandler;
+import nonamecrackers2.mobbattlemusic.client.music.StreamMusicPlayer;
+import nonamecrackers2.mobbattlemusic.client.music.TimelineMarkerStore;
+import nonamecrackers2.mobbattlemusic.client.resource.MusicTracksManager;
 import nonamecrackers2.mobbattlemusic.network.ExternalPlaylistControlPacket;
 import nonamecrackers2.mobbattlemusic.network.MobBattleMusicNetwork;
 import nonamecrackers2.mobbattlemusic.playlist.IdleConditionRegistry;
+import nonamecrackers2.mobbattlemusic.playlist.TimelineMarker;
 
 public class MobBattleMusicCommands
 {
@@ -88,6 +103,13 @@ public class MobBattleMusicCommands
 			root.then(serverSceneLiteral(scene, scene));
 		root.then(timelineMarkerArgument());
 		root.then(entryConditionArgument());
+		root.then(Commands.literal("debug")
+				.then(Commands.literal("session")
+						.executes(context -> debugSession(context.getSource())))
+				.then(Commands.literal("inject-drift")
+						.then(Commands.argument("seconds", DoubleArgumentType.doubleArg())
+								.executes(context -> injectDrift(context.getSource(),
+										DoubleArgumentType.getDouble(context, "seconds"))))));
 		root.then(Commands.literal("scene")
 				.then(Commands.argument("scene", StringArgumentType.word())
 						.suggests(MobBattleMusicCommands::suggestScenes)
@@ -192,6 +214,132 @@ public class MobBattleMusicCommands
 		}
 		MobBattleMusicNetwork.openPlaylistGui(player);
 		return 1;
+	}
+
+	private static int debugSession(CommandSourceStack source)
+	{
+		if (Dist.DEDICATED_SERVER.isDedicatedServer())
+		{
+			source.sendFailure(Component.literal("debug session is a client-side probe and is not available on a dedicated server"));
+			return 0;
+		}
+		String output = DistExecutor.unsafeCallWhenOn(Dist.CLIENT, () -> MobBattleMusicCommands::buildDebugSessionOutput);
+		for (String line : output.split("\n", -1))
+			source.sendSuccess(() -> Component.literal(line), false);
+		return 1;
+	}
+
+	private static int injectDrift(CommandSourceStack source, double seconds)
+	{
+		if (Dist.DEDICATED_SERVER.isDedicatedServer())
+		{
+			source.sendFailure(Component.literal("inject-drift is a client-side test hook and is not available on a dedicated server"));
+			return 0;
+		}
+		DistExecutor.unsafeRunWhenOn(Dist.CLIENT, () -> () -> MarkerClock.injectDrift(seconds));
+		source.sendSuccess(() -> Component.literal("Injected " + seconds + "s of clock drift (S15 test hook)"), false);
+		return 1;
+	}
+
+	private static String buildDebugSessionOutput()
+	{
+		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
+		StreamMusicPlayer main = handler.getPlayer();
+
+		StringBuilder output = new StringBuilder();
+		output.append("session=").append(MbmSessionState.current())
+				.append(" focused=").append(MbmSessionState.isFocused())
+				.append(" paused=").append(MbmSessionState.isPausedNow())
+				.append(" published=").append(MbmSessionState.isPublishedNow()).append('\n');
+
+		WorldPlaybackChannel.ChannelState worldChannelState = WorldPlaybackChannel.state();
+		output.append("world.state=").append(worldChannelState.name())
+				.append(" gain=").append(String.format(Locale.ROOT, "%.2f",
+						worldChannelState == WorldPlaybackChannel.ChannelState.MUTED
+								|| main.isMutedForGame() ? 0.0F : main.getCurrentVolume()))
+				.append(" track=").append(handler.getCurrentlyPlayingUrl() == null
+						? "none" : handler.getCurrentlyPlayingUrl())
+				.append(" pos=").append(formatSeconds(handler.getPositionMillis())).append('\n');
+
+		String clockState = !MarkerClock.isActive() ? "STOPPED" : MarkerClock.state().name();
+		double drift = 0.0D;
+		String currentUrl = handler.getCurrentlyPlayingUrl();
+		if (MarkerClock.isActive() && currentUrl != null)
+			drift = MarkerClock.driftSeconds(currentUrl, handler.getPositionMillis());
+		long lastSync = MarkerClock.millisSinceLastSync();
+		output.append("world.clock=").append(clockState)
+				.append(" drift=").append(formatSignedSeconds(drift))
+				.append(" lastSync=").append(lastSync < 0L
+						? "n/a" : String.format(Locale.ROOT, "%.1fs_ago", lastSync / 1000.0D)).append('\n');
+
+		PlaybackHandle worldHandle = WorldPlaybackChannel.handle();
+		String playlistRef = "n/a";
+		String entryRef = "n/a";
+		String revRef = "n/a";
+		if (worldHandle != null && worldHandle.sourceRef() != null) {
+			SourceRef ref = worldHandle.sourceRef();
+			if (ref.isDirect())
+				playlistRef = ref.playlistId();
+			else
+				playlistRef = ref.playlistId();
+			entryRef = ref.entryKey();
+			revRef = String.valueOf(ref.revision());
+		}
+		output.append("world.ref=playlist=").append(playlistRef)
+				.append(" entry=").append(entryRef)
+				.append(" rev=").append(revRef).append('\n');
+
+		String previewState;
+		if (PreviewChannel.isActive()) {
+			StreamMusicPlayer preview = handler.getPreviewPlayer();
+			previewState = preview.isPlaying() ? "PLAYING" : (preview.isPaused() ? "PAUSED" : "STOPPED");
+		} else {
+			previewState = "STOPPED";
+		}
+		output.append("preview.state=").append(previewState)
+				.append(" pos=").append(formatSeconds(PreviewChannel.positionMillis()))
+				.append(" track=").append(PreviewChannel.currentTrack() == null
+						? "none" : PreviewChannel.currentTrack()).append('\n');
+
+		int handles = (WorldPlaybackChannel.handle() == null ? 0 : 1) + (PreviewChannel.handle() == null ? 0 : 1);
+		output.append("handles=").append(handles).append(" orphaned=0").append('\n');
+
+		output.append("markers.fired=").append(MarkerClock.firedMarkers())
+				.append(" markers.next=").append(nextMarker());
+		return output.toString();
+	}
+
+	private static String nextMarker()
+	{
+		PlaybackHandle worldHandle = WorldPlaybackChannel.handle();
+		if (worldHandle == null || worldHandle.sourceRef() == null)
+			return "n/a";
+		SourceRef ref = worldHandle.sourceRef();
+		if (ref.isDirect())
+			return "n/a";
+		ResourceLocation playlistId = ResourceLocation.tryParse(ref.playlistId());
+		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
+		String url = handler.getCurrentlyPlayingUrl();
+		if (playlistId == null || url == null)
+			return "n/a";
+		int index = MusicTracksManager.getInstance().getExternalPlaylistSelectedIndex(playlistId);
+		long position = handler.getPositionMillis();
+		for (TimelineMarker marker : TimelineMarkerStore.markers(playlistId, url, index)) {
+			if (marker.timeMillis() > position)
+				return marker.eventId() + "@" + String.format(Locale.ROOT, "%.1fs",
+						marker.timeMillis() / 1000.0D);
+		}
+		return "n/a";
+	}
+
+	private static String formatSignedSeconds(double seconds)
+	{
+		return String.format(Locale.ROOT, "%+.2fs", seconds);
+	}
+
+	private static String formatSeconds(long millis)
+	{
+		return String.format(Locale.ROOT, "%.2fs", millis / 1000.0D);
 	}
 	
 	private static LiteralArgumentBuilder<CommandSourceStack> serverSceneLiteral(String scene)

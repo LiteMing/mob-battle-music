@@ -1,5 +1,7 @@
 package nonamecrackers2.mobbattlemusic.client.resource;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -66,6 +68,9 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 	private static final Gson GSON = new GsonBuilder().create();
 	private static final MusicTracksManager INSTANCE = new MusicTracksManager();
 	private static final Logger LOGGER = LogManager.getLogger("mobbattlemusic/MusicTracksManager");
+	// AUD-18: per-playlist monotonic revision, keyed by configLocation
+	private static final java.util.concurrent.ConcurrentHashMap<String, Integer> PLAYLIST_REVISIONS =
+			new java.util.concurrent.ConcurrentHashMap<>();
 	private List<TrackType> tracks;
 	private List<TrackType> baseTracks;
 	private final ExternalMusicHandler externalMusicHandler;
@@ -123,6 +128,43 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 
 	private static List<TrackType> applyDefaultTrackTypes() {
 		return Lists.newArrayList(TrackType.PLAYER, TrackType.AGGRESSIVE, TrackType.AMBIENT);
+	}
+
+	/**
+	 * AUD-17: stable entry identifier. URL-derived so it survives insert/delete/
+	 * reorder (never a list index); a URL change yields a new key, which is
+	 * exactly what invalidation must detect. Legacy data without ids inherits
+	 * this automatically - no persistence migration is required.
+	 */
+	public static String entryId(String url)
+	{
+		try {
+			java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-1");
+			byte[] hash = digest.digest((url == null ? "" : url).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+			StringBuilder hex = new StringBuilder(13);
+			for (int i = 0; i < 6; i++)
+				hex.append(String.format(java.util.Locale.ROOT, "%02x", hash[i]));
+			return "u_" + hex;
+		} catch (java.security.NoSuchAlgorithmException e) {
+			return "u_" + Integer.toHexString((url == null ? "" : url).hashCode());
+		}
+	}
+
+	public static int playlistRevision(ResourceLocation configLocation)
+	{
+		return configLocation == null ? 0 : PLAYLIST_REVISIONS.getOrDefault(configLocation.toString(), 0);
+	}
+
+	public static void bumpPlaylistRevision(ResourceLocation configLocation)
+	{
+		if (configLocation != null)
+			PLAYLIST_REVISIONS.merge(configLocation.toString(), 1, Integer::sum);
+	}
+
+	public static void bumpAllPlaylistRevisions()
+	{
+		for (String key : PLAYLIST_REVISIONS.keySet())
+			PLAYLIST_REVISIONS.merge(key, 1, Integer::sum);
 	}
 
 	@Override
@@ -244,6 +286,8 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		this.refreshLocalDynamicTracks();
 		this.rebuildTracksWithDynamic();
 		this.syncExternalPlaylistCatalogToServer();
+		// AUD-18 #5: whole reload invalidates every playlist
+		MusicTracksManager.bumpAllPlaylistRevisions();
 	}
 
 	private static void insert(List<TrackType> list, TrackType track, int index) {
@@ -304,15 +348,17 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 	}
 
 	private static ExternalPlaylistEntry parseExternalPlaylistEntry(JsonElement element, int index) {
-		String fallbackId = String.valueOf(index + 1);
 		if (element.isJsonObject()) {
 			JsonObject object = element.getAsJsonObject();
-			String id = object.has("id") ? GsonHelper.getAsString(object, "id") : fallbackId;
 			String url = GsonHelper.getAsString(object, "url");
+			// Legacy data without an explicit id falls back to the URL-derived
+			// stable key (AUD-17), so reorders never rename entries
+			String id = object.has("id") ? GsonHelper.getAsString(object, "id") : entryId(url);
 			String name = object.has("name") ? GsonHelper.getAsString(object, "name") : id;
 			return new ExternalPlaylistEntry(id, name, url, parseConditions(object, "conditions"));
 		}
-		return new ExternalPlaylistEntry(fallbackId, fallbackId, GsonHelper.convertToString(element, "external URL"));
+		String url = GsonHelper.convertToString(element, "external URL");
+		return new ExternalPlaylistEntry(entryId(url), entryId(url), url);
 	}
 
 	private static List<IdleCondition> parseConditions(JsonObject object, String member)
@@ -453,6 +499,8 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		if (trackLocation != null)
 			this.externalSessionSelections.remove(trackLocation);
 		this.saveMusicState();
+		// AUD-18 #2: entry enable/disable
+		MusicTracksManager.bumpPlaylistRevision(playlist);
 		return PlaylistControlResult.success((enabled ? "Enabled " : "Disabled ") + playlist + " " + entry.name());
 	}
 
@@ -522,8 +570,14 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 	}
 	
 	public void applyServerExternalPlaylists(List<ServerExternalPlaylistSyncPacket.TrackDefinition> definitions) {
+		// AUD-18 #6: server push overrides the previous state; bump everything replaced
+		for (java.util.Map.Entry<ResourceLocation, DynamicExternalTrack> entry : this.dynamicExternalTracks.entrySet()) {
+			if (entry.getValue().source() == DynamicSource.SERVER)
+				MusicTracksManager.bumpPlaylistRevision(entry.getKey());
+		}
 		this.dynamicExternalTracks.entrySet().removeIf(entry -> entry.getValue().source() == DynamicSource.SERVER);
 		for (ServerExternalPlaylistSyncPacket.TrackDefinition definition : definitions) {
+			MusicTracksManager.bumpPlaylistRevision(definition.configLocation());
 			List<ExternalPlaylistEntry> entries = definition.entries().stream()
 					.map(entry -> new ExternalPlaylistEntry(entry.id(), entry.name(), entry.url(), entry.conditions()))
 					.toList();
@@ -600,6 +654,8 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		this.refreshLocalDynamicTracks();
 		this.rebuildTracksWithDynamic();
 		this.syncExternalPlaylistCatalogToServer();
+		// AUD-18 #1: entry add
+		MusicTracksManager.bumpPlaylistRevision(dynamicConfigLocation(DynamicSource.LOCAL, binding));
 		return PlaylistControlResult.success("Added local " + binding.displayName() + " music #" +
 				urlsByTarget.get(binding.storageKey()).size());
 	}
@@ -663,6 +719,8 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		this.refreshLocalDynamicTracks();
 		this.rebuildTracksWithDynamic();
 		this.syncExternalPlaylistCatalogToServer();
+		// AUD-18 #1: entry delete
+		MusicTracksManager.bumpPlaylistRevision(dynamicConfigLocation(DynamicSource.LOCAL, binding));
 		return PlaylistControlResult.success("Deleted local " + binding.displayName() + " URL #" + (index + 1) + ": " + removed);
 	}
 
@@ -684,6 +742,8 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 			conditions.add(to, condition);
 		}
 		saveAndRefreshLocalTracks();
+		// AUD-18 #1: entry reorder
+		MusicTracksManager.bumpPlaylistRevision(dynamicConfigLocation(DynamicSource.LOCAL, binding));
 		return PlaylistControlResult.success("Moved local " + binding.displayName() + " entry to #" + (to + 1));
 	}
 
@@ -701,6 +761,8 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		this.saveLocalSceneUrls();
 		this.refreshLocalDynamicTracks();
 		this.rebuildTracksWithDynamic();
+		// AUD-18 #4: playback order mode change
+		MusicTracksManager.bumpPlaylistRevision(dynamicConfigLocation(DynamicSource.LOCAL, binding));
 		return PlaylistControlResult.success("Set local " + binding.displayName() + " playback order to " +
 				selectionMode.getSerializedName());
 	}
@@ -713,6 +775,8 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		this.saveLocalSceneUrls();
 		this.refreshLocalDynamicTracks();
 		this.rebuildTracksWithDynamic();
+		// AUD-18: priority change
+		MusicTracksManager.bumpPlaylistRevision(dynamicConfigLocation(DynamicSource.LOCAL, binding));
 		return PlaylistControlResult.success("Set local " + binding.displayName() + " priority to " + priority);
 	}
 
@@ -723,6 +787,8 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		this.saveLocalSceneUrls();
 		this.refreshLocalDynamicTracks();
 		this.rebuildTracksWithDynamic();
+		// AUD-18: idle interval change
+		MusicTracksManager.bumpPlaylistRevision(dynamicConfigLocation(DynamicSource.LOCAL, binding));
 		return PlaylistControlResult.success("Set local " + binding.displayName() + " interval to " + seconds + " seconds");
 	}
 
@@ -733,6 +799,8 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		this.saveLocalSceneUrls();
 		this.refreshLocalDynamicTracks();
 		this.rebuildTracksWithDynamic();
+		// AUD-18: idle condition change
+		MusicTracksManager.bumpPlaylistRevision(dynamicConfigLocation(DynamicSource.LOCAL, binding));
 		return PlaylistControlResult.success("Added condition to local " + binding.displayName());
 	}
 
@@ -746,6 +814,8 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		this.saveLocalSceneUrls();
 		this.refreshLocalDynamicTracks();
 		this.rebuildTracksWithDynamic();
+		// AUD-18: idle condition change
+		MusicTracksManager.bumpPlaylistRevision(dynamicConfigLocation(DynamicSource.LOCAL, binding));
 		return PlaylistControlResult.success("Deleted local idle condition #" + (index + 1));
 	}
 
@@ -761,6 +831,8 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		conditions.add(condition);
 		entries.set(entryIndex, conditions);
 		saveAndRefreshLocalTracks();
+		// AUD-18: entry condition change
+		MusicTracksManager.bumpPlaylistRevision(dynamicConfigLocation(DynamicSource.LOCAL, binding));
 		return PlaylistControlResult.success("Added condition to " + binding.displayName() + " track #" +
 				(entryIndex + 1));
 	}
@@ -776,6 +848,8 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		conditions.remove(conditionIndex);
 		entries.set(entryIndex, conditions);
 		saveAndRefreshLocalTracks();
+		// AUD-18: entry condition change
+		MusicTracksManager.bumpPlaylistRevision(dynamicConfigLocation(DynamicSource.LOCAL, binding));
 		return PlaylistControlResult.success("Deleted track condition #" + (conditionIndex + 1));
 	}
 
@@ -846,6 +920,8 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 			this.refreshLocalDynamicTracks();
 			this.rebuildTracksWithDynamic();
 			this.syncExternalPlaylistCatalogToServer();
+			// AUD-18 #1: entity-binding playlist removal
+			MusicTracksManager.bumpAllPlaylistRevisions();
 		}
 		return removed;
 	}
@@ -879,6 +955,68 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		if (isPlayableIndex(playlist, session))
 			return session;
 		return -1;
+	}
+
+	/**
+	 * AUD-17/AUD-19: resolve the playlist binding for a playing URL, or null
+	 * when the URL is played directly (no playlist owns it).
+	 */
+	public @Nullable PlaybackTarget resolvePlaybackTarget(String url)
+	{
+		if (url == null)
+			return null;
+		for (DynamicExternalTrack track : this.dynamicExternalTracks.values()) {
+			for (ExternalPlaylistEntry entry : track.entries()) {
+				if (entry.url().equals(url) && isMusicEntryEnabled(track.configLocation(), entry))
+					return new PlaybackTarget(track.configLocation(), MusicTracksManager.entryId(url));
+			}
+		}
+		for (ExternalPlaylist playlist : this.externalPlaylistsByTrack.values()) {
+			for (ExternalPlaylistEntry entry : playlist.entries()) {
+				if (entry.url().equals(url) && isMusicEntryEnabled(playlist.configLocation(), entry))
+					return new PlaybackTarget(playlist.configLocation(), MusicTracksManager.entryId(url));
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * AUD-19: is the entry referenced by (playlistId, entryKey) still present
+	 * and enabled?
+	 */
+	public boolean isPlaybackTargetActive(ResourceLocation playlistId, String entryKey)
+	{
+		if (playlistId == null || entryKey == null)
+			return false;
+		for (DynamicExternalTrack track : this.dynamicExternalTracks.values()) {
+			if (!track.configLocation().equals(playlistId))
+				continue;
+			for (ExternalPlaylistEntry entry : track.entries()) {
+				if (entry.id().equals(entryKey) && isMusicEntryEnabled(playlistId, entry))
+					return true;
+			}
+		}
+		ExternalPlaylist playlist = this.playlistByConfigLocation(playlistId);
+		if (playlist != null) {
+			for (ExternalPlaylistEntry entry : playlist.entries()) {
+				if (entry.id().equals(entryKey) && isMusicEntryEnabled(playlistId, entry))
+					return true;
+			}
+		}
+		return false;
+	}
+
+	private @Nullable ExternalPlaylist playlistByConfigLocation(ResourceLocation configLocation)
+	{
+		for (ExternalPlaylist playlist : this.externalPlaylistsByTrack.values()) {
+			if (playlist.configLocation().equals(configLocation))
+				return playlist;
+		}
+		for (ExternalPlaylist playlist : this.soundPlaylistsByTrack.values()) {
+			if (playlist.configLocation().equals(configLocation))
+				return playlist;
+		}
+		return null;
 	}
 
 	public PlaylistControlResult setExternalPlaylistSelection(ResourceLocation id, int index) {
@@ -1192,10 +1330,10 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 			DynamicBinding binding = DynamicBinding.create(kind, key);
 			if (binding == null || urls.isEmpty())
 				return;
-			List<ExternalPlaylistEntry> entries = Lists.newArrayList();
+		List<ExternalPlaylistEntry> entries = Lists.newArrayList();
 			List<List<IdleCondition>> conditionsByEntry = entryConditions(binding, true);
 			for (int i = 0; i < urls.size(); i++)
-				entries.add(new ExternalPlaylistEntry(String.valueOf(i + 1), "local_" + (i + 1), urls.get(i),
+				entries.add(new ExternalPlaylistEntry(entryId(urls.get(i)), "local_" + (i + 1), urls.get(i),
 						conditionsByEntry.get(i)));
 			ResourceLocation id = dynamicConfigLocation(DynamicSource.LOCAL, binding);
 			ExternalSelectionMode selectionMode = this.localSelectionModes.getOrDefault(binding.serializedKey(),
@@ -1831,6 +1969,9 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 			return this.serializedName;
 		}
 	}
+
+	// AUD-17: resolved playback target for a URL being played
+	public static record PlaybackTarget(ResourceLocation playlistId, String entryKey) {}
 
 	public static record ExternalPlaylist(ResourceLocation configLocation, ResourceLocation trackLocation,
 			List<ExternalPlaylistEntry> entries, ExternalSelectionMode selectionMode) {

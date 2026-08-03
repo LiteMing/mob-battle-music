@@ -24,6 +24,7 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import org.lwjgl.glfw.GLFW;
 import net.minecraftforge.registries.ForgeRegistries;
+import nonamecrackers2.mobbattlemusic.client.audio.PreviewChannel;
 import nonamecrackers2.mobbattlemusic.client.music.ExternalMusicHandler;
 import nonamecrackers2.mobbattlemusic.client.music.IdleConditionStateClient;
 import nonamecrackers2.mobbattlemusic.client.music.MusicMetadata;
@@ -31,7 +32,6 @@ import nonamecrackers2.mobbattlemusic.client.music.MusicMetadataCache;
 import nonamecrackers2.mobbattlemusic.client.music.NeteaseMusicSearch;
 import nonamecrackers2.mobbattlemusic.client.music.TimelineMarkerStore;
 import nonamecrackers2.mobbattlemusic.client.resource.MusicTracksManager;
-import nonamecrackers2.mobbattlemusic.client.sound.MobBattleTrack;
 import nonamecrackers2.mobbattlemusic.network.MobBattleMusicNetwork;
 import nonamecrackers2.mobbattlemusic.playlist.IdleCondition;
 import nonamecrackers2.mobbattlemusic.playlist.TimelineMarker;
@@ -75,7 +75,6 @@ public class MusicPlaylistScreen extends Screen
 	private long searchGeneration;
 	private ViewMode viewMode = ViewMode.LIBRARY;
 	private String addKind = "scene";
-	private MobBattleTrack previewTrack;
 	private String lastPreviewUrl = "";
 	private Button previewButton;
 	private Button stopButton;
@@ -490,7 +489,7 @@ public class MusicPlaylistScreen extends Screen
 	{
 		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
 		return row.entry().url().equals(handler.getPreviewUrl()) || row.entry().url().equals(handler.getCurrentlyPlayingUrl())
-				|| this.previewTrack != null && row.equals(selectedRow());
+				|| PreviewChannel.isSoundTrackActive() && row.equals(selectedRow());
 	}
 
 	private boolean selectedRowEditable(Row row)
@@ -824,7 +823,7 @@ public class MusicPlaylistScreen extends Screen
 				return;
 			stopPreview();
 			NeteaseMusicSearch.Song song = this.searchRows.get(this.searchSelected);
-			ExternalMusicHandler.getInstance().playPreviewMusic(song.url(), 20, song.durationMillis());
+			PreviewChannel.playUrl(song.url(), 20, song.durationMillis());
 			return;
 		}
 		if (this.selected < 0 || this.selected >= this.rows.size())
@@ -832,21 +831,15 @@ public class MusicPlaylistScreen extends Screen
 		Row row = this.rows.get(this.selected);
 		stopPreview();
 		ResourceLocation sound = soundLocation(row.entry().url());
-		if (sound != null) {
-			this.previewTrack = MobBattleTrack.preview(sound, 20);
-			this.minecraft.getSoundManager().play(this.previewTrack);
-		} else {
-			ExternalMusicHandler.getInstance().playPreviewMusic(row.entry().url(), 20, 0L);
-		}
+		if (sound != null)
+			PreviewChannel.playSound(sound, 20);
+		else
+			PreviewChannel.playUrl(row.entry().url(), 20, 0L);
 	}
 	
 	private void stopPreview()
 	{
-		ExternalMusicHandler.getInstance().stopPreviewMusic();
-		if (this.previewTrack != null) {
-			this.previewTrack.stop();
-			this.previewTrack = null;
-		}
+		PreviewChannel.stop();
 	}
 
 	private void renderPreviewProgress(GuiGraphics graphics)

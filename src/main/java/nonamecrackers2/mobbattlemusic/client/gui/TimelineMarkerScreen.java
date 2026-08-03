@@ -15,6 +15,7 @@ import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
+import nonamecrackers2.mobbattlemusic.client.audio.PreviewChannel;
 import nonamecrackers2.mobbattlemusic.client.music.ExternalMusicHandler;
 import nonamecrackers2.mobbattlemusic.client.music.MusicMetadata;
 import nonamecrackers2.mobbattlemusic.client.music.MusicMetadataCache;
@@ -411,12 +412,12 @@ final class TimelineMarkerScreen extends Screen
 			return;
 		stopPreview();
 		this.scrubbedTime = false;
-		ExternalMusicHandler.getInstance().playPreviewMusic(track.entry().url(), 20, 0L);
+		PreviewChannel.playUrl(track.entry().url(), 20, 0L);
 	}
 
 	private void stopPreview()
 	{
-		ExternalMusicHandler.getInstance().stopPreviewMusic();
+		PreviewChannel.stop();
 	}
 
 	private void navigateTo(PlaylistTabs.Tab tab)

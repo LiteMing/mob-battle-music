@@ -19,23 +19,22 @@ import nonamecrackers2.crackerslib.client.event.impl.RegisterConfigScreensEvent;
 import nonamecrackers2.crackerslib.client.gui.ConfigHomeScreen;
 import nonamecrackers2.crackerslib.client.gui.title.ImageTitle;
 import nonamecrackers2.mobbattlemusic.MobBattleMusicMod;
+import nonamecrackers2.mobbattlemusic.client.audio.MbmSessionState;
+import nonamecrackers2.mobbattlemusic.client.audio.SessionState;
+import nonamecrackers2.mobbattlemusic.client.audio.WorldPlaybackChannel;
 import nonamecrackers2.mobbattlemusic.client.config.MobBattleMusicConfig;
 import nonamecrackers2.mobbattlemusic.client.audio.AudioFilterManager;
 import nonamecrackers2.mobbattlemusic.client.audio.GlobalAudioFilterManager;
 import nonamecrackers2.mobbattlemusic.client.init.MobBattleMusicClientCapabilities;
 import nonamecrackers2.mobbattlemusic.client.manager.BattleMusicManager;
-import nonamecrackers2.mobbattlemusic.client.music.ExternalMusicHandler;
 import nonamecrackers2.mobbattlemusic.client.music.IdleConditionStateClient;
 import nonamecrackers2.mobbattlemusic.client.resource.MusicTracksManager;
-import nonamecrackers2.mobbattlemusic.client.sound.MobBattleTrack;
 import nonamecrackers2.mobbattlemusic.client.util.PlayerCombatSessionClient;
 import nonamecrackers2.mobbattlemusic.client.sound.track.TrackType;
 import nonamecrackers2.mobbattlemusic.client.util.AggressiveEntityStateClient;
 
 public class MobBattleMusicClientEvents
 {
-	private static boolean wasMainPlaybackPaused;
-	private static boolean wasMainPlaybackMuted;
 	public static void registerConfigScreen(RegisterConfigScreensEvent event)
 	{
 		event.builder(ConfigHomeScreen.builder(ImageTitle.ofMod(MobBattleMusicMod.MODID, 512, 256, 0.5F))
@@ -76,12 +75,7 @@ public class MobBattleMusicClientEvents
 		AggressiveEntityStateClient.clear();
 		IdleConditionStateClient.clear();
 		AudioFilterManager.deactivate();
-		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
-		handler.getPlayer().resumeFromGame();
-		handler.getPlayer().setMutedForGame(false);
-		MobBattleTrack.setMainPlaybackMuted(false);
-		wasMainPlaybackPaused = false;
-		wasMainPlaybackMuted = false;
+		WorldPlaybackChannel.reset();
 	}
 	
 	@SubscribeEvent
@@ -98,30 +92,20 @@ public class MobBattleMusicClientEvents
 	public static void onClientTick(TickEvent.ClientTickEvent event)
 	{
 		Minecraft mc = Minecraft.getInstance();
-		if (event.phase == TickEvent.Phase.END && mc.level != null)
+		if (event.phase == TickEvent.Phase.END)
 		{
-			if (mc.player != null)
-				AudioFilterManager.tick(mc.player);
-			boolean pauseScreenOpen = mc.screen != null && mc.screen.isPauseScreen();
-			boolean pauseMainPlayback = pauseScreenOpen && mc.isSingleplayer();
-			boolean muteMainPlayback = pauseScreenOpen && !mc.isSingleplayer();
-			ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
-			if (pauseMainPlayback != wasMainPlaybackPaused) {
-				wasMainPlaybackPaused = pauseMainPlayback;
-				if (pauseMainPlayback)
-					handler.getPlayer().pauseForGame();
-				else
-					handler.getPlayer().resumeFromGame();
+			MbmSessionState.evaluate();
+			// AUD-5/AUD-13: the session state machine drives the main playback channel
+			WorldPlaybackChannel.update(MbmSessionState.current(), MbmSessionState.isFocused());
+			if (mc.level != null)
+			{
+				if (mc.player != null)
+					AudioFilterManager.tick(mc.player);
+				// Only tick the music manager while world logic is running
+				// (SINGLEPLAYER_PAUSED freezes world logic; LAN_HOST and MULTIPLAYER do not)
+				if (MbmSessionState.current() != SessionState.SINGLEPLAYER_PAUSED)
+					mc.level.getCapability(MobBattleMusicClientCapabilities.MUSIC_MANAGER).ifPresent(BattleMusicManager::tick);
 			}
-			if (muteMainPlayback != wasMainPlaybackMuted) {
-				wasMainPlaybackMuted = muteMainPlayback;
-				handler.getPlayer().setMutedForGame(muteMainPlayback);
-				MobBattleTrack.setMainPlaybackMuted(muteMainPlayback);
-			}
-			
-			// Only tick the music manager when not paused
-			if (!mc.isPaused())
-				mc.level.getCapability(MobBattleMusicClientCapabilities.MUSIC_MANAGER).ifPresent(BattleMusicManager::tick);
 		}
 	}
 	

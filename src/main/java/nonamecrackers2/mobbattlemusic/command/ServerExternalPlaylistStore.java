@@ -751,6 +751,25 @@ public class ServerExternalPlaylistStore
 	{
 		return playlist + "#" + entryIndex;
 	}
+
+	/**
+	 * AUD-17: stable entry identifier, mirroring MusicTracksManager#entryId.
+	 * URL-derived so it survives insert/delete/reorder; legacy entries without
+	 * an id inherit this automatically (no persistence migration needed).
+	 */
+	public static String entryId(String url)
+	{
+		try {
+			java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-1");
+			byte[] hash = digest.digest((url == null ? "" : url).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+			StringBuilder hex = new StringBuilder(13);
+			for (int i = 0; i < 6; i++)
+				hex.append(String.format(java.util.Locale.ROOT, "%02x", hash[i]));
+			return "u_" + hex;
+		} catch (java.security.NoSuchAlgorithmException e) {
+			return "u_" + Integer.toHexString((url == null ? "" : url).hashCode());
+		}
+	}
 	
 	public static String playlistEntryUrl(MinecraftServer server, ResourceLocation playlist, int index)
 	{
@@ -792,7 +811,8 @@ public class ServerExternalPlaylistStore
 			List<List<IdleCondition>> conditionsByEntry = entryConditions(binding, true);
 			for (int i = 0; i < urls.size(); i++) {
 				String url = urls.get(i);
-				entries.add(new ServerExternalPlaylistSyncPacket.Entry(String.valueOf(i + 1), "server_" + (i + 1), url,
+				// AUD-17: stable URL-derived entry key, never a list index
+				entries.add(new ServerExternalPlaylistSyncPacket.Entry(entryId(url), "server_" + (i + 1), url,
 						conditionsByEntry.get(i), ServerTimelineMarkerStore.markers(server, config, url)));
 			}
 			definitions.add(new ServerExternalPlaylistSyncPacket.TrackDefinition(config, binding.serializedKey(),

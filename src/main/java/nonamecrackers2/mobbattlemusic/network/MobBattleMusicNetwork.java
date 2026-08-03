@@ -12,7 +12,7 @@ import nonamecrackers2.mobbattlemusic.MobBattleMusicMod;
 
 public class MobBattleMusicNetwork
 {
-	private static final String PROTOCOL_VERSION = "12";
+	private static final String PROTOCOL_VERSION = "13";
 	private static int nextId;
 	private static final SimpleChannel CHANNEL = NetworkRegistry.ChannelBuilder
 			.named(MobBattleMusicMod.id("main"))
@@ -73,6 +73,16 @@ public class MobBattleMusicNetwork
 				.decoder(PlayerCombatSessionStatePacket::decode)
 				.consumerMainThread(MobBattleMusicNetwork::handlePlayerCombatSessionState)
 				.add();
+		CHANNEL.messageBuilder(PlaybackStartReportPacket.class, nextId++, NetworkDirection.PLAY_TO_SERVER)
+				.encoder(PlaybackStartReportPacket::encode)
+				.decoder(PlaybackStartReportPacket::decode)
+				.consumerMainThread(MobBattleMusicNetwork::handlePlaybackStartReport)
+				.add();
+		CHANNEL.messageBuilder(PlaybackClockSyncPacket.class, nextId++, NetworkDirection.PLAY_TO_CLIENT)
+				.encoder(PlaybackClockSyncPacket::encode)
+				.decoder(PlaybackClockSyncPacket::decode)
+				.consumerMainThread(MobBattleMusicNetwork::handlePlaybackClockSync)
+				.add();
 	}
 	
 	public static void sendExternalPlaylistControl(ServerPlayer player, ExternalPlaylistControlPacket packet)
@@ -124,6 +134,16 @@ public class MobBattleMusicNetwork
 	{
 		CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), packet);
 	}
+
+	public static void sendPlaybackStartReport(String trackId, long clientStartEpochMillis)
+	{
+		CHANNEL.sendToServer(new PlaybackStartReportPacket(trackId, clientStartEpochMillis));
+	}
+
+	public static void sendPlaybackClockSync(ServerPlayer player, PlaybackClockSyncPacket packet)
+	{
+		CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), packet);
+	}
 	
 	private static void handleExternalPlaylistControl(ExternalPlaylistControlPacket packet, Supplier<NetworkEvent.Context> context)
 	{
@@ -172,6 +192,18 @@ public class MobBattleMusicNetwork
 	}
 
 	private static void handlePlayerCombatSessionState(PlayerCombatSessionStatePacket packet,
+			Supplier<NetworkEvent.Context> context)
+	{
+		packet.handle(context);
+	}
+
+	private static void handlePlaybackStartReport(PlaybackStartReportPacket packet,
+			Supplier<NetworkEvent.Context> context)
+	{
+		packet.handle(context);
+	}
+
+	private static void handlePlaybackClockSync(PlaybackClockSyncPacket packet,
 			Supplier<NetworkEvent.Context> context)
 	{
 		packet.handle(context);

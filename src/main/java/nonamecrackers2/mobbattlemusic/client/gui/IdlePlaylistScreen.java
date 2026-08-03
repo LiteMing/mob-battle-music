@@ -16,13 +16,13 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
+import nonamecrackers2.mobbattlemusic.client.audio.PreviewChannel;
 import nonamecrackers2.mobbattlemusic.client.music.ExternalMusicHandler;
 import nonamecrackers2.mobbattlemusic.client.music.IdleConditionStateClient;
 import nonamecrackers2.mobbattlemusic.client.music.MusicMetadata;
 import nonamecrackers2.mobbattlemusic.client.music.MusicMetadataCache;
 import nonamecrackers2.mobbattlemusic.client.music.TimelineMarkerStore;
 import nonamecrackers2.mobbattlemusic.client.resource.MusicTracksManager;
-import nonamecrackers2.mobbattlemusic.client.sound.MobBattleTrack;
 import nonamecrackers2.mobbattlemusic.network.MobBattleMusicNetwork;
 import nonamecrackers2.mobbattlemusic.playlist.IdleCondition;
 import nonamecrackers2.mobbattlemusic.playlist.IdleConditionRegistry;
@@ -75,7 +75,6 @@ final class IdlePlaylistScreen extends Screen
 	private int syncRefreshCooldown;
 	private String conditionType;
 	private boolean conditionInverted;
-	private MobBattleTrack previewTrack;
 	private String lastPreviewUrl = "";
 
 	private enum InspectorPage
@@ -533,7 +532,7 @@ final class IdlePlaylistScreen extends Screen
 	{
 		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
 		return entry.url().equals(handler.getPreviewUrl()) || entry.url().equals(handler.getCurrentlyPlayingUrl())
-				|| this.previewTrack != null && entry.equals(selectedTrackEntry());
+				|| PreviewChannel.isSoundTrackActive() && entry.equals(selectedTrackEntry());
 	}
 
 	private boolean selectedRuleEditable()
@@ -760,21 +759,15 @@ final class IdlePlaylistScreen extends Screen
 			return;
 		stopPreview();
 		ResourceLocation sound = soundLocation(entry.url());
-		if (sound != null) {
-			this.previewTrack = MobBattleTrack.preview(sound, 20);
-			this.minecraft.getSoundManager().play(this.previewTrack);
-		} else {
-			ExternalMusicHandler.getInstance().playPreviewMusic(entry.url(), 20, 0L);
-		}
+		if (sound != null)
+			PreviewChannel.playSound(sound, 20);
+		else
+			PreviewChannel.playUrl(entry.url(), 20, 0L);
 	}
 
 	private void stopPreview()
 	{
-		ExternalMusicHandler.getInstance().stopPreviewMusic();
-		if (this.previewTrack != null) {
-			this.previewTrack.stop();
-			this.previewTrack = null;
-		}
+		PreviewChannel.stop();
 	}
 
 	private void renderPreviewProgress(GuiGraphics graphics)
