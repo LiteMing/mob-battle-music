@@ -139,11 +139,14 @@ public final class IdleConditionRegistry
 	}
 
 	/**
-	 * K9-2: a single condition's raw (pre-inversion) match, for diagnostics.
+	 * K10-A: a single condition's raw (pre-inversion) match, for diagnostics.
+	 * K11-A: the type is normalized through normalizeId so bare ids saved by
+	 * older GUI versions ("dimension") resolve to the registered
+	 * "mobbattlemusic:dimension" at runtime too.
 	 */
 	public static synchronized boolean testOne(Player player, IdleCondition condition)
 	{
-		Definition definition = DEFINITIONS.get(new ResourceLocation(condition.type()));
+		Definition definition = DEFINITIONS.get(normalizeId(condition.type()));
 		if (definition == null)
 			return false;
 		try {
@@ -154,15 +157,15 @@ public final class IdleConditionRegistry
 	}
 
 	/**
-	 * K9-2: per-condition diagnostic - the raw match plus the current
+	 * K10-A: per-condition diagnostic - the raw match plus the current
 	 * environment's value expressed as a readable reason.
 	 */
 	public static synchronized MatchResult diagnose(Player player, IdleCondition condition)
 	{
-		ResourceLocation type = new ResourceLocation(condition.type());
-		Definition definition = DEFINITIONS.get(type);
+		ResourceLocation type = normalizeId(condition.type());
+		Definition definition = type == null ? null : DEFINITIONS.get(type);
 		if (definition == null)
-			return new MatchResult(false, "unregistered condition type " + type);
+			return new MatchResult(false, "unregistered condition type " + condition.type());
 		boolean matched;
 		String reason;
 		try {
@@ -170,7 +173,7 @@ public final class IdleConditionRegistry
 		} catch (Exception e) {
 			return new MatchResult(false, "evaluation error: " + e.toString());
 		}
-		String current = switch (type.getPath()) {
+		String current = type == null ? "" : switch (type.getPath()) {
 			case "dimension" -> "current=" + player.level().dimension().location();
 			case "biome" -> "current=" + player.level().getBiome(player.blockPosition()).unwrapKey()
 					.map(key -> key.location().toString()).orElse("unknown");

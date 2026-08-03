@@ -11,6 +11,7 @@ import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceLocation;
 import nonamecrackers2.mobbattlemusic.client.resource.MusicTracksManager;
 import nonamecrackers2.mobbattlemusic.playlist.IdleCondition;
 import nonamecrackers2.mobbattlemusic.playlist.IdleConditionRegistry;
@@ -34,7 +35,10 @@ public class ConditionInspectorScreen extends Screen
 	private final boolean serverMode;
 
 	private final List<IdleCondition> conditions = new ArrayList<>();
-	private final List<IdleConditionRegistry.MatchResult> diagnostics = new ArrayList<>();
+	// K11-A: diagnostics are resolved asynchronously for structure conditions
+	// (integrated server thread); missing entries render as "checking..."
+	private final java.util.Map<Integer, IdleConditionRegistry.MatchResult> diagnostics =
+			new java.util.HashMap<>();
 	private int scrollOffset;
 	private int listLeft;
 	private int listWidth;
@@ -144,7 +148,11 @@ public class ConditionInspectorScreen extends Screen
 			this.statusMessage = "Unknown condition type: " + type;
 			return;
 		}
-		this.conditions.add(new IdleCondition(type, argument, this.pendingInverted, this.pendingJoin));
+		// K11-A: save the canonical id (bare ids normalize to
+		// mobbattlemusic:...) so runtime lookup always matches
+		ResourceLocation canonical = IdleConditionRegistry.normalizeId(type);
+		this.conditions.add(new IdleCondition(canonical == null ? type : canonical.toString(),
+				argument, this.pendingInverted, this.pendingJoin));
 		this.statusMessage = "Added condition #" + this.conditions.size();
 		this.runDiagnostics();
 	}
@@ -174,8 +182,10 @@ public class ConditionInspectorScreen extends Screen
 			this.statusMessage = "Unknown condition type: " + type;
 			return;
 		}
-		IdleCondition updated = new IdleCondition(type, this.argumentBox.getValue().trim(),
-				this.pendingInverted, this.pendingJoin);
+		// K11-A: canonicalize on update as well
+		ResourceLocation canonical = IdleConditionRegistry.normalizeId(type);
+		IdleCondition updated = new IdleCondition(canonical == null ? type : canonical.toString(),
+				this.argumentBox.getValue().trim(), this.pendingInverted, this.pendingJoin);
 		this.conditions.set(this.selectedConditionIndex, updated);
 		this.statusMessage = "Updated condition #" + (this.selectedConditionIndex + 1);
 		this.runDiagnostics();
@@ -198,14 +208,18 @@ public class ConditionInspectorScreen extends Screen
 	{
 		this.diagnostics.clear();
 		Minecraft mc = Minecraft.getInstance();
-		for (IdleCondition condition : this.conditions) {
-			if (mc.player == null) {
-				this.diagnostics.add(new IdleConditionRegistry.MatchResult(false, "no player in world"));
-				continue;
-			}
-			// K10-A: client-side diagnostics (structure works in singleplayer
-			// through the integrated server level)
-			this.diagnostics.add(ClientConditionDiagnostics.diagnose(mc.player, condition));
+		if (mc.player == null) {
+			for (int i = 0; i < this.conditions.size(); i++)
+				this.diagnostics.put(i, new IdleConditionRegistry.MatchResult(false, "no player in world"));
+			return;
+		}
+		for (int i = 0; i < this.conditions.size(); i++) {
+			IdleCondition condition = this.conditions.get(i);
+			// K11-A: structure checks run on the integrated server thread and
+			// come back on the main thread; everything else resolves inline
+			final int index = i;
+			ClientConditionDiagnostics.diagnoseAsync(mc.player, condition)
+					.thenAcceptAsync(result -> this.diagnostics.put(index, result), mc);
 		}
 	}
 
@@ -244,12 +258,15 @@ public class ConditionInspectorScreen extends Screen
 			String text = join + condition.type() + inv +
 					(condition.argument().isBlank() ? "" : "  [" + condition.argument() + "]");
 			graphics.drawString(this.font, text, this.listLeft + 4, y + 4, 0xFFD6D9DE);
-			if (rowIndex < this.diagnostics.size()) {
-				IdleConditionRegistry.MatchResult diagnostic = this.diagnostics.get(rowIndex);
+			IdleConditionRegistry.MatchResult diagnostic = this.diagnostics.get(rowIndex);
+			if (diagnostic != null) {
 				boolean matched = condition.inverted() ? !diagnostic.matched() : diagnostic.matched();
 				String state = matched ? "\u2713 " : "\u2717 ";
 				graphics.drawString(this.font, state + (diagnostic.reason() == null ? "" : diagnostic.reason()),
 						this.listLeft + 220, y + 4, matched ? 0xFF73D98A : 0xFFE06C75);
+			} else {
+				// K11-A: async structure check still in flight
+				graphics.drawString(this.font, "checking...", this.listLeft + 220, y + 4, 0xFF8B929C);
 			}
 			if (!this.serverMode)
 				graphics.drawString(this.font, "x", this.listLeft + this.listWidth - 10, y + 4, 0xFFE06C75);
