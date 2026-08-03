@@ -2,6 +2,7 @@ package nonamecrackers2.mobbattlemusic.client.audio;
 
 import java.util.concurrent.ThreadLocalRandom;
 
+import net.minecraft.client.Minecraft;
 import nonamecrackers2.mobbattlemusic.network.ClockOffsetProbeRequestPacket;
 import nonamecrackers2.mobbattlemusic.network.ClockOffsetProbeResponsePacket;
 import nonamecrackers2.mobbattlemusic.network.MobBattleMusicNetwork;
@@ -36,6 +37,16 @@ public final class ClockOffsetProbeScheduler
 	 */
 	public static void tick()
 	{
+		// K7-B fix: without a live connection there is nothing to probe - the
+		// send would NPE on Minecraft.getConnection() == null (main menu). The
+		// window stays closed; world join (WorldPlaybackChannel.reset +
+		// first tick) opens it fresh with a new nonce.
+		Minecraft mc = Minecraft.getInstance();
+		if (mc.getConnection() == null) {
+			ClockOffsetProbeScheduler.windowStartMillis = 0L;
+			ClockOffsetProbeScheduler.probesSentThisWindow = 0;
+			return;
+		}
 		long now = System.currentTimeMillis();
 		if (ClockOffsetProbeScheduler.windowStartMillis <= 0L
 				|| now - ClockOffsetProbeScheduler.windowStartMillis >= ClockOffsetProbeScheduler.WINDOW_MILLIS) {
