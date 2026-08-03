@@ -28,6 +28,16 @@ public class ExternalMusicHandler {
     private final Object previewPlaybackLock = new Object();
     private final AtomicLong playbackRequest = new AtomicLong();
     private final AtomicLong previewPlaybackRequest = new AtomicLong();
+    // AUD-51: single-threaded audio-I/O executor; all line open/close, decode
+    // start and thread creation run here, never on the client tick thread
+    private final java.util.concurrent.ExecutorService audioIo =
+            java.util.concurrent.Executors.newSingleThreadExecutor(runnable -> {
+                Thread thread = new Thread(runnable, "MBM-Audio-IO");
+                thread.setDaemon(true);
+                return thread;
+            });
+    // AUD-51: monotonic seek request number; stale tasks are dropped
+    private final AtomicLong seekRequest = new AtomicLong();
     private volatile String currentlyPlayingUrl;
     private volatile Path currentlyPlayingPath;
     private volatile long currentDurationHintMillis;
@@ -184,28 +194,38 @@ public class ExternalMusicHandler {
                     LOGGER.error("Failed to prepare music file for playback: {}", url);
                     return;
                 }
-
-                try {
-                    this.player.play(cachedPath, fadeTime, startPositionMillis, durationHintMillis);
-                    this.currentlyPlayingPath = cachedPath;
-                    LOGGER.info("Started playing music from: {}", url);
-                } catch (Exception e) {
-                    clearPlaybackState();
-                    LOGGER.error("Failed to play music from: {}", url, e);
-                }
             }
+            // AUD-51: playback start runs on the audio-I/O executor, ordered
+            // with stop/seek; never on the client tick thread
+            this.audioIo.execute(() -> {
+                synchronized (this.playbackLock) {
+                    if (request != this.playbackRequest.get())
+                        return;
+                    try {
+                        this.player.play(cachedPath, fadeTime, startPositionMillis, durationHintMillis);
+                        this.currentlyPlayingPath = cachedPath;
+                        LOGGER.debug("Started playing music from: {}", url);
+                    } catch (Exception e) {
+                        clearPlaybackState();
+                        LOGGER.error("Failed to play music from: {}", url, e);
+                    }
+                }
+            });
         });
     }
     
     /**
-     * Stop currently playing music
+     * Stop currently playing music. AUD-51: runs on the audio-I/O executor to
+     * preserve ordering with play/seek; never blocks the caller.
      */
     public void stopMusic() {
-        synchronized (this.playbackLock) {
-            this.playbackRequest.incrementAndGet();
-            this.player.stop();
-            clearPlaybackState();
-        }
+        this.audioIo.execute(() -> {
+            synchronized (this.playbackLock) {
+                this.playbackRequest.incrementAndGet();
+                this.player.stop();
+                clearPlaybackState();
+            }
+        });
     }
 
     public void stopPreviewMusic() {
@@ -240,6 +260,19 @@ public class ExternalMusicHandler {
             this.previewPlayer.play(path, 0, clamped, this.previewDurationHintMillis);
             return true;
         }
+    }
+
+    /**
+     * AUD-51: queue a main-playback seek on the audio-I/O executor. Stale
+     * requests (superseded by a newer seek) are dropped at execution time.
+     */
+    public void seekMusicAsync(long positionMillis) {
+        long request = this.seekRequest.incrementAndGet();
+        this.audioIo.execute(() -> {
+            if (request != this.seekRequest.get())
+                return;
+            this.seekMusic(positionMillis);
+        });
     }
 
     public long getPositionMillis() {

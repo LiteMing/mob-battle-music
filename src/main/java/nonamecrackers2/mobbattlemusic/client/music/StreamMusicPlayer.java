@@ -226,25 +226,25 @@ public class StreamMusicPlayer {
         playbackThread = new Thread(() -> {
             SourceDataLine playbackLine = null;
             try {
-                LOGGER.info("Starting MP3 playback thread");
+                LOGGER.debug("Starting MP3 playback thread");
                 
                 // Use JLayer's MP3 SPI to decode MP3
-                LOGGER.info("Creating MpegAudioFileReader...");
+                LOGGER.debug("Creating MpegAudioFileReader...");
                 MpegAudioFileReader reader = new MpegAudioFileReader();
-                LOGGER.info("MpegAudioFileReader created successfully");
+                LOGGER.debug("MpegAudioFileReader created successfully");
                 
-                LOGGER.info("Reading audio input stream from MP3...");
+                LOGGER.debug("Reading audio input stream from MP3...");
                 long detectedDuration = detectDurationMillis(reader, file);
                 if (detectedDuration > 0L)
                     totalDurationMillis = detectedDuration;
 
                 try (InputStream inputStream = Files.newInputStream(file);
                         AudioInputStream audioInputStream = reader.getAudioInputStream(new BufferedInputStream(inputStream))) {
-                    LOGGER.info("Audio input stream created successfully");
+                    LOGGER.debug("Audio input stream created successfully");
                 
                     // Get the audio format
                     AudioFormat baseFormat = audioInputStream.getFormat();
-                    LOGGER.info("Base audio format: {}", baseFormat);
+                    LOGGER.debug("Base audio format: {}", baseFormat);
                 
                     // Convert to PCM
                     AudioFormat decodedFormat = new AudioFormat(
@@ -256,12 +256,12 @@ public class StreamMusicPlayer {
                         baseFormat.getSampleRate(),
                         false
                     );
-                    LOGGER.info("Decoded audio format: {}", decodedFormat);
+                    LOGGER.debug("Decoded audio format: {}", decodedFormat);
                     decodedBytesPerSecond = decodedFormat.getFrameRate() * decodedFormat.getFrameSize();
                 
-                    LOGGER.info("Converting to PCM format...");
+                    LOGGER.debug("Converting to PCM format...");
                     try (AudioInputStream decodedStream = AudioSystem.getAudioInputStream(decodedFormat, audioInputStream)) {
-                    LOGGER.info("PCM conversion successful");
+                    LOGGER.debug("PCM conversion successful");
                 
                         if (totalDurationMillis <= 0L && audioInputStream.getFrameLength() > 0L &&
                                 baseFormat.getFrameRate() > 0.0F) {
@@ -283,21 +283,21 @@ public class StreamMusicPlayer {
                             return;
                         }
                 
-                        LOGGER.info("Getting audio line...");
+                        LOGGER.debug("Getting audio line...");
                         playbackLine = (SourceDataLine) AudioSystem.getLine(info);
                         if (generation != playbackGeneration.get())
                             return;
                         line = playbackLine;
-                        LOGGER.info("Got audio line: {}", playbackLine);
+                        LOGGER.debug("Got audio line: {}", playbackLine);
                 
-                        LOGGER.info("Opening audio line...");
+                        LOGGER.debug("Opening audio line...");
                         // AUD-48: explicit capacity (500ms) separated from the
                         // target watermark (150ms); capacity is the underrun
                         // reserve, the watermark decides actual latency
                         long capacityBytes = Math.max(1L, Math.round(
                                 decodedFormat.getFrameRate() * decodedFormat.getFrameSize() * 0.5D));
                         playbackLine.open(decodedFormat, (int)Math.min(Integer.MAX_VALUE, capacityBytes));
-                        LOGGER.info("Audio line opened, buffer size: {}", playbackLine.getBufferSize());
+                        LOGGER.debug("Audio line opened, buffer size: {}", playbackLine.getBufferSize());
                         lineWatermarkBytes = Math.max(1L, Math.round(
                                 decodedFormat.getFrameRate() * decodedFormat.getFrameSize() * 0.15D));
                         underruns = 0L;
@@ -306,9 +306,9 @@ public class StreamMusicPlayer {
                         lineFrameRate = decodedFormat.getFrameRate();
                         // Gain is applied by the playback loop (AUD-45 single entry)
 
-                        LOGGER.info("Starting audio line...");
+                        LOGGER.debug("Starting audio line...");
                         playbackLine.start();
-                        LOGGER.info("Audio line started");
+                        LOGGER.debug("Audio line started");
                 
                         // Play the audio
                         byte[] buffer = new byte[BUFFER_SIZE];
@@ -317,7 +317,7 @@ public class StreamMusicPlayer {
                         long filterRevision = -1L;
                         PcmFilterChain filterChain = PcmFilterChain.create(List.of(), decodedFormat);
                 
-                        LOGGER.info("Entering playback loop at {} ms...", getPositionMillis());
+                        LOGGER.debug("Entering playback loop at {} ms...", getPositionMillis());
                         while (generation == playbackGeneration.get() && playing &&
                                 (bytesRead = decodedStream.read(buffer)) != -1) {
                             // Handle pause (manual or game pause)
@@ -375,10 +375,10 @@ public class StreamMusicPlayer {
                             playedPcmBytes += bytesRead;
                         }
 
-                        LOGGER.info("Playback loop ended. Total bytes written: {}, playing: {}", totalBytesWritten, playing);
+                        LOGGER.debug("Playback loop ended. Total bytes written: {}, playing: {}", totalBytesWritten, playing);
                     }
                 }
-                LOGGER.info("Finished playing MP3 stream");
+                LOGGER.debug("Finished playing MP3 stream");
                 
             } catch (Throwable e) {
                 if (generation == playbackGeneration.get())
@@ -396,14 +396,14 @@ public class StreamMusicPlayer {
                     paused = false;
                     line = null;
                 }
-                LOGGER.info("Playback thread finished");
+                LOGGER.debug("Playback thread finished");
             }
         });
         
         playbackThread.setName("StreamMusicPlayer");
         playbackThread.setDaemon(true);
         playbackThread.start();
-        LOGGER.info("Playback thread started");
+        LOGGER.debug("Playback thread started");
     }
     
     /**

@@ -309,9 +309,14 @@ public class MobBattleMusicCommands
 				.append(" drift=").append(formatSignedSeconds(drift))
 				.append(" lastSync=").append(lastSync < 0L
 						? "n/a" : String.format(Locale.ROOT, "%.1fs_ago", lastSync / 1000.0D))
-				// AUD-30 v1.2: current injected artificial drift (S15)
+				// AUD-30 v1.2/v1.8: injected drift (S15) and its TTL; clock
+				// state; seek accounting (AUD-52)
 				.append(" injected=").append(String.format(Locale.ROOT, "%.2f",
-						MarkerClock.injectedDriftSeconds())).append('\n');
+						MarkerClock.injectedDriftSeconds()))
+				.append(" state=").append(MarkerClock.state().name())
+				.append(" seeks=").append(WorldPlaybackChannel.seekCount())
+				.append(" sinceSeek=").append(WorldPlaybackChannel.millisSinceSeek())
+				.append(" injectedTtl=").append(MarkerClock.injectedTtlMillis()).append('\n');
 
 		PlaybackHandle worldHandle = WorldPlaybackChannel.handle();
 		String playlistRef = "n/a";

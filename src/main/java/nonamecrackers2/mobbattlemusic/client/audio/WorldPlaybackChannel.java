@@ -53,11 +53,19 @@ public final class WorldPlaybackChannel
 	private static long lastClockReportMillis;
 	private static long lastMarkerPosition = -1L;
 	private static long firedThisTrack;
+	// AUD-52: seek rate limit / hysteresis / give-up accounting
+	private static long lastSeekAtMillis;
+	private static int consecutiveSeeks;
+	private static long seekSettleUntilMillis;
 	// AUD-46/AUD-49: unified gated transition (fade out -> gain-zero poll ->
 	// action -> fade in). Single slot; new requests fail explicitly (AUD-49 #4).
 	private static @Nullable PendingGate pendingGate;
 	// AUD-49 #2: deadline default = fadeOutMillis + 500ms
 	private static final long GATE_TIMEOUT_GRACE_MILLIS = 500L;
+	// AUD-52: minimum interval between correction seeks and the settle window
+	private static final long SEEK_MIN_INTERVAL_MILLIS = 5000L;
+	private static final long SEEK_SETTLE_MILLIS = 2000L;
+	private static final int SEEK_MAX_CONSECUTIVE = 3;
 	
 	private static record PendingGate(StreamMusicPlayer.Envelope env, Runnable action, long fadeInMillis,
 			long createdAtMillis, long deadlineMillis, String actionName) {}
@@ -94,6 +102,19 @@ public final class WorldPlaybackChannel
 		advancePendingGate();
 		// AUD-49 #8: a pending start fade-in expires after 2000ms
 		StreamMusicPlayer.expirePendingTrackFadeInMillis(System.currentTimeMillis());
+		// AUD-50: FROZEN -> RUNNING re-anchors on the migration edge; checked
+		// idempotently every tick (AUD-9 v1.3), never an event-driven seek
+		if (WorldPlaybackChannel.state() == ChannelState.PLAYING
+				&& MarkerClock.state() == MarkerClock.ClockState.FROZEN
+				&& MarkerClock.isActive()) {
+			PlaybackHandle active = WorldPlaybackChannel.handle;
+			if (active != null) {
+				long localPosition = ExternalMusicHandler.getInstance().getPositionMillis();
+				long now = System.currentTimeMillis();
+				// AUD-50: re-anchor from the local position, never seek
+				MarkerClock.realign(active.track(), now - localPosition, now);
+			}
+		}
 		
 		// One-time side effects are allowed on the edge only (AUD-9 v1.3)
 		if (edge && target == ChannelState.STOPPED)
@@ -141,6 +162,7 @@ public final class WorldPlaybackChannel
 				player.pauseForGame();            // gamePaused = true
 				player.setMutedForGame(false);
 				MobBattleTrack.setMainPlaybackMuted(false);
+				// AUD-50: the clock freezes outside PLAYING
 				MarkerClock.setState(MarkerClock.ClockState.FROZEN);
 				applyMuteToSoundEngineTracks();
 			}
@@ -158,7 +180,8 @@ public final class WorldPlaybackChannel
 				player.setMutedForGame(true);
 				MobBattleTrack.setMainPlaybackMuted(true);
 				applyMuteToSoundEngineTracks();
-				MarkerClock.setState(MarkerClock.ClockState.RUNNING);
+				// AUD-50: MUTED is not audibly playing - the clock freezes
+				MarkerClock.setState(MarkerClock.ClockState.FROZEN);
 			}
 		}
 	}
@@ -224,6 +247,11 @@ public final class WorldPlaybackChannel
 		// Force the next update() to treat the first tick as an edge
 		WorldPlaybackChannel.state = null;
 		WorldPlaybackChannel.lastClockReportMillis = 0L;
+		// AUD-53: world unload clears debug injection unconditionally
+		MarkerClock.clearInjectedDrift();
+		WorldPlaybackChannel.lastSeekAtMillis = 0L;
+		WorldPlaybackChannel.consecutiveSeeks = 0;
+		WorldPlaybackChannel.seekSettleUntilMillis = 0L;
 		stopMusic();
 	}
 	
@@ -409,8 +437,24 @@ public final class WorldPlaybackChannel
 		WorldPlaybackChannel.handle = created;
 		WorldPlaybackChannel.firedThisTrack = 0L;
 		WorldPlaybackChannel.lastMarkerPosition = -1L;
+		// AUD-52: track switch resets the seek accounting
+		WorldPlaybackChannel.lastSeekAtMillis = 0L;
+		WorldPlaybackChannel.consecutiveSeeks = 0;
+		WorldPlaybackChannel.seekSettleUntilMillis = 0L;
 		// AUD-22: report the playback start so the server can anchor the clock
 		reportPlaybackStart();
+	}
+	
+	// AUD-52/AUD-30 v1.8: seek accounting accessors for the probe
+	public static int seekCount()
+	{
+		return WorldPlaybackChannel.consecutiveSeeks;
+	}
+	
+	public static long millisSinceSeek()
+	{
+		long last = WorldPlaybackChannel.lastSeekAtMillis;
+		return last <= 0L ? -1L : System.currentTimeMillis() - last;
 	}
 	
 	private static void reportPlaybackStart()
@@ -455,8 +499,11 @@ public final class WorldPlaybackChannel
 		if (now - WorldPlaybackChannel.lastClockReportMillis >= MarkerClock.SYNC_INTERVAL_MILLIS)
 			reportPlaybackStart();
 		
-		// AUD-24/AUD-25: clock correction when the server has anchored this track
-		if (MarkerClock.isActive())
+		// AUD-24/AUD-25: clock correction when the server has anchored this
+		// track. AUD-50: correction participates only while the clock is
+		// RUNNING and the player is actually audible
+		if (MarkerClock.isActive() && MarkerClock.state() == MarkerClock.ClockState.RUNNING
+				&& handler.getPlayer().isPlaying())
 			MarkerClock.tick(url, positionMillis, CORRECTION_SINK);
 		
 		// AUD-49 #1: gate advancement lives in update()'s unconditional section
@@ -467,8 +514,9 @@ public final class WorldPlaybackChannel
 		countFiredMarkers(ref, url, positionMillis);
 	}
 	
-	// AUD-24 v1.2/AUD-46: the correction seek is a gatedTransition using the
-	// seek envelope (120ms fade out, gain-zero poll, seek, 120ms fade in).
+	// AUD-24 v1.2/AUD-46/AUD-52: the correction seek is a gatedTransition
+	// using the seek envelope (120ms fade out, gain-zero poll, seek, 120ms
+	// fade in), rate-limited with hysteresis and a give-up threshold.
 	private static final MarkerClock.CorrectionSink CORRECTION_SINK = new MarkerClock.CorrectionSink()
 	{
 		@Override
@@ -480,17 +528,41 @@ public final class WorldPlaybackChannel
 		@Override
 		public void seek(double serverPositionSeconds, double drift)
 		{
+			// AUD-52: triple rejection - settle window, minimum interval,
+			// consecutive-seek limit
+			long now = System.currentTimeMillis();
+			if (now < WorldPlaybackChannel.seekSettleUntilMillis
+					|| now - WorldPlaybackChannel.lastSeekAtMillis < SEEK_MIN_INTERVAL_MILLIS
+					|| WorldPlaybackChannel.consecutiveSeeks >= SEEK_MAX_CONSECUTIVE) {
+				WorldPlaybackChannel.consecutiveSeeks++;
+				if (WorldPlaybackChannel.consecutiveSeeks >= SEEK_MAX_CONSECUTIVE) {
+					// AUD-52: give up on this track
+					MarkerClock.setState(MarkerClock.ClockState.FROZEN);
+					LOGGER.warn("[MBM] AUD-52 correction disabled for this track ({} consecutive seeks)", 
+							WorldPlaybackChannel.consecutiveSeeks);
+				} else {
+					LOGGER.debug("[MBM] AUD-52 seek suppressed (settle/rate/limit, seeks={})",
+							WorldPlaybackChannel.consecutiveSeeks);
+				}
+				return;
+			}
 			long targetMillis = Math.round(serverPositionSeconds * 1000.0D);
 			ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
 			// AUD-49 #4: an explicit failure here just means the drift is
 			// re-evaluated on the next tick; no state to roll back
 			WorldPlaybackChannel.gatedTransition(handler.getPlayer().seekEnv(), 120L, "clock-seek", () -> {
-				if (handler.seekMusic(targetMillis)) {
-					MarkerClock.clearInjectedDrift();
-					WorldPlaybackChannel.lastMarkerPosition = -1L;
-					WorldPlaybackChannel.firedThisTrack = 0L;
-					LOGGER.debug("[MBM] AUD-24 seek to {}ms (gain confirmed 0.00)", targetMillis);
-				}
+				// AUD-51: the action only accounts state; the audio seek is
+				// offloaded to the audio-I/O executor (no blocking work here)
+				handler.seekMusicAsync(targetMillis);
+				MarkerClock.clearInjectedDrift();
+				WorldPlaybackChannel.lastMarkerPosition = -1L;
+				WorldPlaybackChannel.firedThisTrack = 0L;
+				// AUD-52: seek accounting
+				WorldPlaybackChannel.lastSeekAtMillis = System.currentTimeMillis();
+				WorldPlaybackChannel.seekSettleUntilMillis =
+						WorldPlaybackChannel.lastSeekAtMillis + SEEK_SETTLE_MILLIS;
+				WorldPlaybackChannel.consecutiveSeeks++;
+				LOGGER.debug("[MBM] AUD-24 seek to {}ms queued to audio IO (gain confirmed 0.00)", targetMillis);
 			}, 120L);
 		}
 	};
