@@ -87,7 +87,7 @@ public class StreamMusicPlayer {
     private volatile long resumeBufferIndex = -1L;
     // AUD-48 v1.6: the last-underrun timestamp shares the lifecycle of the
     // adaptive watermark (static, cleared only by resetAdaptiveWatermark)
-    private static volatile long lastUnderrunAtMillis;
+
     // K3 P2-1: the down-path timing base, one bit one meaning - an underrun
     // restarts it, a lowering restarts it; cleared only with the watermark
     private static volatile long lastWatermarkDownAtMillis;
@@ -356,6 +356,7 @@ public class StreamMusicPlayer {
                         PcmFilterChain filterChain = PcmFilterChain.create(List.of(), decodedFormat);
                 
                         LOGGER.debug("Entering playback loop at {} ms...", getPositionMillis());
+                        outerLoop:
                         while (generation == playbackGeneration.get() && playing &&
                                 (bytesRead = decodedStream.read(buffer)) != -1) {
                             // Handle pause (manual or game pause)
@@ -367,8 +368,13 @@ public class StreamMusicPlayer {
                             while ((paused || gamePaused) && generation == playbackGeneration.get() && playing) {
                                 suspended = true;
                                 java.util.concurrent.locks.LockSupport.park(this);
-                                if (Thread.interrupted())
-                                    break;
+                                if (Thread.interrupted()) {
+                                    // K4 P2-3: an interrupt must leave the
+                                    // decode loop entirely - never keep
+                                    // writing audio while paused
+                                    Thread.currentThread().interrupt();
+                                    break outerLoop;
+                                }
                             }
                             // AUD-48 v1.5: remember the resume point for the
                             // underrun transient window
@@ -410,7 +416,7 @@ public class StreamMusicPlayer {
                             if (totalBytesWritten > 0L && !transientWindow
                                     && playbackLine.available() >= playbackLine.getBufferSize()) {
                                 underruns++;
-                                StreamMusicPlayer.lastUnderrunAtMillis = System.currentTimeMillis();
+
                                 // K3 P2-1: an underrun restarts the down-path
                                 // timing base
                                 StreamMusicPlayer.lastWatermarkDownAtMillis = System.currentTimeMillis();
@@ -559,11 +565,12 @@ public class StreamMusicPlayer {
 
     /**
      * AUD-47: decoded (written) position, kept as a diagnostic quantity for
-     * the probe and buffer diagnostics only.
+     * the probe and buffer diagnostics only. K4 P1: no decoded data -> -1,
+     * never a fabricated zero.
      */
     public long getDecodedPositionMillis() {
         double bytesPerSecond = decodedBytesPerSecond;
-        return bytesPerSecond <= 0.0D ? 0L : Math.max(0L, Math.round(playedPcmBytes * 1000.0D / bytesPerSecond));
+        return bytesPerSecond <= 0.0D ? -1L : Math.max(0L, Math.round(playedPcmBytes * 1000.0D / bytesPerSecond));
     }
 
     // AUD-48: line diagnostics for the probe (world.line)
@@ -610,7 +617,7 @@ public class StreamMusicPlayer {
     // unload); both share the same lifecycle scope
     public static void resetAdaptiveWatermark() {
         StreamMusicPlayer.adaptiveWatermarkMillis = 0L;
-        StreamMusicPlayer.lastUnderrunAtMillis = 0L;
+
         StreamMusicPlayer.lastWatermarkDownAtMillis = 0L;
     }
 

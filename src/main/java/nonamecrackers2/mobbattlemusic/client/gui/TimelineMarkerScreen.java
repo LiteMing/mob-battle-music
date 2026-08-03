@@ -346,7 +346,11 @@ final class TimelineMarkerScreen extends Screen
 		super.tick();
 		Track track = selectedTrack();
 		if (!this.markerTimeBox.isFocused() && isPreviewing(track)) {
-			this.markerTimeBox.setValue(String.valueOf(ExternalMusicHandler.getInstance().getPreviewPositionMillis()));
+			// K4 P1: isPreviewing() is NOT a valid guard - previewUrl is set
+			// before the decode thread opens the line; -1 must not enter the
+			// box
+			long position = ExternalMusicHandler.getInstance().getPreviewPositionMillis();
+			this.markerTimeBox.setValue(String.valueOf(Math.max(0L, position)));
 			this.scrubbedTime = false;
 		}
 		if (this.syncRefreshCooldown > 0 && --this.syncRefreshCooldown == 0)
@@ -490,7 +494,10 @@ final class TimelineMarkerScreen extends Screen
 
 	private long previewPosition(Track track)
 	{
-		return isPreviewing(track) ? ExternalMusicHandler.getInstance().getPreviewPositionMillis() : 0L;
+		// K4 P1: isPreviewing() is NOT a valid guard - previewUrl is set
+		// before the decode thread opens the line; clamp -1 to 0
+		long position = isPreviewing(track) ? ExternalMusicHandler.getInstance().getPreviewPositionMillis() : 0L;
+		return Math.max(0L, position);
 	}
 
 	private long previewDuration(Track track)

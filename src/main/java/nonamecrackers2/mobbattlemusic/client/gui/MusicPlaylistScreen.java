@@ -853,6 +853,10 @@ public class MusicPlaylistScreen extends Screen
 		int right = previewProgressRight();
 		int y = previewProgressY();
 		long position = handler.getPreviewPositionMillis();
+		// K4 P1: isPreviewing() is NOT a valid guard - previewUrl is set before
+		// the decode thread opens the line; clamp -1 for display arithmetic
+		if (position < 0L)
+			position = 0L;
 		long duration = handler.getPreviewDurationMillis();
 		String time = formatDuration(position) + " / " + (duration > 0L ? formatDuration(duration) : "--:--");
 		graphics.drawString(this.font, text("preview.progress", time), left, y - 11, 0xD8D8D8, false);

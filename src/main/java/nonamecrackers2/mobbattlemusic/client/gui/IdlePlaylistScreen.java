@@ -782,6 +782,11 @@ final class IdlePlaylistScreen extends Screen
 		int y = this.layout.main().bottom() - 12;
 		long position = handler.getPreviewPositionMillis();
 		long duration = handler.getPreviewDurationMillis();
+		// K4 P1: isPreviewing() is NOT a valid guard - previewUrl is set before
+		// the decode thread opens the line, so a -1 position is possible while
+		// previewing; clamp it for display arithmetic
+		if (position < 0L)
+			position = 0L;
 		String time = formatDuration(position) + " / " + (duration > 0L ? formatDuration(duration) : "--:--");
 		graphics.drawString(this.font, text("preview.progress", time), left, y - 11, 0xFFD8D8D8, false);
 		graphics.fill(left, y, right, y + 7, 0xFF202328);

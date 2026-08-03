@@ -272,6 +272,11 @@ public class BattleMusicManager {
 			boolean serverTrack = MusicTracksManager.getInstance().dynamicSource(track) ==
 					MusicTracksManager.DynamicSource.SERVER;
 			long position = handler.getPositionMillis();
+			// K4 P1: explicit early exit on unknown position (-1); the
+			// isPlaying() guard above does not imply a usable line at this
+			// exact moment
+			if (position < 0L)
+				return;
 			if (!track.equals(this.timelineTrack) || !externalTrack.getUrl().equals(this.timelineUrl)) {
 				this.timelineTrack = track;
 				this.timelineUrl = externalTrack.getUrl();
@@ -624,6 +629,10 @@ public class BattleMusicManager {
 		if (!externalTrack.getUrl().equals(handler.getCurrentlyPlayingUrl()) || handler.isPreparingCurrentMusic())
 			return false;
 		long position = handler.getPositionMillis();
+		// K4 P1: explicit early exit on unknown position (-1); the > 0 check
+		// below would also reject it, but the exit is stated explicitly
+		if (position < 0L)
+			return false;
 		if (position > 0L) {
 			this.externalResumeStates.put(track, new ResumeState(externalTrack.getUrl(), position,
 					System.currentTimeMillis() + EXTERNAL_RESUME_WINDOW_MILLIS));

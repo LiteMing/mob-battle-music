@@ -50,7 +50,6 @@ public final class WorldPlaybackChannel
 	// recomputed every tick from (session, focused) (AUD-41)
 	private static volatile ChannelState state = ChannelState.STOPPED;
 	private static volatile @Nullable PlaybackHandle handle;
-	private static long lastClockReportMillis;
 	private static long lastMarkerPosition = -1L;
 	private static long firedThisTrack;
 	// AUD-54: client tick counter for the probe ring
@@ -58,16 +57,18 @@ public final class WorldPlaybackChannel
 	// AUD-52: seek rate limit / hysteresis accounting
 	private static long lastSeekAtMillis;
 	private static long seekSettleUntilMillis;
-	// AUD-52 v1.3/R3/K3 P1-1: give-up uses a sliding window of the last three
-	// seek completion times; correction is disabled only when all three fall
-	// within 20s (the realign after a seek fabricates zero drift, so drift
-	// cannot judge whether correction is effective - frequency must). Recovery
+	// AUD-52 v1.3/R3/K4 P0: give-up uses a sliding window of the last three
+	// seek ATTEMPTS (queued gates), not completions - the line rebuild and
+	// Thread.start() cost is fully paid at attempt time; limiting on
+	// completions would make failures free. Correction is disabled only when
+	// all three attempts fall within 20s. Written on the caller (tick) thread
+	// at queue time - closing the K2 cross-thread visibility residue. Recovery
 	// is automatic with backoff 60s -> 40s -> 80s -> ... (cap 300s).
 	private static final long GIVE_UP_WINDOW_MILLIS = 20_000L;
 	private static final long GIVE_UP_BACKOFF_FIRST_MILLIS = 60_000L;
 	private static final long GIVE_UP_BACKOFF_STEP_MILLIS = 40_000L;
 	private static final long GIVE_UP_BACKOFF_CAP_MILLIS = 300_000L;
-	private static final long[] RECENT_SEEK_COMPLETIONS = new long[3];
+	private static final long[] RECENT_SEEK_ATTEMPTS = new long[3];
 	private static int recentSeekIndex;
 	private static int recentSeekCount;
 	private static boolean giveUpWarned;
@@ -190,15 +191,11 @@ public final class WorldPlaybackChannel
 		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
 		StreamMusicPlayer player = handler.getPlayer();
 		long audiblePos = handler.getPositionMillis();
-		// K3 P0-a: an unknown position is recorded as -1 (n/a in the dump),
-		// never fabricated as zero
-		if (audiblePos < 0L)
-			audiblePos = -1L;
+		// K4 P1: an unknown position (-1) must never enter arithmetic; the
+		// drift is NaN directly, without calling driftSeconds at all
 		long decodedPos = handler.getDecodedPositionMillis();
 		String currentUrl = handler.getCurrentlyPlayingUrl();
-		// R4: "no usable anchor" is NO DATA - Long.MIN_VALUE signals n/a in
-		// the dump; zero drift must never be fabricated for an unanchored track
-		double driftSeconds = MarkerClock.isActive() && currentUrl != null
+		double driftSeconds = MarkerClock.isActive() && currentUrl != null && audiblePos >= 0L
 				? MarkerClock.driftSeconds(currentUrl, audiblePos) : Double.NaN;
 		long driftMillis = (!MarkerClock.anchorValid() || Double.isNaN(driftSeconds))
 				? Long.MIN_VALUE : Math.round(driftSeconds * 1000.0D);
@@ -370,7 +367,6 @@ public final class WorldPlaybackChannel
 	{
 		// Force the next update() to treat the first tick as an edge
 		WorldPlaybackChannel.state = null;
-		WorldPlaybackChannel.lastClockReportMillis = 0L;
 		// AUD-53: world unload clears debug injection unconditionally
 		MarkerClock.clearInjectedDrift();
 		// AUD-48 v1.4: world unload resets the converged watermark
@@ -623,7 +619,6 @@ public final class WorldPlaybackChannel
 		if (active == null)
 			return;
 		MobBattleMusicNetwork.sendPlaybackStartReport(active.track(), active.startedEpochMillis());
-		WorldPlaybackChannel.lastClockReportMillis = System.currentTimeMillis();
 	}
 	
 	private static void tickClockAndInvalidation()
@@ -658,10 +653,12 @@ public final class WorldPlaybackChannel
 		if (positionMillis < 0L)
 			return;
 		
-		// AUD-24: periodic resync every 5 seconds
-		long now = System.currentTimeMillis();
-		if (now - WorldPlaybackChannel.lastClockReportMillis >= MarkerClock.SYNC_INTERVAL_MILLIS)
-			reportPlaybackStart();
+		// AUD-24: K4 P1-7: the periodic 5s C2S resync is removed - the server
+		// PlaybackStartReportPacket handler only relays the client's own epoch
+		// back (PlaybackStartReportPacket.java:52) and never anchors with it,
+		// so the periodic report added nothing but latency. Anchors now come
+		// from start reports, PAUSED-leave re-anchors and seek re-anchors.
+		// (AUD-24's 5s period is superseded by event-driven anchoring.)
 		
 		// AUD-24/AUD-25: clock correction when the server has anchored this
 		// track. AUD-50: correction participates only while the clock is
@@ -708,21 +705,19 @@ public final class WorldPlaybackChannel
 		public void seek(double serverPositionSeconds, double drift)
 		{
 			long now = System.currentTimeMillis();
-			// AUD-52 v1.3/R3/K3 P1-1: give-up is decided by the frequency window
-			// - the last three seek completions all within 20s
+			// AUD-52 v1.3/R3/K4 P0: give-up is decided by the frequency window
+			// of ATTEMPTS - the last three queued seeks all within 20s
 			if (WorldPlaybackChannel.recentSeekCount >= 3) {
-				// P2-3: with count==3 the oldest completion sits at
-				// index-3 (mod 3); the offset is NOT a no-op - the written
-				// index points at the NEXT slot, so the oldest of the three
-				// is three slots back
-				long oldest = WorldPlaybackChannel.RECENT_SEEK_COMPLETIONS[
-						Math.floorMod(WorldPlaybackChannel.recentSeekIndex - 3, 3)];
+				// K4 P2-2: the write index is the next slot to be written,
+				// which is exactly the oldest of the current three - no
+				// arithmetic offset
+				long oldest = WorldPlaybackChannel.RECENT_SEEK_ATTEMPTS[WorldPlaybackChannel.recentSeekIndex];
 				if (now - oldest <= GIVE_UP_WINDOW_MILLIS) {
 					if (!WorldPlaybackChannel.giveUpWarned) {
 						WorldPlaybackChannel.giveUpWarned = true;
 						MarkerClock.disableCorrection();
 						WorldPlaybackChannel.correctionDisabledAtMillis = now;
-						LOGGER.warn("[MBM] AUD-52 correction disabled for this track (3 seeks within 20s)");
+						LOGGER.warn("[MBM] AUD-52 correction disabled for this track (3 seek attempts within 20s)");
 					}
 					return;
 				}
@@ -744,35 +739,38 @@ public final class WorldPlaybackChannel
 				// offloaded to the audio-I/O executor (no blocking work here)
 				handler.seekMusicAsync(targetMillis, completedAt -> {
 					// AUD-52 v1.2: the anchor moment is the measured watermark
-					// fill time of the new line, never the dispatch time; a
-					// timeout skips the re-anchor
+					// fill time of the new line, never the dispatch time. K4 P0:
+					// a failed seek must have a recovery action - never rely on
+					// a server heartbeat to restore the anchor
 					if (completedAt <= 0L) {
-						LOGGER.warn("[MBM] AUD-52 seek to {}ms done but watermark not reached; re-anchor skipped", targetMillis);
+						LOGGER.warn("[MBM] AUD-52 seek to {}ms done but watermark not reached; re-anchor requested", targetMillis);
+						MarkerClock.requestReanchor();
+						// the cost was already paid - the rate limit must count it
+						WorldPlaybackChannel.lastSeekAtMillis = System.currentTimeMillis();
 						return;
 					}
 					if (trackId != null)
 						MarkerClock.realign(trackId, completedAt - targetMillis, completedAt);
-					WorldPlaybackChannel.lastSeekAtMillis = completedAt;
-					WorldPlaybackChannel.seekSettleUntilMillis = completedAt + SEEK_SETTLE_MILLIS;
-					// AUD-52 v1.3/R3: record the completion in the sliding
-					// window; only actually completed corrections count
-					WorldPlaybackChannel.RECENT_SEEK_COMPLETIONS[WorldPlaybackChannel.recentSeekIndex] = completedAt;
-					WorldPlaybackChannel.recentSeekIndex =
-							(WorldPlaybackChannel.recentSeekIndex + 1) % 3;
-					WorldPlaybackChannel.recentSeekCount =
-							Math.min(3, WorldPlaybackChannel.recentSeekCount + 1);
-					WorldPlaybackChannel.giveUpWarned = false;
-					LOGGER.debug("[MBM] AUD-24 seek to {}ms completed (re-anchored at watermark, settle until +{}ms)",
-							targetMillis, SEEK_SETTLE_MILLIS);
+					// K4 P0: rate-limit timing moves to queue time (attempt);
+					// onComplete no longer writes the attempt window
+					LOGGER.debug("[MBM] AUD-24 seek to {}ms re-anchored at watermark", targetMillis);
 				});
 				MarkerClock.clearInjectedDrift();
 				WorldPlaybackChannel.lastMarkerPosition = -1L;
 				WorldPlaybackChannel.firedThisTrack = 0L;
 			}, 120L);
-			// AUD-52 修订/O9: the queue time is recorded only when the gate was
-			// actually queued (never for a rejected request)
 			if (queued) {
-				WorldPlaybackChannel.seekQueuedAtMillis = System.currentTimeMillis();
+				// K4 P0: the attempt is recorded at queue time, on the caller
+				// (tick) thread - the line rebuild and Thread.start() cost is
+				// fully paid at this moment; the settle window and rate limit
+				// also start here
+				WorldPlaybackChannel.RECENT_SEEK_ATTEMPTS[WorldPlaybackChannel.recentSeekIndex] = now;
+				WorldPlaybackChannel.recentSeekIndex = (WorldPlaybackChannel.recentSeekIndex + 1) % 3;
+				WorldPlaybackChannel.recentSeekCount = Math.min(3, WorldPlaybackChannel.recentSeekCount + 1);
+				WorldPlaybackChannel.giveUpWarned = false;
+				WorldPlaybackChannel.lastSeekAtMillis = now;
+				WorldPlaybackChannel.seekSettleUntilMillis = now + SEEK_SETTLE_MILLIS;
+				WorldPlaybackChannel.seekQueuedAtMillis = now;
 				WorldPlaybackChannel.seekQueuedTargetMillis = targetMillis;
 			}
 		}

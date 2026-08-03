@@ -21,8 +21,6 @@ public final class MarkerClock
 
 	// AUD-24 v1.1 thresholds - fixed, must not be adjusted
 	public static final double DRIFT_TOLERANCE_SECONDS = 1.0D;
-	// AUD-24 v1.1: resync period is fixed at 5 seconds
-	public static final long SYNC_INTERVAL_MILLIS = 5000L;
 
 	private static final Logger LOGGER = LogManager.getLogger("mobbattlemusic/MarkerClock");
 

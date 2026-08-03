@@ -109,7 +109,9 @@ public final class ProbeRing
 				// K3 P0-a: unknown audible position (-1) is n/a, not 0
 				.append(" audible=").append(s.audiblePosMillis() < 0L
 						? "n/a" : String.valueOf(s.audiblePosMillis()))
-				.append(" decoded=").append(s.decodedPosMillis())
+				// K4 P1: unknown decoded position is n/a, not 0
+				.append(" decoded=").append(s.decodedPosMillis() < 0L
+						? "n/a" : String.valueOf(s.decodedPosMillis()))
 				// R4: no anchor -> drift is n/a, never a fabricated zero
 				.append(" drift=").append(s.driftMillis() == Long.MIN_VALUE
 						? "n/a" : String.valueOf(s.driftMillis()))
