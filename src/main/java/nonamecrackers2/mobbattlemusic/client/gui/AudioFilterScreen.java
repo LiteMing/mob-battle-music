@@ -473,8 +473,11 @@ final class AudioFilterScreen extends Screen
 		}
 		Entry selected = selectedEntry();
 		boolean enabled = selected == null || selected.runtime() || selected.definition().enabled();
+		// AUD-48: preserve the instant option when saving an edited filter
+		// (the GUI has no control for it; it is configured in the JSON file)
+		boolean instant = selected != null && !selected.runtime() && selected.definition().instant();
 		AudioFilterManager.putConfigDefinition(new AudioFilterDefinition(id, enabled, this.scope, this.type, frequency, q, gain,
-				bitDepth, sampleRate, this.draftConditions));
+				bitDepth, sampleRate, this.draftConditions, instant));
 		activateNow();
 		message(text("filters.message.saved", id));
 		this.rebuildEntries();

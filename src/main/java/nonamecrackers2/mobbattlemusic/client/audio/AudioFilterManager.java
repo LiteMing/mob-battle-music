@@ -142,7 +142,8 @@ public final class AudioFilterManager
 			// the configuration actually differs from what is installed.
 			removalPending = false;
 			pendingActive = List.of();
-			PcmFilterChain.setMixTarget(1.0f, PcmFilterChain.mixInMillis());
+			// Instant-only filters skip the fade (user option): mix jumps
+			PcmFilterChain.setMixTarget(1.0f, instantInMillis(immutable));
 			if (!immutable.equals(active)) {
 				active = immutable;
 				REVISION.incrementAndGet();
@@ -154,16 +155,16 @@ public final class AudioFilterManager
 		if (!wasActive && nowActive) {
 			// AUD-48: activation fades the mix in (150ms); the chain can
 			// be installed immediately - it is evaluated as the wet
-			// component of the crossfade
-			PcmFilterChain.setMixTarget(1.0f, PcmFilterChain.mixInMillis());
+			// component of the crossfade. Instant-only filters skip the fade.
+			PcmFilterChain.setMixTarget(1.0f, instantInMillis(immutable));
 			active = immutable;
 			REVISION.incrementAndGet();
 			GlobalAudioFilterManager.onDefinitionsChanged(immutable);
 		} else if (wasActive && !nowActive) {
 			// AUD-48 v1.2: deactivation only fades the mix and sets the
 			// explicit pending flag; the chain is removed once the mix
-			// reaches zero
-			PcmFilterChain.setMixTarget(0.0f, PcmFilterChain.mixOutMillis());
+			// reaches zero. Instant-only filters skip the fade.
+			PcmFilterChain.setMixTarget(0.0f, instantOutMillis(active));
 			removalPending = true;
 			pendingActive = immutable;
 		} else {
@@ -178,6 +179,20 @@ public final class AudioFilterManager
 	public static boolean isRemovalPending()
 	{
 		return removalPending;
+	}
+
+	// AUD-48: filters with the instant option skip the mix fade (user option);
+	// when every filter in the configuration is instant, the fade duration is 0
+	private static long instantInMillis(List<AudioFilterDefinition> definitions)
+	{
+		boolean instant = !definitions.isEmpty() && definitions.stream().allMatch(AudioFilterDefinition::instant);
+		return instant ? 0L : PcmFilterChain.mixInMillis();
+	}
+
+	private static long instantOutMillis(List<AudioFilterDefinition> definitions)
+	{
+		boolean instant = !definitions.isEmpty() && definitions.stream().allMatch(AudioFilterDefinition::instant);
+		return instant ? 0L : PcmFilterChain.mixOutMillis();
 	}
 
 	public static long revision()
@@ -256,6 +271,7 @@ public final class AudioFilterManager
 				conditions.add(conditionObject);
 			}
 			object.add("conditions", conditions);
+			object.addProperty("instant", definition.instant());
 			filters.add(object);
 		}
 		root.add("filters", filters);
@@ -299,7 +315,8 @@ public final class AudioFilterManager
 					GsonHelper.getAsDouble(object, "q", 0.707D),
 					GsonHelper.getAsDouble(object, "gain_db", 0.0D),
 					GsonHelper.getAsInt(object, "bit_depth", 12),
-					GsonHelper.getAsInt(object, "sample_rate_hz", 22_050), conditions);
+					GsonHelper.getAsInt(object, "sample_rate_hz", 22_050), conditions,
+					GsonHelper.getAsBoolean(object, "instant", false));
 		} catch (Exception e) {
 			LOGGER.warn("Ignoring invalid audio filter definition: {}", object, e);
 			return null;
@@ -343,7 +360,8 @@ public final class AudioFilterManager
 		ResourceLocation location = new ResourceLocation(id);
 		CONFIG_DEFINITIONS.putIfAbsent(location, new AudioFilterDefinition(location, false,
 				AudioFilterDefinition.Scope.MBM, type, frequency, 0.707D, 0.0D, bitDepth, sampleRate,
-				List.of(new IdleCondition(conditionType, conditionArgument, false))));
+				List.of(new IdleCondition(conditionType, conditionArgument, false)),
+				"mobbattlemusic:underwater_low_pass".equals(location.toString())));
 	}
 
 	private static JsonObject defaultFilter(String id, String type, double frequency, int bitDepth, int sampleRate,
