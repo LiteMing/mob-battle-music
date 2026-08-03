@@ -13,6 +13,7 @@ public final class MbmSessionState
 	private static volatile boolean focused = true;
 	private static volatile boolean paused;
 	private static volatile boolean published;
+	private static volatile boolean localSingleplayer;
 	
 	private MbmSessionState() {}
 	
@@ -61,6 +62,9 @@ public final class MbmSessionState
 		MbmSessionState.paused = mc.isPaused();
 		MbmSessionState.published = mc.getSingleplayerServer() != null
 				&& mc.getSingleplayerServer().isPublished();
+		// AUD-29 #1: singleplayer eligibility for server-data editing, consumed
+		// by the playlist GUIs through this accessor only
+		MbmSessionState.localSingleplayer = mc.hasSingleplayerServer();
 		
 		if (next != previous)
 			LOGGER.debug("[MBM] session {} -> {}", previous, next);
@@ -84,5 +88,15 @@ public final class MbmSessionState
 	public static boolean isPublishedNow()
 	{
 		return MbmSessionState.published;
+	}
+	
+	/**
+	 * True while running against a local integrated server (singleplayer),
+	 * including a published LAN host. Replaces direct hasSingleplayerServer()
+	 * calls in the GUI layer (AUD-29 #1).
+	 */
+	public static boolean isLocalSingleplayer()
+	{
+		return MbmSessionState.localSingleplayer;
 	}
 }

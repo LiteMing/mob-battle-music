@@ -290,12 +290,10 @@ public class MobBattleMusicCommands
 				.append(" rev=").append(revRef).append('\n');
 
 		String previewState;
-		if (PreviewChannel.isActive()) {
-			StreamMusicPlayer preview = handler.getPreviewPlayer();
-			previewState = preview.isPlaying() ? "PLAYING" : (preview.isPaused() ? "PAUSED" : "STOPPED");
-		} else {
+		if (PreviewChannel.isActive() && handler.getPreviewPlayer().isPlaying())
+			previewState = "PLAYING";
+		else
 			previewState = "STOPPED";
-		}
 		output.append("preview.state=").append(previewState)
 				.append(" pos=").append(formatSeconds(PreviewChannel.positionMillis()))
 				.append(" track=").append(PreviewChannel.currentTrack() == null

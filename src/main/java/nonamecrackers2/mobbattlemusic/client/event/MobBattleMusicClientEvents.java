@@ -94,6 +94,12 @@ public class MobBattleMusicClientEvents
 		Minecraft mc = Minecraft.getInstance();
 		if (event.phase == TickEvent.Phase.END)
 		{
+			// AUD-36: ordering is explicit inside this single MBM tick entry;
+			// do not rely on relative order between Forge listeners. The order
+			// below is load-bearing: 1) session evaluate, 2) channel update
+			// (AUD-19 invalidation may stop playback), 3) selection engine tick
+			// which must observe the stopped state to continue with the next
+			// track in the same tick.
 			MbmSessionState.evaluate();
 			// AUD-5/AUD-13: the session state machine drives the main playback channel
 			WorldPlaybackChannel.update(MbmSessionState.current(), MbmSessionState.isFocused());

@@ -16,6 +16,7 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
+import nonamecrackers2.mobbattlemusic.client.audio.MbmSessionState;
 import nonamecrackers2.mobbattlemusic.client.audio.PreviewChannel;
 import nonamecrackers2.mobbattlemusic.client.music.ExternalMusicHandler;
 import nonamecrackers2.mobbattlemusic.client.music.IdleConditionStateClient;
@@ -617,7 +618,8 @@ final class IdlePlaylistScreen extends Screen
 
 	private boolean canEditServer()
 	{
-		return this.minecraft.hasSingleplayerServer()
+		// AUD-29 #1: singleplayer eligibility via MbmSessionState only
+		return MbmSessionState.isLocalSingleplayer()
 				|| this.minecraft.player != null && this.minecraft.player.getPermissionLevel() >= 2;
 	}
 
