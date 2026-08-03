@@ -306,12 +306,11 @@ public final class WorldPlaybackChannel
 		SourceRef ref = active.sourceRef();
 		if (ref != null && !ref.isDirect()) {
 			MusicTracksManager manager = MusicTracksManager.getInstance();
-			int currentRevision = MusicTracksManager.playlistRevision(
-					ResourceLocation.tryParse(ref.playlistId()));
+			ResourceLocation playlistId = ResourceLocation.tryParse(ref.playlistId());
+			int currentRevision = MusicTracksManager.playlistRevision(playlistId);
 			if (ref.revision() != currentRevision
-					|| !manager.isPlaybackTargetActive(ResourceLocation.tryParse(ref.playlistId()), ref.entryKey())) {
-				LOGGER.debug("[MBM] AUD-19 invalidation: {} (current rev {})", ref, currentRevision);
-				invalidatePlayback();
+					|| !manager.isPlaybackTargetActive(playlistId, ref.entryKey())) {
+				invalidatePlayback(ref);
 				return;
 			}
 		}
@@ -421,7 +420,7 @@ public final class WorldPlaybackChannel
 		MarkerClock.recordFiredMarkers(WorldPlaybackChannel.firedThisTrack);
 	}
 	
-	private static void invalidatePlayback()
+	private static void invalidatePlayback(@Nullable SourceRef ref)
 	{
 		// AUD-19: immediate stop, no fade-out; the selection engine decides the
 		// next track within the same tick
@@ -432,6 +431,15 @@ public final class WorldPlaybackChannel
 		WorldPlaybackChannel.lastMarkerPosition = -1L;
 		WorldPlaybackChannel.state = ChannelState.STOPPED;
 		LOGGER.debug("[MBM] world channel -> STOPPED (invalidated)");
+		// AUD-30 v1.2: fixed-format invalidation log. deltaMs is measured in
+		// code from the data-layer commit stamp to the audio stop above;
+		// no manual log-timestamp subtraction.
+		if (ref != null) {
+			long dataChange = MusicTracksManager.lastDataChangeMillis();
+			long deltaMs = dataChange <= 0L ? -1L : System.currentTimeMillis() - dataChange;
+			LOGGER.debug("[MBM] AUD-19 invalidation playlist={} entry={} deltaMs={}",
+					ref.playlistId(), ref.entryKey(), deltaMs);
+		}
 	}
 	
 	private static void clearHandle()

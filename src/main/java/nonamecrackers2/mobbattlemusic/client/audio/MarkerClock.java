@@ -144,6 +144,12 @@ public final class MarkerClock
 		MarkerClock.injectedDriftSeconds = 0.0D;
 	}
 
+	// AUD-30 v1.2: consumed by the probe's world.clock injected= field (S15)
+	public static double injectedDriftSeconds()
+	{
+		return MarkerClock.injectedDriftSeconds;
+	}
+
 	public static void recordFiredMarkers(long count)
 	{
 		MarkerClock.firedMarkers = count;

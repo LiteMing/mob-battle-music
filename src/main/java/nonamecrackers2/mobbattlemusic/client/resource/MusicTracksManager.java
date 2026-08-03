@@ -72,6 +72,8 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 	// AUD-18: per-playlist monotonic revision, keyed by configLocation
 	private static final java.util.concurrent.ConcurrentHashMap<String, Integer> PLAYLIST_REVISIONS =
 			new java.util.concurrent.ConcurrentHashMap<>();
+	// AUD-30 v1.2: data-change commit timestamp for deltaMs measurement
+	private static volatile long lastDataChangeMillis;
 	private List<TrackType> tracks;
 	private List<TrackType> baseTracks;
 	private final ExternalMusicHandler externalMusicHandler;
@@ -158,14 +160,28 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 
 	public static void bumpPlaylistRevision(ResourceLocation configLocation)
 	{
-		if (configLocation != null)
+		if (configLocation != null) {
 			PLAYLIST_REVISIONS.merge(configLocation.toString(), 1, Integer::sum);
+			// AUD-30 v1.2: stamp the data-change commit time for deltaMs
+			MusicTracksManager.lastDataChangeMillis = System.currentTimeMillis();
+		}
 	}
 
 	public static void bumpAllPlaylistRevisions()
 	{
 		for (String key : PLAYLIST_REVISIONS.keySet())
 			PLAYLIST_REVISIONS.merge(key, 1, Integer::sum);
+		// AUD-30 v1.2: stamp the data-change commit time for deltaMs
+		MusicTracksManager.lastDataChangeMillis = System.currentTimeMillis();
+	}
+
+	/**
+	 * AUD-30 v1.2: commit time of the last data-layer change, consumed by the
+	 * AUD-19 invalidation log to compute deltaMs in code.
+	 */
+	public static long lastDataChangeMillis()
+	{
+		return MusicTracksManager.lastDataChangeMillis;
 	}
 
 	@Override

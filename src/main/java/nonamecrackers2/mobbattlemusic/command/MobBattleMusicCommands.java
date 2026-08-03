@@ -270,7 +270,10 @@ public class MobBattleMusicCommands
 		output.append("world.clock=").append(clockState)
 				.append(" drift=").append(formatSignedSeconds(drift))
 				.append(" lastSync=").append(lastSync < 0L
-						? "n/a" : String.format(Locale.ROOT, "%.1fs_ago", lastSync / 1000.0D)).append('\n');
+						? "n/a" : String.format(Locale.ROOT, "%.1fs_ago", lastSync / 1000.0D))
+				// AUD-30 v1.2: current injected artificial drift (S15)
+				.append(" injected=").append(String.format(Locale.ROOT, "%.2f",
+						MarkerClock.injectedDriftSeconds())).append('\n');
 
 		PlaybackHandle worldHandle = WorldPlaybackChannel.handle();
 		String playlistRef = "n/a";
@@ -290,10 +293,14 @@ public class MobBattleMusicCommands
 				.append(" rev=").append(revRef).append('\n');
 
 		String previewState;
-		if (PreviewChannel.isActive() && handler.getPreviewPlayer().isPlaying())
+		if (!PreviewChannel.isActive())
+			previewState = "STOPPED";
+		else if (handler.getPreviewPlayer().isPlaying())
 			previewState = "PLAYING";
 		else
-			previewState = "STOPPED";
+			// AUD-30 v1.2: download/buffering phase of an external preview
+			// (the preview player is never manually paused)
+			previewState = "PREPARING";
 		output.append("preview.state=").append(previewState)
 				.append(" pos=").append(formatSeconds(PreviewChannel.positionMillis()))
 				.append(" track=").append(PreviewChannel.currentTrack() == null
