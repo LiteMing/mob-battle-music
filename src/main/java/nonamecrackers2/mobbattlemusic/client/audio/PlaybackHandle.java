@@ -4,44 +4,25 @@ import javax.annotation.Nullable;
 
 public final class PlaybackHandle
 {
-	private final boolean preview;
 	private final String track;
-	private final long startedNanos;
 	private final long startedEpochMillis;
 	private volatile @Nullable SourceRef sourceRef;
 	private volatile boolean stopped;
 	
-	private PlaybackHandle(boolean preview, String track)
+	private PlaybackHandle(String track)
 	{
-		this.preview = preview;
 		this.track = track;
-		this.startedNanos = System.nanoTime();
 		this.startedEpochMillis = System.currentTimeMillis();
 	}
 	
-	public static PlaybackHandle world(String track)
+	public static PlaybackHandle create(String track)
 	{
-		return new PlaybackHandle(false, track);
-	}
-	
-	public static PlaybackHandle preview(String track)
-	{
-		return new PlaybackHandle(true, track);
-	}
-	
-	public boolean isPreview()
-	{
-		return this.preview;
+		return new PlaybackHandle(track);
 	}
 	
 	public String track()
 	{
 		return this.track;
-	}
-	
-	public long startedNanos()
-	{
-		return this.startedNanos;
 	}
 	
 	// AUD-22: client-side wall-clock start of this playback (sent to the server)

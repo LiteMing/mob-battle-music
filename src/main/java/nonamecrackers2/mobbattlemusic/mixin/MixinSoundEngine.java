@@ -23,6 +23,7 @@ import net.minecraft.client.sounds.SoundEngine;
 import net.minecraft.sounds.SoundSource;
 import nonamecrackers2.mobbattlemusic.client.init.MobBattleMusicClientCapabilities;
 import nonamecrackers2.mobbattlemusic.client.audio.GlobalAudioFilterManager;
+import nonamecrackers2.mobbattlemusic.client.audio.WorldPlaybackChannel;
 import nonamecrackers2.mobbattlemusic.client.sound.MobBattleTrack;
 import nonamecrackers2.mobbattlemusic.mixin.MixinChannelAccessor;
 
@@ -60,7 +61,8 @@ public abstract class MixinSoundEngine
 	{
 		GlobalAudioFilterManager.refreshMbmChannels(this.instanceToChannel);
 		for (Map.Entry<SoundInstance, ChannelAccess.ChannelHandle> entry : this.instanceToChannel.entrySet()) {
-			if (entry.getKey() instanceof MobBattleTrack track && !track.isPreview()) {
+			// AUD-35: scope by the main channel's own collection, not a flag
+			if (entry.getKey() instanceof MobBattleTrack track && WorldPlaybackChannel.isEngineTrack(track)) {
 				long startPosition = track.beginStartPositionAttempt();
 				if (startPosition > 0L) {
 					entry.getValue().execute(channel -> {

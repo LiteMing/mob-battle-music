@@ -40,6 +40,11 @@ public final class WorldPlaybackChannel
 	
 	private static final Logger LOGGER = LogManager.getLogger("mobbattlemusic/WorldPlaybackChannel");
 	
+	// AUD-35: this channel owns its own engine-track collection; scopes (mute,
+	// stop, invalidation) are decided by collection membership, never by flags
+	private static final java.util.Set<MobBattleTrack> ENGINE_TRACKS =
+			java.util.concurrent.ConcurrentHashMap.newKeySet();
+	
 	private static volatile ChannelState state = ChannelState.STOPPED;
 	private static volatile @Nullable PlaybackHandle handle;
 	private static SessionState session = SessionState.NO_WORLD;
@@ -190,7 +195,8 @@ public final class WorldPlaybackChannel
 	/**
 	 * AUD-11: with the engine paused (tick(true) does nothing in 1.20.1), channel
 	 * volumes are no longer refreshed by the mixin, so mute() must reach the
-	 * built-in sound leg directly. Preview tracks are excluded (AUD-4).
+	 * built-in sound leg directly. Scope: this channel's own track collection
+	 * (AUD-35); the preview channel's tracks are never members.
 	 */
 	private static void applyMuteToSoundEngineTracks()
 	{
@@ -199,11 +205,29 @@ public final class WorldPlaybackChannel
 		if (manager == null)
 			return;
 		SoundEngine engine = ((MixinSoundManagerAccessor) manager).mobbattlemusic$getSoundEngine();
-		for (Map.Entry<SoundInstance, ChannelAccess.ChannelHandle> entry :
-				((MixinSoundEngineAccessor) engine).mobbattlemusic$getInstanceToChannel().entrySet()) {
-			if (entry.getKey() instanceof MobBattleTrack track && !track.isPreview())
-				entry.getValue().execute(channel -> channel.setVolume(0.0F));
+		Map<SoundInstance, ChannelAccess.ChannelHandle> instanceToChannel =
+				((MixinSoundEngineAccessor) engine).mobbattlemusic$getInstanceToChannel();
+		for (MobBattleTrack track : WorldPlaybackChannel.ENGINE_TRACKS) {
+			ChannelAccess.ChannelHandle channelHandle = instanceToChannel.get(track);
+			if (channelHandle != null)
+				channelHandle.execute(channel -> channel.setVolume(0.0F));
 		}
+	}
+	
+	// AUD-35: registration API for the selection engine (BattleMusicManager)
+	public static void registerEngineTrack(MobBattleTrack track)
+	{
+		WorldPlaybackChannel.ENGINE_TRACKS.add(track);
+	}
+	
+	public static void unregisterEngineTrack(MobBattleTrack track)
+	{
+		WorldPlaybackChannel.ENGINE_TRACKS.remove(track);
+	}
+	
+	public static boolean isEngineTrack(MobBattleTrack track)
+	{
+		return WorldPlaybackChannel.ENGINE_TRACKS.contains(track);
 	}
 	
 	private static void syncHandle()
@@ -241,7 +265,7 @@ public final class WorldPlaybackChannel
 	private static void beginPlayback(ExternalMusicHandler handler)
 	{
 		String url = handler.getCurrentlyPlayingUrl();
-		PlaybackHandle created = PlaybackHandle.world(url);
+		PlaybackHandle created = PlaybackHandle.create(url);
 		MusicTracksManager manager = MusicTracksManager.getInstance();
 		MusicTracksManager.PlaybackTarget target = manager.resolvePlaybackTarget(url);
 		created.setSourceRef(target == null ? SourceRef.direct(url == null ? "" : url)
@@ -258,7 +282,7 @@ public final class WorldPlaybackChannel
 	private static void reportPlaybackStart()
 	{
 		PlaybackHandle active = WorldPlaybackChannel.handle;
-		if (active == null || active.isPreview())
+		if (active == null)
 			return;
 		MobBattleMusicNetwork.sendPlaybackStartReport(active.track(), active.startedEpochMillis());
 		WorldPlaybackChannel.lastClockReportMillis = System.currentTimeMillis();

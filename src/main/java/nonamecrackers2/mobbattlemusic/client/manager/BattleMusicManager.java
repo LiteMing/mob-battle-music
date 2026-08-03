@@ -31,6 +31,7 @@ import net.minecraft.world.entity.ai.targeting.TargetingConditions;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.item.TieredItem;
+import nonamecrackers2.mobbattlemusic.client.audio.WorldPlaybackChannel;
 import nonamecrackers2.mobbattlemusic.client.config.MobBattleMusicConfig;
 import nonamecrackers2.mobbattlemusic.client.music.ExternalMusicHandler;
 import nonamecrackers2.mobbattlemusic.client.music.MusicMetadataCache;
@@ -215,6 +216,8 @@ public class BattleMusicManager {
 			MobBattleTrack track = entry.getValue();
 			if (track.isStopped() || !this.minecraft.getSoundManager().isActive(track)) {
 				LOGGER.debug("Removing track {}, it is no longer playing", track);
+				// AUD-35: unregister from the main channel's own collection
+				WorldPlaybackChannel.unregisterEngineTrack(track);
 				scheduleIdleNextStart(entry.getKey());
 				MusicTracksManager.getInstance().clearSoundSessionSelection(entry.getKey().getTrack());
 				iterator.remove();
@@ -380,8 +383,10 @@ public class BattleMusicManager {
 			ResourceLocation soundTrackLocation = tracksManager.selectSoundTrack(trackLocation);
 			if (soundPlaylist && soundTrackLocation == null) {
 				MobBattleTrack existingTrack = this.tracks.remove(type);
-				if (existingTrack != null)
+				if (existingTrack != null) {
+					WorldPlaybackChannel.unregisterEngineTrack(existingTrack);
 					existingTrack.stop();
+				}
 				tracksManager.clearSoundSessionSelection(trackLocation);
 				return;
 			}
@@ -389,6 +394,7 @@ public class BattleMusicManager {
 			MobBattleTrack track = null;
 			MobBattleTrack existingTrack = this.tracks.get(type);
 			if (existingTrack != null && !existingTrack.getTrackLocation().equals(resolvedTrackLocation)) {
+				WorldPlaybackChannel.unregisterEngineTrack(existingTrack);
 				existingTrack.stop();
 				this.tracks.remove(type);
 				tracksManager.clearSoundSessionSelection(trackLocation);
@@ -399,7 +405,9 @@ public class BattleMusicManager {
 					&& this.minecraft.options.getSoundSourceVolume(SoundSource.MASTER) > 0.0F) {
 				track = this.tracks.computeIfAbsent(type, t -> {
 					MobBattleTrack newTrack = new MobBattleTrack(resolvedTrackLocation, type.getFadeTime(),
-							!type.isIdlePlayback(), false, synchronizedPosition);
+							!type.isIdlePlayback(), synchronizedPosition);
+					// AUD-35: register into the main channel's own collection
+					WorldPlaybackChannel.registerEngineTrack(newTrack);
 					this.minecraft.getSoundManager().play(newTrack);
 					this.notifyTrackSwitch(tracksManager.describeTrack(trackLocation, resolvedTrackLocation.toString()));
 					LOGGER.debug("Beginning track {}", type);
@@ -602,6 +610,8 @@ public class BattleMusicManager {
 		var iterator = this.tracks.values().iterator();
 		while (iterator.hasNext()) {
 			var track = iterator.next();
+			// AUD-35: unregister from the main channel's own collection
+			WorldPlaybackChannel.unregisterEngineTrack(track);
 			track.stop();
 			iterator.remove();
 		}

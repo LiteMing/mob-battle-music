@@ -23,16 +23,16 @@ public final class PreviewChannel
 	{
 		stop();
 		ExternalMusicHandler.getInstance().playPreviewMusic(url, fadeTime, durationHintMillis);
-		PreviewChannel.handle = PlaybackHandle.preview(url);
+		PreviewChannel.handle = PlaybackHandle.create(url);
 	}
 	
 	public static void playSound(ResourceLocation sound, int fadeTime)
 	{
 		stop();
-		MobBattleTrack track = MobBattleTrack.preview(sound, fadeTime);
+		MobBattleTrack track = new MobBattleTrack(sound, fadeTime, true, 0L);
 		PreviewChannel.soundTrack = track;
 		Minecraft.getInstance().getSoundManager().play(track);
-		PreviewChannel.handle = PlaybackHandle.preview(sound.toString());
+		PreviewChannel.handle = PlaybackHandle.create(sound.toString());
 	}
 	
 	public static void stop()

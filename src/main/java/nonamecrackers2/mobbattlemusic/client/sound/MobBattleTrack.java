@@ -12,7 +12,6 @@ public class MobBattleTrack extends AbstractSoundInstance implements TickableSou
 	public static final int MAX_EMPTY_TIME = 300;
 	private static volatile boolean mainPlaybackMuted;
 	private final int fadeTime;
-	private final boolean preview;
 	private final long startPositionMillis;
 	private boolean startPositionPending;
 	private boolean startPositionAttempting;
@@ -27,20 +26,13 @@ public class MobBattleTrack extends AbstractSoundInstance implements TickableSou
 
 	public MobBattleTrack(ResourceLocation sound, int fadeTime, boolean looping)
 	{
-		this(sound, fadeTime, looping, false);
+		this(sound, fadeTime, looping, 0L);
 	}
 
-	public MobBattleTrack(ResourceLocation sound, int fadeTime, boolean looping, boolean preview)
-	{
-		this(sound, fadeTime, looping, preview, 0L);
-	}
-
-	public MobBattleTrack(ResourceLocation sound, int fadeTime, boolean looping, boolean preview,
-			long startPositionMillis)
+	public MobBattleTrack(ResourceLocation sound, int fadeTime, boolean looping, long startPositionMillis)
 	{
 		super(sound, BattleMusicManager.DEFAULT_SOUND_SOURCE, SoundInstance.createUnseededRandom());
 		this.fadeTime = fadeTime;
-		this.preview = preview;
 		this.startPositionMillis = Math.max(0L, startPositionMillis);
 		this.startPositionPending = this.startPositionMillis > 0L;
 		this.looping = looping;
@@ -65,16 +57,6 @@ public class MobBattleTrack extends AbstractSoundInstance implements TickableSou
 	public void setTargetedVolume(float volume)
 	{
 		this.targetedVolume = volume;
-	}
-
-	public static MobBattleTrack preview(ResourceLocation sound, int fadeTime)
-	{
-		return new MobBattleTrack(sound, fadeTime, true, true);
-	}
-
-	public boolean isPreview()
-	{
-		return this.preview;
 	}
 
 	public static boolean isMainPlaybackMuted()
