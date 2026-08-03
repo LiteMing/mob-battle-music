@@ -57,33 +57,31 @@ public final class MarkerClock
 	// the playback session generation that captured it
 	public record AnchorToken(long sourceVersion, String trackId, long playbackSessionGeneration) {}
 
-	// K6-B: the anchor is stored in the SERVER clock domain - the offset is
-	// provided by the connection-level estimator and applied before the anchor
-	// reaches this class; no cross-machine wall-clock subtraction anywhere
-	private record ClockSource(String trackId, long startEpochServerMillis, long sendServerEpochMillis,
+	// K7-B: the anchor is a LOCAL self-anchor - the clock domain is the
+	// client's own wall clock. There is no shared server canonical anchor;
+	// the connection offset exists only for the future CUE canonical server
+	// anchor and never enters this class. No cross-machine subtraction.
+	private record ClockSource(String trackId, long startEpochLocalMillis, long recvLocalEpochMillis,
 			long recvClientEpochMillis) {}
 
 	/**
-	 * K6-B/K7-A: the only anchor entry. All source mutations are synchronized
-	 * so version increments are atomic. AUD-50: re-anchors resume the clock.
+	 * K7-B/K7-A: the only anchor entry - a LOCAL self-anchor
+	 * (realignLocalSelfAnchor(trackId, localPosition, localNow)). All source
+	 * mutations are synchronized so version increments are atomic. AUD-50:
+	 * re-anchors resume the clock. PAUSED-leave may realign exactly once;
+	 * clock-probe responses never reach this method.
 	 */
-	public static synchronized void realignServerDomain(String trackId, long startEpochServerMillis,
-			long sendServerEpochMillis)
+	public static synchronized void realignLocalSelfAnchor(String trackId, long localPositionMillis,
+			long localNowMillis)
 	{
 		MarkerClock.sourceVersion++;
-		MarkerClock.source = new ClockSource(trackId, startEpochServerMillis, sendServerEpochMillis,
-				System.currentTimeMillis());
-		MarkerClock.lastAnchorMillis = System.currentTimeMillis();
+		MarkerClock.source = new ClockSource(trackId, localNowMillis - localPositionMillis,
+				localNowMillis, localNowMillis);
+		MarkerClock.lastAnchorMillis = localNowMillis;
 		MarkerClock.state = ClockState.RUNNING;
 		MarkerClock.anchorValid = true;
-		LOGGER.debug("[MBM] clock re-anchor track={} startEpochServer={}ms", trackId, startEpochServerMillis);
-	}
-
-	// K6-B: the connection-level offset lives in ClockOffsetEstimator; this
-	// accessor forwards for anchor conversions
-	public static double clockOffsetMillis()
-	{
-		return ClockOffsetEstimator.offsetMillis();
+		LOGGER.debug("[MBM] clock local self-anchor track={} startLocal={}ms", trackId,
+				localNowMillis - localPositionMillis);
 	}
 
 	public static synchronized void invalidate()
@@ -252,13 +250,12 @@ public final class MarkerClock
 
 	private static double serverPositionSeconds(ClockSource clockSource)
 	{
-		// K5: all terms are in a single clock domain - the anchor is stored in
-		// the server domain (startEpochServer, sendServerEpoch) and recvClient
-		// is a client-domain receive moment, so (now - recvClient) is local
-		// elapsed time while (sendServer - startEpochServer) is server-elapsed
-		// time; no cross-machine wall-clock subtraction remains
+		// K7-B: the anchor is a LOCAL self-anchor - all four terms live in the
+		// client's own wall-clock domain: (now - recv) is local elapsed time
+		// and (recv - start) is the anchor's local position; no cross-machine
+		// subtraction anywhere
 		long elapsed = System.currentTimeMillis() - clockSource.recvClientEpochMillis()
-				+ clockSource.sendServerEpochMillis() - clockSource.startEpochServerMillis();
+				+ clockSource.recvLocalEpochMillis() - clockSource.startEpochLocalMillis();
 		return Math.max(0.0D, elapsed / 1000.0D);
 	}
 

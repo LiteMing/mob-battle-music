@@ -4,15 +4,24 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 /**
- * K6-B: connection-level clock calibration (CUE-4 minimal-RTT handshake).
- * Owns ONLY t1/t2/t3/t4, RTT and the offset - it never touches any track
- * anchor. A new window opens every 60s; each window requires at least
- * MIN_SAMPLES_PER_WINDOW finite samples and keeps the lowest-RTT sample as
- * the window's offset. world disconnect/reset clears everything.
+ * K7-B: connection-level clock calibration (CUE-4 minimal-RTT handshake) fed
+ * ONLY by the dedicated ClockOffsetProbeRequest/Response pair - playback
+ * start/resume packets are no longer probes. Owns ONLY t1/t2/t3/t4, RTT and
+ * the offset; it never touches any track anchor and never calls
+ * MarkerClock.realign*(). A bounded probe burst (at most 5 requests per 60s
+ * window, sent at 0/100/250/500/1000ms) feeds at most 5 C2S + 5 S2C packets
+ * per minute.
+ *
+ * Offset state:
+ *   UNKNOWN     - no valid sample in the current window; offsetMillis() is
+ *                 NaN and must never be treated as 0.0
+ *   PROVISIONAL - 1-4 valid samples; the current lowest-RTT sample is used
+ *   CALIBRATED  - >=5 valid samples; the window's lowest-RTT sample is used
  *
  * offset = ((t2-t1)+(t3-t4))/2 under the symmetric-delay assumption;
- * the server-receive moment t2 is captured on the network thread BEFORE the
- * server main-thread queue, so the queueing delay Q never enters the offset
+ * t2 is captured on the server network thread BEFORE the server main-thread
+ * queue and t4 on the client network thread BEFORE the client main-thread
+ * queue, so both queueing delays (server Qs, client Qc) exit the formula
  * (see the derivation in the PR deliverable).
  */
 public final class ClockOffsetEstimator
@@ -20,11 +29,21 @@ public final class ClockOffsetEstimator
 	public static final long WINDOW_MILLIS = 60_000L;
 	public static final int MIN_SAMPLES_PER_WINDOW = 5;
 
+	public enum OffsetState
+	{
+		// no legal sample in the current window - offsetMillis() returns NaN
+		UNKNOWN,
+		// 1-4 legal samples - the current lowest-RTT sample is used
+		PROVISIONAL,
+		// >=5 legal samples - the window's lowest-RTT sample is used
+		CALIBRATED
+	}
+
 	private static final Logger LOGGER = LogManager.getLogger("mobbattlemusic/ClockOffsetEstimator");
 
 	private static final Object LOCK = new Object();
-	private static volatile double currentOffsetMillis;
-	private static volatile boolean calibrated;
+	private static volatile double currentOffsetMillis = Double.NaN;
+	private static volatile OffsetState currentState = OffsetState.UNKNOWN;
 	private static volatile long windowStartMillis;
 	private static long windowSampleCount;
 	private static long windowBestRttMillis = Long.MAX_VALUE;
@@ -33,8 +52,10 @@ public final class ClockOffsetEstimator
 	private ClockOffsetEstimator() {}
 
 	/**
-	 * Feed one handshake sample (t1 client send, t2 server recv, t3 server
-	 * send, t4 client recv). Finite samples only: a negative RTT is rejected.
+	 * K7-B: feed one probe response (t1 client send, t2 server recv, t3
+	 * server send, t4 client recv - all captured pre-queue on network
+	 * threads). Finite samples only: a negative RTT is rejected. Thread-safe
+	 * for direct consumption by the client network thread.
 	 */
 	public static void sample(long t1, long t2, long t3, long t4)
 	{
@@ -46,8 +67,7 @@ public final class ClockOffsetEstimator
 			if (windowStartMillis <= 0L)
 				windowStartMillis = t4;
 			if (t4 - windowStartMillis > WINDOW_MILLIS) {
-				// new window - the previous window's best sample stays as the
-				// current offset; a fresh window needs MIN_SAMPLES again
+				// a stale window's samples must never leak into the next one
 				windowStartMillis = t4;
 				windowSampleCount = 0;
 				windowBestRttMillis = Long.MAX_VALUE;
@@ -59,31 +79,51 @@ public final class ClockOffsetEstimator
 				windowBestOffsetMillis = offset;
 			}
 			if (windowSampleCount >= MIN_SAMPLES_PER_WINDOW) {
-				// the lowest-RTT sample of this window becomes authoritative
 				currentOffsetMillis = windowBestOffsetMillis;
-				calibrated = true;
+				currentState = OffsetState.CALIBRATED;
+			} else {
+				currentOffsetMillis = windowBestOffsetMillis;
+				currentState = OffsetState.PROVISIONAL;
 			}
 		}
 	}
 
-	// K6-B: the calibrated offset (server clock - client clock), 0 when not
-	// calibrated yet
+	/**
+	 * K7-B: the current offset (server clock - client clock). UNKNOWN (no
+	 * legal sample in the current window) returns NaN - never 0.0.
+	 */
 	public static double offsetMillis()
 	{
-		return ClockOffsetEstimator.calibrated ? ClockOffsetEstimator.currentOffsetMillis : 0.0D;
+		synchronized (LOCK) {
+			if (ClockOffsetEstimator.windowStartMillis <= 0L
+					|| System.currentTimeMillis() - ClockOffsetEstimator.windowStartMillis > WINDOW_MILLIS)
+				return Double.NaN;
+			return ClockOffsetEstimator.currentOffsetMillis;
+		}
 	}
 
+	public static OffsetState state()
+	{
+		synchronized (LOCK) {
+			if (ClockOffsetEstimator.windowStartMillis <= 0L
+					|| System.currentTimeMillis() - ClockOffsetEstimator.windowStartMillis > WINDOW_MILLIS)
+				return OffsetState.UNKNOWN;
+			return ClockOffsetEstimator.currentState;
+		}
+	}
+
+	// K7-B: the non-NaN value is only usable in PROVISIONAL/CALIBRATED states
 	public static boolean isCalibrated()
 	{
-		return ClockOffsetEstimator.calibrated;
+		return ClockOffsetEstimator.state() == OffsetState.CALIBRATED;
 	}
 
-	// K6-B: world disconnect / reset - everything is cleared
+	// K7-B: world disconnect / reset - everything is cleared back to UNKNOWN
 	public static void reset()
 	{
 		synchronized (LOCK) {
-			ClockOffsetEstimator.currentOffsetMillis = 0.0D;
-			ClockOffsetEstimator.calibrated = false;
+			ClockOffsetEstimator.currentOffsetMillis = Double.NaN;
+			ClockOffsetEstimator.currentState = OffsetState.UNKNOWN;
 			ClockOffsetEstimator.windowStartMillis = 0L;
 			ClockOffsetEstimator.windowSampleCount = 0;
 			ClockOffsetEstimator.windowBestRttMillis = Long.MAX_VALUE;

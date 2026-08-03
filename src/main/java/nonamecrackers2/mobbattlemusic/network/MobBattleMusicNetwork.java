@@ -9,10 +9,11 @@ import net.minecraftforge.network.NetworkRegistry;
 import net.minecraftforge.network.PacketDistributor;
 import net.minecraftforge.network.simple.SimpleChannel;
 import nonamecrackers2.mobbattlemusic.MobBattleMusicMod;
+import nonamecrackers2.mobbattlemusic.client.audio.ClockOffsetProbeScheduler;
 
 public class MobBattleMusicNetwork
 {
-	private static final String PROTOCOL_VERSION = "15";
+	private static final String PROTOCOL_VERSION = "16";
 	private static int nextId;
 	private static final SimpleChannel CHANNEL = NetworkRegistry.ChannelBuilder
 			.named(MobBattleMusicMod.id("main"))
@@ -76,15 +77,26 @@ public class MobBattleMusicNetwork
 		CHANNEL.messageBuilder(PlaybackStartReportPacket.class, nextId++, NetworkDirection.PLAY_TO_SERVER)
 				.encoder(PlaybackStartReportPacket::encode)
 				.decoder(PlaybackStartReportPacket::decode)
-				// K6-B: the server-receive moment t2 must be captured BEFORE
-				// the server main-thread queue - the consumer runs on the
-				// network thread
-				.consumerNetworkThread(MobBattleMusicNetwork::handlePlaybackStartReport)
+				.consumerMainThread(MobBattleMusicNetwork::handlePlaybackStartReport)
 				.add();
 		CHANNEL.messageBuilder(PlaybackClockSyncPacket.class, nextId++, NetworkDirection.PLAY_TO_CLIENT)
 				.encoder(PlaybackClockSyncPacket::encode)
 				.decoder(PlaybackClockSyncPacket::decode)
 				.consumerMainThread(MobBattleMusicNetwork::handlePlaybackClockSync)
+				.add();
+		// K7-B: the dedicated clock probe pair - t2 is captured on the server
+		// network thread BEFORE the server main-thread queue, t4 on the
+		// client network thread BEFORE the client main-thread queue; the
+		// estimator consumes the sample directly on the network thread
+		CHANNEL.messageBuilder(ClockOffsetProbeRequestPacket.class, nextId++, NetworkDirection.PLAY_TO_SERVER)
+				.encoder(ClockOffsetProbeRequestPacket::encode)
+				.decoder(ClockOffsetProbeRequestPacket::decode)
+				.consumerNetworkThread(MobBattleMusicNetwork::handleClockOffsetProbeRequest)
+				.add();
+		CHANNEL.messageBuilder(ClockOffsetProbeResponsePacket.class, nextId++, NetworkDirection.PLAY_TO_CLIENT)
+				.encoder(ClockOffsetProbeResponsePacket::encode)
+				.decoder(ClockOffsetProbeResponsePacket::decode)
+				.consumerNetworkThread(MobBattleMusicNetwork::handleClockOffsetProbeResponse)
 				.add();
 	}
 	
@@ -138,14 +150,54 @@ public class MobBattleMusicNetwork
 		CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), packet);
 	}
 
-	public static void sendPlaybackStartReport(String trackId, long clientStartEpochMillis,
-			long clientSendEpochMillis, long sessionGeneration)
+	public static void sendPlaybackStartReport(String trackId, long clientStartEpochMillis, long sessionGeneration)
 	{
-		CHANNEL.sendToServer(new PlaybackStartReportPacket(trackId, clientStartEpochMillis,
-				clientSendEpochMillis, sessionGeneration));
+		CHANNEL.sendToServer(new PlaybackStartReportPacket(trackId, clientStartEpochMillis, sessionGeneration));
+	}
+
+	// K7-B: the bounded probe burst - called by ClockOffsetProbeScheduler
+	public static void sendClockProbeRequest(ClockOffsetProbeRequestPacket packet)
+	{
+		CHANNEL.sendToServer(packet);
 	}
 
 	public static void sendPlaybackClockSync(ServerPlayer player, PlaybackClockSyncPacket packet)
+	{
+		CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), packet);
+	}
+
+	/**
+	 * K7-B: probe request arrives on the server NETWORK thread - t2 is
+	 * captured here, before the main-thread queue (none needed: the response
+	 * is sent directly, t3 captured right before the send).
+	 */
+	private static void handleClockOffsetProbeRequest(ClockOffsetProbeRequestPacket packet,
+			Supplier<NetworkEvent.Context> context)
+	{
+		long t2 = System.currentTimeMillis();
+		NetworkEvent.Context ctx = context.get();
+		ServerPlayer player = ctx.getSender();
+		if (player == null)
+			return;
+		// t3 is captured immediately before the actual send
+		long t3 = System.currentTimeMillis();
+		MobBattleMusicNetwork.sendClockProbeResponse(player,
+				new ClockOffsetProbeResponsePacket(packet.probeNonce(), packet.clientSendEpochMillis(), t2, t3));
+	}
+
+	/**
+	 * K7-B: probe response arrives on the client NETWORK thread - t4 is
+	 * captured here, before the client main-thread queue, and the sample is
+	 * fed straight into the thread-safe estimator. NEVER re-anchors: a probe
+	 * response must not call any MarkerClock.realign*().
+	 */
+	private static void handleClockOffsetProbeResponse(ClockOffsetProbeResponsePacket packet,
+			Supplier<NetworkEvent.Context> context)
+	{
+		ClockOffsetProbeScheduler.handleProbeResponse(packet);
+	}
+
+	private static void sendClockProbeResponse(ServerPlayer player, ClockOffsetProbeResponsePacket packet)
 	{
 		CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), packet);
 	}

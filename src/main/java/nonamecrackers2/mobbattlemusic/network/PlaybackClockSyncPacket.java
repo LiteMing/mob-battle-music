@@ -6,58 +6,28 @@ import net.minecraft.network.FriendlyByteBuf;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.fml.DistExecutor;
 import net.minecraftforge.network.NetworkEvent;
-import nonamecrackers2.mobbattlemusic.client.audio.MarkerClock;
 
 /**
- * S2C: server clock-sync response (AUD-22/K6-B). Carries the CUE-4 handshake
- * sample: t1 (echoed), t2 (server recv, captured pre-queue), t3 (server
- * send), plus the echoed session generation. The client feeds the estimator
- * and applies a normalized anchor only when the generation matches - a stale
- * response must never overwrite a newer track.
+ * S2C: anchor confirmation (AUD-22/K7-B). The anchor is a LOCAL self-anchor,
+ * so this packet only confirms that the server saw the playback start report -
+ * it carries NO t1/t2/t3/t4 probe timestamps (probing is owned by
+ * ClockOffsetProbeResponsePacket) and the client handler NEVER re-anchors on
+ * it. The echoed session generation rejects stale confirmations.
  */
 public class PlaybackClockSyncPacket
 {
 	private final String trackId;
-	private final long startEpochMillis;
-	private final long clientSendEpochMillis;
-	private final long serverRecvEpochMillis;
-	private final long sendServerEpochMillis;
 	private final long sessionGeneration;
 
-	public PlaybackClockSyncPacket(String trackId, long startEpochMillis, long clientSendEpochMillis,
-			long serverRecvEpochMillis, long sendServerEpochMillis, long sessionGeneration)
+	public PlaybackClockSyncPacket(String trackId, long sessionGeneration)
 	{
 		this.trackId = trackId;
-		this.startEpochMillis = startEpochMillis;
-		this.clientSendEpochMillis = clientSendEpochMillis;
-		this.serverRecvEpochMillis = serverRecvEpochMillis;
-		this.sendServerEpochMillis = sendServerEpochMillis;
 		this.sessionGeneration = sessionGeneration;
 	}
 
 	public String trackId()
 	{
 		return this.trackId;
-	}
-
-	public long startEpochMillis()
-	{
-		return this.startEpochMillis;
-	}
-
-	public long clientSendEpochMillis()
-	{
-		return this.clientSendEpochMillis;
-	}
-
-	public long serverRecvEpochMillis()
-	{
-		return this.serverRecvEpochMillis;
-	}
-
-	public long sendServerEpochMillis()
-	{
-		return this.sendServerEpochMillis;
 	}
 
 	public long sessionGeneration()
@@ -68,17 +38,12 @@ public class PlaybackClockSyncPacket
 	public void encode(FriendlyByteBuf buffer)
 	{
 		buffer.writeUtf(this.trackId);
-		buffer.writeLong(this.startEpochMillis);
-		buffer.writeLong(this.clientSendEpochMillis);
-		buffer.writeLong(this.serverRecvEpochMillis);
-		buffer.writeLong(this.sendServerEpochMillis);
 		buffer.writeLong(this.sessionGeneration);
 	}
 
 	public static PlaybackClockSyncPacket decode(FriendlyByteBuf buffer)
 	{
-		return new PlaybackClockSyncPacket(buffer.readUtf(), buffer.readLong(), buffer.readLong(),
-				buffer.readLong(), buffer.readLong(), buffer.readLong());
+		return new PlaybackClockSyncPacket(buffer.readUtf(), buffer.readLong());
 	}
 
 	public void handle(Supplier<NetworkEvent.Context> context)

@@ -108,6 +108,10 @@ public final class WorldPlaybackChannel
 	 */
 	public static void update(SessionState newSession, boolean newFocused)
 	{
+		// K7-B: the bounded clock-probe burst advances every client tick -
+		// connection-level, independent of playback state
+		ClockOffsetProbeScheduler.tick();
+		
 		ChannelState target = targetOf(newSession, newFocused);
 		ChannelState previous = WorldPlaybackChannel.state;
 		boolean edge = target != previous;
@@ -181,12 +185,11 @@ public final class WorldPlaybackChannel
 					&& localPosition > 0L;
 			if (prerequisites) {
 				// AUD-50: re-anchor from the local position, never seek.
-				// K5: the anchor is expressed in the SERVER clock domain -
-				// local times are converted with the sampled clock offset
+				// K7-B: a LOCAL self-anchor - no server-domain conversion, no
+				// clock offset in the anchor path. The PAUSED-leave realigns
+				// exactly once; clock-probe responses never realign.
 				long now = System.currentTimeMillis();
-				long offset = Math.round(MarkerClock.clockOffsetMillis());
-				MarkerClock.realignServerDomain(active.track(),
-						now + offset - localPosition, now + offset);
+				MarkerClock.realignLocalSelfAnchor(active.track(), localPosition, now);
 				MarkerClock.clearReanchorRequest();
 				// K6-A: the resume report uses the true resume moment
 				// (now - localPosition) - covering both PAUSED->PLAYING and
@@ -389,6 +392,7 @@ public final class WorldPlaybackChannel
 		// K6-B: world unload resets the connection-level estimator and the
 		// session generation
 		ClockOffsetEstimator.reset();
+		ClockOffsetProbeScheduler.reset();
 		WorldPlaybackChannel.playbackSessionGeneration = 0L;
 		WorldPlaybackChannel.lastSeekAtMillis = 0L;
 		WorldPlaybackChannel.recentSeekCount = 0;
@@ -603,6 +607,10 @@ public final class WorldPlaybackChannel
 		// invalidated atomically; an in-flight seek's old token can never
 		// restore across this boundary
 		MarkerClock.invalidateForTrackSwitch();
+		// K7-B: a new playback session starts with a LOCAL self-anchor at
+		// position 0 - the track is immediately anchored without waiting for
+		// any network round trip (the anchor is local by definition)
+		MarkerClock.realignLocalSelfAnchor(url == null ? "" : url, 0L, System.currentTimeMillis());
 		// AUD-52: track switch resets the seek accounting
 		WorldPlaybackChannel.lastSeekAtMillis = 0L;
 		WorldPlaybackChannel.seekSettleUntilMillis = 0L;
@@ -646,10 +654,11 @@ public final class WorldPlaybackChannel
 		PlaybackHandle active = WorldPlaybackChannel.handle;
 		if (active == null)
 			return;
-		// K6-B: the report carries its own send time (t1) and the session
-		// generation for the CUE-4 handshake / staleness check
+		// K7-B: the report is a pure anchor notification - it carries the
+		// session generation for staleness, and is NOT an offset probe (the
+		// dedicated ClockOffsetProbeRequestPacket owns probing)
 		MobBattleMusicNetwork.sendPlaybackStartReport(active.track(), active.startedEpochMillis(),
-				System.currentTimeMillis(), WorldPlaybackChannel.playbackSessionGeneration);
+				WorldPlaybackChannel.playbackSessionGeneration);
 	}
 	
 	private static void reportPlaybackResume(long resumeEpochMillis)
@@ -658,22 +667,19 @@ public final class WorldPlaybackChannel
 		if (active == null)
 			return;
 		MobBattleMusicNetwork.sendPlaybackStartReport(active.track(), resumeEpochMillis,
-				System.currentTimeMillis(), WorldPlaybackChannel.playbackSessionGeneration);
+				WorldPlaybackChannel.playbackSessionGeneration);
 	}
 	
-	// K6-B: S2C clock-sync response - feed the connection-level estimator,
-	// then apply the normalized anchor only when the session generation
-	// matches (a stale response must never overwrite a newer track)
+	// K7-B: the S2C anchor confirmation - the anchor is a LOCAL self-anchor,
+	// so this packet only confirms the server saw the start report. It never
+	// realigns (the probe response owns calibration and never realigns either)
 	public static void handleClockSync(PlaybackClockSyncPacket packet)
 	{
-		long t4 = System.currentTimeMillis();
-		ClockOffsetEstimator.sample(packet.clientSendEpochMillis(), packet.serverRecvEpochMillis(),
-				packet.sendServerEpochMillis(), t4);
-		if (packet.sessionGeneration() != WorldPlaybackChannel.playbackSessionGeneration)
+		if (packet.sessionGeneration() != WorldPlaybackChannel.playbackSessionGeneration) {
+			LOGGER.debug("[MBM] clock sync confirmation dropped (stale session generation)");
 			return;
-		long offset = Math.round(ClockOffsetEstimator.offsetMillis());
-		MarkerClock.realignServerDomain(packet.trackId(),
-				packet.startEpochMillis() + offset, packet.sendServerEpochMillis());
+		}
+		LOGGER.debug("[MBM] clock sync confirmation for track {} (no re-anchor; local self-anchor)", packet.trackId());
 	}
 	
 	private static void tickClockAndInvalidation()
@@ -818,10 +824,9 @@ public final class WorldPlaybackChannel
 						return;
 					}
 					if (trackId != null) {
-						// K5: anchor in the server clock domain
-						long offset = Math.round(MarkerClock.clockOffsetMillis());
-						MarkerClock.realignServerDomain(trackId,
-								completedAt + offset - targetMillis, completedAt + offset);
+						// K7-B: a LOCAL self-anchor at the measured watermark
+						// position - the offset is never applied here
+						MarkerClock.realignLocalSelfAnchor(trackId, targetMillis, completedAt);
 					}
 					// K4 P0: rate-limit timing moves to queue time (attempt);
 					// onComplete no longer writes the attempt window
