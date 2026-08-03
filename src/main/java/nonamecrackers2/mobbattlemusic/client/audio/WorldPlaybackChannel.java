@@ -89,6 +89,15 @@ public final class WorldPlaybackChannel
 	// one (or restart playback in a new dimension)
 	private static volatile String currentIntentUrl;
 	private static volatile long intentVersion;
+	// K9-4: who selected the currently playing track - AUTO (selection
+	// engine), MAN (manual from the player dock), CUE (server-driven control)
+	public enum PlaybackOwner
+	{
+		AUTO,
+		MAN,
+		CUE
+	}
+	private static volatile PlaybackOwner playbackOwner = PlaybackOwner.AUTO;
 	// AUD-46/AUD-49: unified gated transition (fade out -> gain-zero poll ->
 	// action -> fade in). Single slot; new requests fail explicitly (AUD-49 #4).
 	private static @Nullable PendingGate pendingGate;
@@ -417,6 +426,8 @@ public final class WorldPlaybackChannel
 		ClockOffsetEstimator.reset();
 		ClockOffsetProbeScheduler.reset();
 		WorldPlaybackChannel.playbackSessionGeneration = 0L;
+		// K9-4: a real logout clears the selection owner
+		WorldPlaybackChannel.playbackOwner = PlaybackOwner.AUTO;
 		// K8-A: a real logout invalidates every in-flight gate and intent
 		WorldPlaybackChannel.currentIntentUrl = null;
 		WorldPlaybackChannel.intentVersion++;
@@ -447,6 +458,17 @@ public final class WorldPlaybackChannel
 		WorldPlaybackChannel.intentVersion++;
 		LOGGER.debug("[MBM] playback intent set to {} (intentVersion={})", url,
 				WorldPlaybackChannel.intentVersion);
+	}
+
+	// K9-4: the current track's selection owner
+	public static void setPlaybackOwner(PlaybackOwner owner)
+	{
+		WorldPlaybackChannel.playbackOwner = owner == null ? PlaybackOwner.AUTO : owner;
+	}
+
+	public static PlaybackOwner playbackOwner()
+	{
+		return WorldPlaybackChannel.playbackOwner;
 	}
 
 	public static long levelGeneration()

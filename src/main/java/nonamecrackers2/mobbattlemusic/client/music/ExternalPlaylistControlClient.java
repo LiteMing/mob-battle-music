@@ -2,6 +2,7 @@ package nonamecrackers2.mobbattlemusic.client.music;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
+import nonamecrackers2.mobbattlemusic.client.audio.WorldPlaybackChannel;
 import nonamecrackers2.mobbattlemusic.client.config.MobBattleMusicConfig;
 import nonamecrackers2.mobbattlemusic.client.gui.MusicPlaylistScreen;
 import nonamecrackers2.mobbattlemusic.client.resource.MusicTracksManager;
@@ -25,6 +26,11 @@ public class ExternalPlaylistControlClient
 			case PLAY_URL -> playUrl(packet.selection());
 			case STOP -> stop();
 		};
+		// K9-4: server-driven playback is marked CUE so the player dock shows
+		// the true selection owner (and refuses seeks on CUE tracks)
+		if (packet.action() == ExternalPlaylistControlPacket.Action.PLAY_SELECTION
+				|| packet.action() == ExternalPlaylistControlPacket.Action.PLAY_URL)
+			WorldPlaybackChannel.setPlaybackOwner(WorldPlaybackChannel.PlaybackOwner.CUE);
 		message(result.message());
 	}
 	

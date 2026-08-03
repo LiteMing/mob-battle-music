@@ -28,6 +28,7 @@ import org.lwjgl.glfw.GLFW;
 import net.minecraftforge.registries.ForgeRegistries;
 import nonamecrackers2.mobbattlemusic.client.audio.MbmSessionState;
 import nonamecrackers2.mobbattlemusic.client.audio.PreviewChannel;
+import nonamecrackers2.mobbattlemusic.client.audio.WorldPlaybackChannel;
 import nonamecrackers2.mobbattlemusic.client.config.MobBattleMusicConfig;
 import nonamecrackers2.mobbattlemusic.client.music.ExternalMusicHandler;
 import nonamecrackers2.mobbattlemusic.client.music.IdleConditionStateClient;
@@ -114,6 +115,10 @@ public class MusicPlaylistScreen extends Screen
 	private float previewGainValue = 1.0F;
 	private boolean previewFollowsMain = true;
 	private int volumeDraggingIndex = -1;
+	// K9-4: main-channel player dock state
+	private static final int DOCK_HEIGHT = 56;
+	private boolean dockSeekDragging;
+	private boolean dockPausedByUser;
 	private EditBox sceneBox;
 	private EditBox targetBox;
 	private EditBox searchBox;
@@ -687,6 +692,7 @@ public class MusicPlaylistScreen extends Screen
 		renderPreviewProgress(graphics);
 		if (this.volumePanelOpen)
 			renderVolumePanel(graphics, mouseX, mouseY);
+		renderPlayerDock(graphics, mouseX, mouseY);
 		super.render(graphics, mouseX, mouseY, partialTick);
 		if (this.priorityBox != null && this.priorityBox.visible && parseInteger(this.priorityBox.getValue(), -1000, 1000) == null)
 			graphics.renderOutline(this.priorityBox.getX() - 1, this.priorityBox.getY() - 1,
@@ -1089,6 +1095,8 @@ public class MusicPlaylistScreen extends Screen
 			return true;
 		if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT && clickConditionRow(mouseX, mouseY))
 			return true;
+		if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT && clickDock(mouseX, mouseY))
+			return true;
 		return super.mouseClicked(mouseX, mouseY, button);
 	}
 
@@ -1101,6 +1109,8 @@ public class MusicPlaylistScreen extends Screen
 			// must not run on every mouse move
 			saveVolumeConfig();
 		}
+		if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT)
+			this.dockSeekDragging = false;
 		return super.mouseReleased(mouseX, mouseY, button);
 	}
 
@@ -1111,7 +1121,229 @@ public class MusicPlaylistScreen extends Screen
 			updateVolumeSlider(this.volumeDraggingIndex, mouseX);
 			return true;
 		}
+		if (this.dockSeekDragging) {
+			updateDockSeek(mouseX);
+			return true;
+		}
 		return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
+	}
+
+	// ==================== K9-4: main-channel player dock ====================
+
+	private int dockY()
+	{
+		return this.height - DOCK_HEIGHT;
+	}
+
+	private boolean hasMainTrack()
+	{
+		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
+		return handler.getCurrentlyPlayingUrl() != null && !handler.isStopRequested();
+	}
+
+	private void renderPlayerDock(GuiGraphics graphics, int mouseX, int mouseY)
+	{
+		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
+		graphics.fill(0, dockY(), this.width, this.height, 0xF0141A20);
+		graphics.fill(0, dockY(), this.width, dockY() + 1, 0xFF3A4550);
+		// MAIN vs PREVIEW are never mixed - the dock only ever reads the main
+		// channel handler state
+		graphics.drawString(this.font, "MAIN", 8, dockY() + 5, 0xFF73D98A);
+		if (!hasMainTrack()) {
+			graphics.drawString(this.font, "no track", 52, dockY() + 6, 0xFF8B929C);
+			graphics.drawString(this.font, "[AUTO]", 8, dockY() + 24, 0xFF8B929C);
+			return;
+		}
+		String url = handler.getCurrentlyPlayingUrl();
+		boolean buffering = handler.isPreparingCurrentMusic();
+		boolean audible = handler.getPositionMillis() >= 0L;
+		nonamecrackers2.mobbattlemusic.client.audio.PlaybackHandle handle = WorldPlaybackChannel.handle();
+		String title = buffering ? "buffering..." : describeTrackTitle(url);
+		graphics.drawString(this.font, title, 52, dockY() + 5, 0xFFD6D9DE);
+		String source = describeDockSource(handle);
+		graphics.drawString(this.font, source, 52, dockY() + 18, 0xFF8B929C);
+		WorldPlaybackChannel.PlaybackOwner owner = WorldPlaybackChannel.playbackOwner();
+		graphics.drawString(this.font, "[" + owner + "]", 8, dockY() + 24, ownerColor(owner));
+
+		int progressLeft = 150;
+		int progressRight = this.width - 220;
+		int progressY = dockY() + 36;
+		long duration = handler.getDurationMillis();
+		long position = handler.getPositionMillis();
+		graphics.fill(progressLeft, progressY, progressRight, progressY + 4, 0xFF3A4550);
+		if (duration > 0L && position >= 0L) {
+			long filledLong = Math.round((progressRight - progressLeft) * Math.min(1.0D, position / (double) duration));
+			int filled = (int) Math.min(progressRight - progressLeft, filledLong);
+			graphics.fill(progressLeft, progressY, progressLeft + filled, progressY + 4, 0xFF73D98A);
+			graphics.drawString(this.font, formatMillis(position) + " / " + formatMillis(duration),
+					progressLeft, progressY + 8, 0xFFB8C0CA);
+		} else {
+			graphics.drawString(this.font, buffering ? "preparing..." : "position n/a", progressLeft, progressY + 8,
+					0xFF8B929C);
+		}
+		if (audible && owner == WorldPlaybackChannel.PlaybackOwner.CUE)
+			graphics.drawString(this.font, "locked (CUE)", progressRight - 70, dockY() + 5, 0xFFE06C75);
+
+		// buttons: prev / play-pause / stop / next
+		int buttonY = dockY() + 16;
+		int x = this.width - 172;
+		graphics.drawCenteredString(this.font, "\u23ee", x + 16, buttonY, 0xFFD6D9DE);
+		graphics.drawCenteredString(this.font, handler.isPlaying() ? "\u23f8" : "\u25b6", x + 54, buttonY, 0xFFD6D9DE);
+		graphics.drawCenteredString(this.font, "\u23f9", x + 92, buttonY, 0xFFD6D9DE);
+		graphics.drawCenteredString(this.font, "\u23ed", x + 130, buttonY, 0xFFD6D9DE);
+	}
+
+	private static String formatMillis(long millis)
+	{
+		long totalSeconds = Math.max(0L, millis / 1000L);
+		return String.format(java.util.Locale.ROOT, "%d:%02d", totalSeconds / 60, totalSeconds % 60);
+	}
+
+	private int ownerColor(WorldPlaybackChannel.PlaybackOwner owner)
+	{
+		return switch (owner) {
+			case MAN -> 0xFFE5C07B;
+			case CUE -> 0xFFE06C75;
+			default -> 0xFF8B929C;
+		};
+	}
+
+	private String describeTrackTitle(String url)
+	{
+		String described = MusicTracksManager.getInstance().describeMusicSource(url);
+		return described == null || described.isBlank() ? url : described;
+	}
+
+	private String describeDockSource(nonamecrackers2.mobbattlemusic.client.audio.PlaybackHandle handle)
+	{
+		if (handle == null || handle.sourceRef() == null)
+			return "unknown source";
+		if (handle.sourceRef().isDirect())
+			return "direct";
+		return handle.sourceRef().playlistId() + " @ " + handle.sourceRef().entryKey();
+	}
+
+	private boolean dockCanSeek()
+	{
+		if (!hasMainTrack())
+			return false;
+		// CUE tracks and tracks with timeline markers must not be dragged
+		if (WorldPlaybackChannel.playbackOwner() == WorldPlaybackChannel.PlaybackOwner.CUE)
+			return false;
+		String url = ExternalMusicHandler.getInstance().getCurrentlyPlayingUrl();
+		nonamecrackers2.mobbattlemusic.client.audio.PlaybackHandle handle = WorldPlaybackChannel.handle();
+		if (handle != null && handle.sourceRef() != null && !handle.sourceRef().isDirect()) {
+			try {
+				ResourceLocation playlist = new ResourceLocation(handle.sourceRef().playlistId());
+				List<TimelineMarker> markers = TimelineMarkerStore.markers(playlist, url);
+				if (!markers.isEmpty())
+					return false;
+			} catch (Exception ignored) {
+			}
+		}
+		return true;
+	}
+
+	private boolean clickDock(double mouseX, double mouseY)
+	{
+		if (mouseY < dockY())
+			return false;
+		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
+		// progress seek
+		int progressLeft = 150;
+		int progressRight = this.width - 220;
+		int progressY = dockY() + 36;
+		if (mouseY >= progressY - 4 && mouseY <= progressY + 8
+				&& mouseX >= progressLeft && mouseX <= progressRight) {
+			if (dockCanSeek() && handler.getDurationMillis() > 0L) {
+				this.dockSeekDragging = true;
+				updateDockSeek(mouseX);
+			}
+			return true;
+		}
+		// buttons
+		int buttonY = dockY() + 16;
+		if (mouseY >= buttonY - 8 && mouseY <= buttonY + 10) {
+			int x = this.width - 172;
+			if (mouseX >= x && mouseX < x + 36) {
+				playNeighbor(-1);
+				return true;
+			}
+			if (mouseX >= x + 36 && mouseX < x + 76) {
+				if (handler.isPlaying())
+					handler.pauseMusic();
+				else
+					handler.resumeMusic();
+				return true;
+			}
+			if (mouseX >= x + 76 && mouseX < x + 110) {
+				handler.stopMusic();
+				return true;
+			}
+			if (mouseX >= x + 110 && mouseX < x + 148) {
+				playNeighbor(1);
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private void updateDockSeek(double mouseX)
+	{
+		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
+		long duration = handler.getDurationMillis();
+		if (duration <= 0L)
+			return;
+		int progressLeft = 150;
+		int progressRight = this.width - 220;
+		double progress = (mouseX - progressLeft) / Math.max(1.0D, progressRight - progressLeft);
+		long position = Math.round(duration * Math.max(0.0D, Math.min(1.0D, progress)));
+		// the seek is dispatched async (seekMusicAsync) - the drag only
+		// updates the local position preview via the current playback
+		handler.seekMusicAsync(position, null);
+	}
+
+	// K9-4: manual prev/next within the current playlist (owner becomes MAN);
+	// sound-reference entries cannot be played through the stream player and
+	// are skipped to the next playable entry
+	private void playNeighbor(int direction)
+	{
+		nonamecrackers2.mobbattlemusic.client.audio.PlaybackHandle handle = WorldPlaybackChannel.handle();
+		if (handle == null || handle.sourceRef() == null || handle.sourceRef().isDirect()) {
+			message(text("message.dock_neighbor_unavailable"));
+			return;
+		}
+		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
+		String currentUrl = handler.getCurrentlyPlayingUrl();
+		MusicTracksManager manager = MusicTracksManager.getInstance();
+		for (MusicTracksManager.DynamicExternalTrack track : manager.getDynamicExternalTracksSnapshot()) {
+			if (!track.configLocation().toString().equals(handle.sourceRef().playlistId()))
+				continue;
+			List<MusicTracksManager.ExternalPlaylistEntry> entries = track.entries();
+			if (entries.isEmpty())
+				return;
+			int index = -1;
+			for (int i = 0; i < entries.size(); i++) {
+				if (entries.get(i).url().equals(currentUrl)) {
+					index = i;
+					break;
+				}
+			}
+			if (index < 0)
+				return;
+			for (int step = 1; step <= entries.size(); step++) {
+				int candidate = Math.floorMod(index + direction * step, entries.size());
+				String url = entries.get(candidate).url();
+				if (!url.startsWith("sound:")) {
+					WorldPlaybackChannel.setPlaybackOwner(WorldPlaybackChannel.PlaybackOwner.MAN);
+					WorldPlaybackChannel.setCurrentIntent(url);
+					handler.playMusic(url, track.fadeTime());
+					return;
+				}
+			}
+			return;
+		}
+		message(text("message.dock_neighbor_unavailable"));
 	}
 
 	private boolean clickConditionRow(double mouseX, double mouseY)

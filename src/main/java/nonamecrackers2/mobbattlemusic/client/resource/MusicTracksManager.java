@@ -743,6 +743,11 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		return this.localUrls(binding.kind()).getOrDefault(binding.storageKey(), List.of());
 	}
 
+	// K9-4: snapshot of all dynamic playlists (player dock prev/next lookup)
+	public List<DynamicExternalTrack> getDynamicExternalTracksSnapshot() {
+		return List.copyOf(this.dynamicExternalTracks.values());
+	}
+
 	// K9-1: expose the reference normalization for import preview validation
 	public String normalizeReferenceForValidation(String raw) {
 		return this.normalizeLocalMusicReference(raw);
