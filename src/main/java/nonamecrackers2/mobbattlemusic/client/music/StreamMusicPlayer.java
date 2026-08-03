@@ -689,30 +689,34 @@ public class StreamMusicPlayer {
     }
     
     /**
-     * Pause playback due to game pause
+     * Pause playback due to game pause. K5 P0-3: the flag is written
+     * unconditionally every tick (AUD-41 projection); the hardware action
+     * (line.stop) runs only when the pause state actually changed.
      */
     public void pauseForGame() {
-        // AUD-42: gamePaused is a projection of channel intent, not the
-        // player's own state - the write is unconditional
-        gamePaused = true;
-        if (line != null && line.isOpen()) {
+        boolean wasPaused = this.gamePaused;
+        this.gamePaused = true;
+        if (!wasPaused && line != null && line.isOpen()) {
             line.stop();
         }
         LOGGER.debug("Paused music due to game pause");
     }
     
     /**
-     * Resume playback after game unpause
+     * Resume playback after game unpause. K5 P0-3: the flag is written
+     * unconditionally; the hardware actions (line.start, unpark) run only when
+     * the pause state actually changed.
      */
     public void resumeFromGame() {
-        // AUD-42: unconditional flag write; the old `if (playing && gamePaused)`
-        // guard swallowed cleanup because stop() clears playing first
-        gamePaused = false;
-        if (line != null && line.isOpen()) {
-            line.start();
+        boolean wasPaused = this.gamePaused;
+        this.gamePaused = false;
+        if (wasPaused) {
+            if (line != null && line.isOpen()) {
+                line.start();
+            }
+            // K3 P1-3: wake the paused playback thread immediately
+            java.util.concurrent.locks.LockSupport.unpark(this.playbackThread);
         }
-        // K3 P1-3: wake the paused playback thread immediately
-        java.util.concurrent.locks.LockSupport.unpark(this.playbackThread);
         LOGGER.debug("Resumed music after game unpause");
     }
     

@@ -163,9 +163,14 @@ public final class WorldPlaybackChannel
 			PlaybackHandle active = WorldPlaybackChannel.handle;
 			ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
 			long localPosition = handler.getPositionMillis();
+			// K5: state()==RUNNING needs no extra check here - the request is
+			// only set when leaving PAUSED (previous==PAUSED && target!=PAUSED),
+			// and converge() sets RUNNING for both PLAYING and MUTED
+			// (WorldPlaybackChannel.java converge PLAYING/MUTED branches)
 			boolean prerequisites = active != null
 					&& MarkerClock.isActive()
 					&& !WorldPlaybackChannel.isGatedTransitionActive()
+					&& !handler.isSeekInFlight()
 					&& handler.getPlayer().hasActiveTrack()
 					&& !handler.isStopRequested()
 					// K3 P1-2: the anchor target must be the currently playing
@@ -173,9 +178,13 @@ public final class WorldPlaybackChannel
 					&& active.track().equals(handler.getCurrentlyPlayingUrl())
 					&& localPosition > 0L;
 			if (prerequisites) {
-				// AUD-50: re-anchor from the local position, never seek
+				// AUD-50: re-anchor from the local position, never seek.
+				// K5: the anchor is expressed in the SERVER clock domain -
+				// local times are converted with the sampled clock offset
 				long now = System.currentTimeMillis();
-				MarkerClock.realign(active.track(), now - localPosition, now);
+				long offset = Math.round(MarkerClock.clockOffsetMillis());
+				MarkerClock.realignServerDomain(active.track(),
+						now + offset - localPosition, now + offset);
 				MarkerClock.clearReanchorRequest();
 			}
 			// prerequisites not met: the request survives to the next tick
@@ -216,7 +225,7 @@ public final class WorldPlaybackChannel
 				audiblePos,
 				decodedPos,
 				driftMillis,
-				MarkerClock.millisSinceLastSync(),
+				MarkerClock.millisSinceAnchor(),
 				MarkerClock.injectedTtlMillis(),
 				WorldPlaybackChannel.recentSeekCount,
 				WorldPlaybackChannel.millisSinceSeek(),
@@ -373,6 +382,12 @@ public final class WorldPlaybackChannel
 		StreamMusicPlayer.resetAdaptiveWatermark();
 		WorldPlaybackChannel.lastSeekAtMillis = 0L;
 		WorldPlaybackChannel.recentSeekCount = 0;
+		WorldPlaybackChannel.recentSeekIndex = 0;
+		WorldPlaybackChannel.giveUpWarned = false;
+		WorldPlaybackChannel.seekQueuedAtMillis = 0L;
+		WorldPlaybackChannel.seekQueuedTargetMillis = 0L;
+		WorldPlaybackChannel.correctionDisabledAtMillis = 0L;
+		WorldPlaybackChannel.correctionBackoffMillis = GIVE_UP_BACKOFF_FIRST_MILLIS;
 		WorldPlaybackChannel.seekSettleUntilMillis = 0L;
 		stopMusic();
 	}
@@ -618,7 +633,9 @@ public final class WorldPlaybackChannel
 		PlaybackHandle active = WorldPlaybackChannel.handle;
 		if (active == null)
 			return;
-		MobBattleMusicNetwork.sendPlaybackStartReport(active.track(), active.startedEpochMillis());
+		// K5: the report carries its own send time (t1) for the CUE-4 handshake
+		MobBattleMusicNetwork.sendPlaybackStartReport(active.track(), active.startedEpochMillis(),
+				System.currentTimeMillis());
 	}
 	
 	private static void tickClockAndInvalidation()
@@ -739,18 +756,24 @@ public final class WorldPlaybackChannel
 				// offloaded to the audio-I/O executor (no blocking work here)
 				handler.seekMusicAsync(targetMillis, completedAt -> {
 					// AUD-52 v1.2: the anchor moment is the measured watermark
-					// fill time of the new line, never the dispatch time. K4 P0:
-					// a failed seek must have a recovery action - never rely on
-					// a server heartbeat to restore the anchor
+					// fill time of the new line, never the dispatch time.
+					// K5 P0-2: a failed seek means "give up this sync" - no
+					// re-anchor that launders the failure into convergence
+					// (that would keep the give-up window unreachable); the
+					// anchor stays invalid until a successful seek or an event
+					// re-anchor
 					if (completedAt <= 0L) {
-						LOGGER.warn("[MBM] AUD-52 seek to {}ms done but watermark not reached; re-anchor requested", targetMillis);
-						MarkerClock.requestReanchor();
+						LOGGER.warn("[MBM] AUD-52 seek to {}ms failed (watermark not reached); sync abandoned", targetMillis);
 						// the cost was already paid - the rate limit must count it
 						WorldPlaybackChannel.lastSeekAtMillis = System.currentTimeMillis();
 						return;
 					}
-					if (trackId != null)
-						MarkerClock.realign(trackId, completedAt - targetMillis, completedAt);
+					if (trackId != null) {
+						// K5: anchor in the server clock domain
+						long offset = Math.round(MarkerClock.clockOffsetMillis());
+						MarkerClock.realignServerDomain(trackId,
+								completedAt + offset - targetMillis, completedAt + offset);
+					}
 					// K4 P0: rate-limit timing moves to queue time (attempt);
 					// onComplete no longer writes the attempt window
 					LOGGER.debug("[MBM] AUD-24 seek to {}ms re-anchored at watermark", targetMillis);

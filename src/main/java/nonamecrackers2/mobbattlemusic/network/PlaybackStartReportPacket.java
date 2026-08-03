@@ -7,18 +7,21 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.network.NetworkEvent;
 
 /**
- * C2S: client reports a playback start (or a periodic resync, AUD-24 every
- * 5 seconds) so the server can anchor the authoritative clock (AUD-22).
+ * C2S: client reports a playback start (AUD-22/CUE-4) with the wall-clock send
+ * time (t1) of the report itself, used by the server for the minimal-RTT
+ * clock-offset handshake (AUD-24 K5).
  */
 public class PlaybackStartReportPacket
 {
 	private final String trackId;
 	private final long clientStartEpochMillis;
+	private final long clientSendEpochMillis;
 
-	public PlaybackStartReportPacket(String trackId, long clientStartEpochMillis)
+	public PlaybackStartReportPacket(String trackId, long clientStartEpochMillis, long clientSendEpochMillis)
 	{
 		this.trackId = trackId;
 		this.clientStartEpochMillis = clientStartEpochMillis;
+		this.clientSendEpochMillis = clientSendEpochMillis;
 	}
 
 	public String trackId()
@@ -31,15 +34,21 @@ public class PlaybackStartReportPacket
 		return this.clientStartEpochMillis;
 	}
 
+	public long clientSendEpochMillis()
+	{
+		return this.clientSendEpochMillis;
+	}
+
 	public void encode(FriendlyByteBuf buffer)
 	{
 		buffer.writeUtf(this.trackId);
 		buffer.writeLong(this.clientStartEpochMillis);
+		buffer.writeLong(this.clientSendEpochMillis);
 	}
 
 	public static PlaybackStartReportPacket decode(FriendlyByteBuf buffer)
 	{
-		return new PlaybackStartReportPacket(buffer.readUtf(), buffer.readLong());
+		return new PlaybackStartReportPacket(buffer.readUtf(), buffer.readLong(), buffer.readLong());
 	}
 
 	public void handle(Supplier<NetworkEvent.Context> context)
@@ -50,6 +59,7 @@ public class PlaybackStartReportPacket
 			if (player != null)
 				MobBattleMusicNetwork.sendPlaybackClockSync(player,
 						new PlaybackClockSyncPacket(this.trackId, this.clientStartEpochMillis,
+								this.clientSendEpochMillis, System.currentTimeMillis(),
 								System.currentTimeMillis()));
 		});
 		ctx.setPacketHandled(true);

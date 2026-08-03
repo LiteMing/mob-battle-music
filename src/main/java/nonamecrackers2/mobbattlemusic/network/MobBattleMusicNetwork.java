@@ -12,7 +12,7 @@ import nonamecrackers2.mobbattlemusic.MobBattleMusicMod;
 
 public class MobBattleMusicNetwork
 {
-	private static final String PROTOCOL_VERSION = "13";
+	private static final String PROTOCOL_VERSION = "14";
 	private static int nextId;
 	private static final SimpleChannel CHANNEL = NetworkRegistry.ChannelBuilder
 			.named(MobBattleMusicMod.id("main"))
@@ -135,9 +135,9 @@ public class MobBattleMusicNetwork
 		CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), packet);
 	}
 
-	public static void sendPlaybackStartReport(String trackId, long clientStartEpochMillis)
+	public static void sendPlaybackStartReport(String trackId, long clientStartEpochMillis, long clientSendEpochMillis)
 	{
-		CHANNEL.sendToServer(new PlaybackStartReportPacket(trackId, clientStartEpochMillis));
+		CHANNEL.sendToServer(new PlaybackStartReportPacket(trackId, clientStartEpochMillis, clientSendEpochMillis));
 	}
 
 	public static void sendPlaybackClockSync(ServerPlayer player, PlaybackClockSyncPacket packet)

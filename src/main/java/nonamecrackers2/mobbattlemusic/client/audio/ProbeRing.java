@@ -33,7 +33,7 @@ public final class ProbeRing
 			int worldState, int sessionState, boolean focused, boolean paused, boolean published,
 			int clockState, boolean anchorValid,
 			float trackGain, float muteGain, float seekGain, float trackTarget, int gateOwner,
-			long audiblePosMillis, long decodedPosMillis, long driftMillis, long lastSyncMillis,
+			long audiblePosMillis, long decodedPosMillis, long driftMillis, long sinceAnchorMillis,
 			long injectedTtlMillis, int seeks, long sinceSeekMillis, long seekCostMillis,
 			long lineBufferBytes, int lineFillBytes, long watermarkMillis, boolean watermarkAdaptive, long underruns,
 			float mixCurrent, float mixTarget, boolean removalPending,
@@ -115,7 +115,7 @@ public final class ProbeRing
 				// R4: no anchor -> drift is n/a, never a fabricated zero
 				.append(" drift=").append(s.driftMillis() == Long.MIN_VALUE
 						? "n/a" : String.valueOf(s.driftMillis()))
-				.append(" lastSync=").append(s.lastSyncMillis())
+				.append(" sinceAnchor=").append(s.sinceAnchorMillis())
 				.append(" injectedTtl=").append(s.injectedTtlMillis())
 				.append(" seeks=").append(s.seeks())
 				.append(" sinceSeek=").append(s.sinceSeekMillis())

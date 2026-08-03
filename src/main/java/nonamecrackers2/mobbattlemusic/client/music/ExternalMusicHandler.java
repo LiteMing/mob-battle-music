@@ -320,6 +320,13 @@ public class ExternalMusicHandler {
                 }
                 if (onComplete != null)
                     onComplete.accept(watermarkReached);
+            } catch (Throwable t) {
+                // K5 P0-2: an unexpected failure must still run the recovery
+                // path (the failure branch of onComplete) - a seek that threw
+                // is a failed seek, never a silently skipped one
+                LOGGER.error("[MBM] seekMusicAsync task failed", t);
+                if (onComplete != null)
+                    onComplete.accept(0L);
             } finally {
                 // K3 P0-b: only the newest seek request clears the flag
                 if (request == this.seekRequest.get())
