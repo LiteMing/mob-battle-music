@@ -35,6 +35,18 @@ import nonamecrackers2.mobbattlemusic.client.util.AggressiveEntityStateClient;
 
 public class MobBattleMusicClientEvents
 {
+	// AUD-54: probe dump keybinding, unbound by default
+	public static final net.minecraft.client.KeyMapping DUMP_PROBE = new net.minecraft.client.KeyMapping(
+			"key.mobbattlemusic.dump_probe",
+			com.mojang.blaze3d.platform.InputConstants.Type.KEYSYM,
+			com.mojang.blaze3d.platform.InputConstants.UNKNOWN.getValue(),
+			"key.categories.mobbattlemusic");
+
+	public static void onRegisterKeyMappings(net.minecraftforge.client.event.RegisterKeyMappingsEvent event)
+	{
+		event.register(DUMP_PROBE);
+	}
+
 	public static void registerConfigScreen(RegisterConfigScreensEvent event)
 	{
 		event.builder(ConfigHomeScreen.builder(ImageTitle.ofMod(MobBattleMusicMod.MODID, 512, 256, 0.5F))
@@ -94,6 +106,9 @@ public class MobBattleMusicClientEvents
 		Minecraft mc = Minecraft.getInstance();
 		if (event.phase == TickEvent.Phase.END)
 		{
+			// AUD-54: key-triggered probe dump, independent of chat availability
+			while (DUMP_PROBE.consumeClick())
+				nonamecrackers2.mobbattlemusic.client.audio.ProbeRing.dumpToFile();
 			// AUD-36: ordering is explicit inside this single MBM tick entry;
 			// do not rely on relative order between Forge listeners. The order
 			// below is load-bearing: 1) session evaluate, 2) channel update

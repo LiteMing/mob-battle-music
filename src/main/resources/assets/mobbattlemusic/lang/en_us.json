@@ -221,4 +221,7 @@
 	"gui.mobbattlemusic.playlist.message.saved": "Saved playlist settings",
 	"gui.mobbattlemusic.playlist.confirm.title": "Discard changes?",
 	"gui.mobbattlemusic.playlist.confirm.message": "There are unsaved playlist fields. Discard them?"
+
+	"key.mobbattlemusic.dump_probe": "Dump Probe Ring",
+	"key.categories.mobbattlemusic": "Mob Battle Music"
 }

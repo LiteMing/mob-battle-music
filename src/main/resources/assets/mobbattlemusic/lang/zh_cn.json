@@ -221,4 +221,7 @@
 	"gui.mobbattlemusic.playlist.message.saved": "已保存歌单设置",
 	"gui.mobbattlemusic.playlist.confirm.title": "放弃更改？",
 	"gui.mobbattlemusic.playlist.confirm.message": "还有未保存的歌单字段，要放弃吗？"
+
+	"key.mobbattlemusic.dump_probe": "转储探针环形缓冲",
+	"key.categories.mobbattlemusic": "Mob Battle Music"
 }

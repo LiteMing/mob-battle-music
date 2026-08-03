@@ -53,6 +53,8 @@ public final class WorldPlaybackChannel
 	private static long lastClockReportMillis;
 	private static long lastMarkerPosition = -1L;
 	private static long firedThisTrack;
+	// AUD-54: client tick counter for the probe ring
+	private static long tickCounter;
 	// AUD-52: seek rate limit / hysteresis / give-up accounting
 	private static long lastSeekAtMillis;
 	private static int consecutiveSeeks;
@@ -128,6 +130,30 @@ public final class WorldPlaybackChannel
 		syncHandle();
 		// AUD-19 + clock driving (AUD-24/AUD-25) + marker counting
 		tickClockAndInvalidation();
+		
+		// AUD-54: ring-buffer snapshot - raw numbers only, no allocation or
+		// string work on the tick thread; formatting happens at dump time
+		WorldPlaybackChannel.tickCounter++;
+		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
+		StreamMusicPlayer player = handler.getPlayer();
+		ProbeRing.sample(new ProbeRing.ProbeSample(System.currentTimeMillis(),
+				WorldPlaybackChannel.tickCounter,
+				WorldPlaybackChannel.state().ordinal(),
+				MarkerClock.state().ordinal(),
+				MbmSessionState.isFocused(),
+				player.trackEnv().current(),
+				StreamMusicPlayer.MUTE_ENV.current(),
+				player.seekEnv().current(),
+				handler.getPositionMillis(),
+				handler.getDecodedPositionMillis(),
+				player.getUnderruns(),
+				WorldPlaybackChannel.consecutiveSeeks,
+				player.getPlayCallCount()));
+	}
+	
+	public static long tickNumber()
+	{
+		return WorldPlaybackChannel.tickCounter;
 	}
 	
 	// AUD-41: target state table, exactly as specified

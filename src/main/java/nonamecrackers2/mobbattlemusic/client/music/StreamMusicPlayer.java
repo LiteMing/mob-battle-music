@@ -39,6 +39,8 @@ public class StreamMusicPlayer {
     private volatile boolean gamePaused = false; // Track game pause state
     private volatile boolean gameMuted = false;
     private volatile int fadeTime = 0; // Fade time in ticks (20 ticks = 1 second)
+    // AUD-54: play() invocation count for the probe ring (N2 forensics)
+    private final java.util.concurrent.atomic.AtomicLong playCalls = new java.util.concurrent.atomic.AtomicLong();
     // AUD-44: independent gain envelopes; current is advanced only by the
     // playback thread (AUD-45). MUTE_ENV is shared with the built-in leg.
     private final Envelope trackEnv = new Envelope(0.0f);
@@ -189,6 +191,8 @@ public class StreamMusicPlayer {
 
     public void play(Path file, int fadeTimeInTicks, long startPositionMillis, long durationHintMillis) {
         this.fadeTime = fadeTimeInTicks;
+        // AUD-54: count play() invocations (probe ring)
+        this.playCalls.incrementAndGet();
         // AUD-44 v1.1: every start unconditionally restarts the track envelope
         // from zero; the fade-in duration is the gate-registered one, or the
         // player default fadeTime. Never depends on envelope history.
@@ -458,8 +462,7 @@ public class StreamMusicPlayer {
     }
 
     // AUD-48: line diagnostics for the probe (world.line)
-    public int getLineBufferBytes() {
-        SourceDataLine activeLine = line;
+    public int getLineBufferBytes() {        SourceDataLine activeLine = line;
         return activeLine == null || !activeLine.isOpen() ? 0 : activeLine.getBufferSize();
     }
 
@@ -475,6 +478,11 @@ public class StreamMusicPlayer {
     // AUD-30 v1.5: cumulative underrun count since the last playback start
     public long getUnderruns() {
         return this.underruns;
+    }
+
+    // AUD-54: play() invocation count (probe ring forensics)
+    public long getPlayCallCount() {
+        return this.playCalls.get();
     }
 
     public long getDurationMillis() {

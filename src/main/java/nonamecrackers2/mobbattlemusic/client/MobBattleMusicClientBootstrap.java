@@ -4,6 +4,7 @@ import net.minecraft.world.level.Level;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.eventbus.api.IEventBus;
 import net.minecraftforge.fml.event.lifecycle.FMLClientSetupEvent;
+import nonamecrackers2.mobbattlemusic.client.command.MobBattleMusicClientCommands;
 import nonamecrackers2.mobbattlemusic.client.event.MobBattleMusicClientEvents;
 import nonamecrackers2.mobbattlemusic.client.audio.AudioFilterManager;
 import nonamecrackers2.mobbattlemusic.client.init.MobBattleMusicClientCapabilities;
@@ -18,10 +19,14 @@ public class MobBattleMusicClientBootstrap
 		modEventBus.addListener(MobBattleMusicClientEvents::onSoundEngineLoad);
 		modEventBus.addListener(MobBattleMusicClientEvents::registerConfigScreen);
 		modEventBus.addListener(MobBattleMusicClientEvents::registerConfigMenuButton);
+		modEventBus.addListener(MobBattleMusicClientEvents::onRegisterKeyMappings);
 		modEventBus.addListener(MobBattleMusicClientBootstrap::clientSetup);
 		
 		IEventBus forgeBus = MinecraftForge.EVENT_BUS;
 		forgeBus.addGenericListener(Level.class, MobBattleMusicClientCapabilities::attachLevelCapabilities);
+		// AUD-54: client-side probe commands; this class is only reached via
+		// DistExecutor from MobBattleMusicMod, never on a dedicated server
+		forgeBus.addListener(MobBattleMusicClientCommands::register);
 		forgeBus.register(MobBattleMusicClientEvents.class);
 	}
 	
