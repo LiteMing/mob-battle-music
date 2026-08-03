@@ -68,8 +68,10 @@ public class MobBattleMusicClientEvents
 			if (path == null)
 				continue;
 			java.nio.file.Path file = java.nio.file.Paths.get(path);
-			String lower = file.getFileName() == null ? "" : file.getFileName().toString().toLowerCase();
-			if (lower.endsWith(".m3u") || lower.endsWith(".m3u8") || lower.endsWith(".json"))
+			// K11-D: directories and audio files reach the import screen too -
+			// the screen handles recursion and non-streamable rows
+			if (java.nio.file.Files.isDirectory(file)
+					|| nonamecrackers2.mobbattlemusic.client.resource.PlaylistImportParser.isImportableFile(file))
 				files.add(file);
 		}
 		if (!files.isEmpty()) {

@@ -7,6 +7,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import com.google.gson.GsonBuilder;
@@ -100,6 +101,24 @@ public final class PlaylistImportParser
 			lines.add(new PlainImportLine(token, null));
 		}
 		return lines;
+	}
+
+	/**
+	 * K11-D: shared file-type predicates used by the drop callback and the
+	 * import screen - directories and local audio files must reach the
+	 * import preview too (audio files are shown as non-streamable rows).
+	 */
+	public static boolean isImportableFile(Path file)
+	{
+		String lower = file.getFileName() == null ? "" : file.getFileName().toString().toLowerCase(Locale.ROOT);
+		return lower.endsWith(".m3u") || lower.endsWith(".m3u8") || lower.endsWith(".json")
+				|| isAudioFile(lower) || lower.endsWith(".txt");
+	}
+
+	public static boolean isAudioFile(String lower)
+	{
+		return lower.endsWith(".mp3") || lower.endsWith(".ogg") || lower.endsWith(".wav")
+				|| lower.endsWith(".flac") || lower.endsWith(".m4a");
 	}
 
 	/**

@@ -733,6 +733,62 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 	}
 
 	/**
+	 * K11-D: whole-plan transactional import - multiple bindings commit in
+	 * ONE transaction. Every reference of every binding is validated first;
+	 * a single invalid reference aborts the ENTIRE plan (no binding is
+	 * touched). Deduplication is per (binding, reference). One write, one
+	 * save, one refresh for the whole plan.
+	 */
+	public PlaylistControlResult importLocalPlan(java.util.Map<DynamicBinding, List<String>> plan) {
+		this.loadLocalSceneUrls();
+		java.util.Map<DynamicBinding, List<String>> committedByBinding = new java.util.LinkedHashMap<>();
+		int invalid = 0;
+		for (var entry : plan.entrySet()) {
+			DynamicBinding binding = entry.getKey();
+			if (binding == null)
+				continue;
+			Map<String, List<String>> urlsByTarget = this.localUrls(binding.kind());
+			List<String> existing = urlsByTarget.computeIfAbsent(binding.storageKey(), key -> Lists.newArrayList());
+			List<String> committed = new java.util.ArrayList<>();
+			for (String raw : entry.getValue()) {
+				String reference = normalizeLocalMusicReference(raw);
+				if (reference == null) {
+					invalid++;
+					continue;
+				}
+				if (existing.contains(reference) || committed.contains(reference))
+					continue;
+				committed.add(reference);
+			}
+			if (!committed.isEmpty())
+				committedByBinding.put(binding, committed);
+		}
+		if (invalid > 0)
+			return PlaylistControlResult.failure("Import aborted: " + invalid +
+					" invalid reference(s); nothing was changed across any binding");
+		if (committedByBinding.isEmpty())
+			return PlaylistControlResult.success("Import skipped: all entries already present");
+		int total = 0;
+		for (var entry : committedByBinding.entrySet()) {
+			Map<String, List<String>> urlsByTarget = this.localUrls(entry.getKey().kind());
+			List<String> existing = urlsByTarget.get(entry.getKey().storageKey());
+			existing.addAll(entry.getValue());
+			List<List<IdleCondition>> conditions = entryConditions(entry.getKey(), true);
+			while (conditions.size() < existing.size())
+				conditions.add(List.of());
+			total += entry.getValue().size();
+		}
+		this.saveLocalSceneUrls();
+		this.refreshLocalDynamicTracks();
+		this.rebuildTracksWithDynamic();
+		this.syncExternalPlaylistCatalogToServer();
+		for (DynamicBinding binding : committedByBinding.keySet())
+			MusicTracksManager.bumpPlaylistRevision(dynamicConfigLocation(DynamicSource.LOCAL, binding));
+		return PlaylistControlResult.success("Imported " + total + " music entries across "
+				+ committedByBinding.size() + " binding(s)");
+	}
+
+	/**
 	 * K9-1: export one binding's entries as the MBM playlist export JSON
 	 * (round-trips through PlaylistImportParser.parseMbmJson).
 	 */
