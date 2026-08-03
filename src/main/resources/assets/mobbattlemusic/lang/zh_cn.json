@@ -1,4 +1,4 @@
-{
+﻿{
 	"gui.mobbattlemusic.config.maxMobsForMaxVolume.title": "最大音量所需生物数量",
 	"gui.mobbattlemusic.config.maxMobSearchRadius.title": "最大生物搜索半径",
 	"gui.mobbattlemusic.config.threatRadius.title": "威胁半径",
@@ -220,8 +220,7 @@
 	"gui.mobbattlemusic.playlist.button.save": "保存",
 	"gui.mobbattlemusic.playlist.message.saved": "已保存歌单设置",
 	"gui.mobbattlemusic.playlist.confirm.title": "放弃更改？",
-	"gui.mobbattlemusic.playlist.confirm.message": "还有未保存的歌单字段，要放弃吗？"
-
+	"gui.mobbattlemusic.playlist.confirm.message": "还有未保存的歌单字段，要放弃吗？",
 	"key.mobbattlemusic.dump_probe": "转储探针环形缓冲",
 	"key.categories.mobbattlemusic": "Mob Battle Music"
 }

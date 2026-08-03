@@ -1,4 +1,4 @@
-{
+﻿{
 	"gui.mobbattlemusic.config.maxMobsForMaxVolume.title": "Max Mobs For Max Volume",
 	"gui.mobbattlemusic.config.maxMobSearchRadius.title": "Max Mob Search Radius",
 	"gui.mobbattlemusic.config.threatRadius.title": "Threat Radius",
@@ -220,8 +220,7 @@
 	"gui.mobbattlemusic.playlist.button.save": "Save",
 	"gui.mobbattlemusic.playlist.message.saved": "Saved playlist settings",
 	"gui.mobbattlemusic.playlist.confirm.title": "Discard changes?",
-	"gui.mobbattlemusic.playlist.confirm.message": "There are unsaved playlist fields. Discard them?"
-
+	"gui.mobbattlemusic.playlist.confirm.message": "There are unsaved playlist fields. Discard them?",
 	"key.mobbattlemusic.dump_probe": "Dump Probe Ring",
 	"key.categories.mobbattlemusic": "Mob Battle Music"
 }
