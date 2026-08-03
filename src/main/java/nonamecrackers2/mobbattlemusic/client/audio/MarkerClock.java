@@ -32,6 +32,9 @@ public final class MarkerClock
 	private static volatile long injectedDriftSetAtMillis;
 	private static volatile long firedMarkers;
 	private static volatile ClockState state = ClockState.STOPPED;
+	// AUD-50 v1.1: explicit anchor validity - a migration edge carried by its
+	// own boolean state, never inferred from the converged ClockState
+	private static volatile boolean anchorValid;
 
 	private MarkerClock() {}
 
@@ -48,6 +51,8 @@ public final class MarkerClock
 				System.currentTimeMillis());
 		MarkerClock.lastSyncMillis = System.currentTimeMillis();
 		MarkerClock.state = ClockState.RUNNING;
+		// AUD-50 v1.1: a realign establishes a valid anchor
+		MarkerClock.anchorValid = true;
 		LOGGER.debug("[MBM] clock realign track={} startEpoch={}ms", trackId, startEpochMillis);
 	}
 
@@ -56,11 +61,22 @@ public final class MarkerClock
 		MarkerClock.source = null;
 		MarkerClock.lastSyncMillis = 0L;
 		MarkerClock.state = ClockState.STOPPED;
+		// AUD-50 v1.1: invalidating the clock invalidates the anchor
+		MarkerClock.anchorValid = false;
 	}
 
 	public static void setState(ClockState state)
 	{
+		// AUD-50 v1.1: freezing invalidates the anchor; the migration edge is
+		// carried by anchorValid, not by the converged state
+		if (state == ClockState.FROZEN)
+			MarkerClock.anchorValid = false;
 		MarkerClock.state = state;
+	}
+
+	public static boolean anchorValid()
+	{
+		return MarkerClock.anchorValid;
 	}
 
 	public static ClockState state()
@@ -114,8 +130,8 @@ public final class MarkerClock
 	 */
 	public static void tick(String trackId, long localPositionMillis, CorrectionSink sink)
 	{
-		// AUD-50: state guard, first line
-		if (MarkerClock.state != ClockState.RUNNING)
+		// AUD-50/AUD-50 v1.1: state guard plus anchor validity, first line
+		if (MarkerClock.state != ClockState.RUNNING || !MarkerClock.anchorValid)
 			return;
 		ClockSource clockSource = MarkerClock.source;
 		if (clockSource == null || !clockSource.trackId().equals(trackId))

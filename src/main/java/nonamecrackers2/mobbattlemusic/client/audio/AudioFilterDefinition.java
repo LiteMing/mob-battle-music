@@ -7,7 +7,7 @@ import net.minecraft.resources.ResourceLocation;
 import nonamecrackers2.mobbattlemusic.playlist.IdleCondition;
 
 public record AudioFilterDefinition(ResourceLocation id, boolean enabled, Scope scope, Type type, double frequencyHz, double q,
-		double gainDb, int bitDepth, int sampleRateHz, List<IdleCondition> conditions, boolean instant)
+		double gainDb, int bitDepth, int sampleRateHz, List<IdleCondition> conditions)
 {
 	public AudioFilterDefinition
 	{
@@ -22,7 +22,7 @@ public record AudioFilterDefinition(ResourceLocation id, boolean enabled, Scope 
 	public AudioFilterDefinition withEnabled(boolean enabled)
 	{
 		return new AudioFilterDefinition(this.id, enabled, this.scope, this.type, this.frequencyHz, this.q,
-				this.gainDb, this.bitDepth, this.sampleRateHz, this.conditions, this.instant);
+				this.gainDb, this.bitDepth, this.sampleRateHz, this.conditions);
 	}
 
 	private static double clamp(double value, double min, double max)

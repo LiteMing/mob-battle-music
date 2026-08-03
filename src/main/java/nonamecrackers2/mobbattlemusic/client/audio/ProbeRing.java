@@ -12,8 +12,9 @@ import org.apache.logging.log4j.Logger;
 /**
  * AUD-54: fixed-size ring buffer of numeric probe snapshots (400 ticks,
  * ~20 seconds). Sampling stores raw numbers only - no allocation, no string
- * formatting, no I/O on the tick thread. Formatting happens only at dump time,
- * and the file write runs on a one-off daemon thread.
+ * formatting, no I/O on the tick thread. Formatting copies the array under
+ * the lock and formats outside it (AUD-54 追加). The field set is a superset
+ * of the single-frame probe (debug session reuses the last frame).
  */
 public final class ProbeRing
 {
@@ -26,9 +27,15 @@ public final class ProbeRing
 
 	private ProbeRing() {}
 
-	public record ProbeSample(long epochMillis, long tick, int worldState, int clockState, boolean focused,
-			float trackGain, float muteGain, float seekGain, long audiblePosMillis, long decodedPosMillis,
-			long underruns, int seeks, long playCalls) {}
+	public record ProbeSample(long epochMillis, long tick,
+			int worldState, int sessionState, boolean focused, boolean paused, boolean published,
+			int clockState, boolean anchorValid,
+			float trackGain, float muteGain, float seekGain, float trackTarget, int gateOwner,
+			long audiblePosMillis, long decodedPosMillis, long driftMillis, long lastSyncMillis,
+			long injectedTtlMillis, int seeks, long sinceSeekMillis, long seekCostMillis,
+			long lineBufferBytes, int lineFillBytes, long watermarkMillis, boolean watermarkAdaptive, long underruns,
+			float mixCurrent, float mixTarget, boolean removalPending,
+			int handles, long markersFired, long playCalls) {}
 
 	public static synchronized void sample(ProbeSample sample)
 	{
@@ -38,27 +45,84 @@ public final class ProbeRing
 			count++;
 	}
 
-	public static synchronized String format()
+	/**
+	 * AUD-54 追加: the most recent frame, reused by the debug session command
+	 * so both outputs carry exactly the same field set.
+	 */
+	public static synchronized ProbeSample lastSample()
 	{
-		StringBuilder builder = new StringBuilder(count * 160);
-		int start = count < CAPACITY ? 0 : nextIndex;
-		for (int i = 0; i < count; i++) {
-			ProbeSample sample = SAMPLES[(start + i) % CAPACITY];
-			builder.append("t=").append(sample.epochMillis())
-					.append(" tick=").append(sample.tick())
-					.append(" | world=").append(sample.worldState())
-					.append(" clock=").append(sample.clockState())
-					.append(" focused=").append(sample.focused())
-					.append(" track=").append(String.format(Locale.ROOT, "%.2f", sample.trackGain()))
-					.append(" mute=").append(String.format(Locale.ROOT, "%.2f", sample.muteGain()))
-					.append(" seek=").append(String.format(Locale.ROOT, "%.2f", sample.seekGain()))
-					.append(" audible=").append(sample.audiblePosMillis())
-					.append(" decoded=").append(sample.decodedPosMillis())
-					.append(" underruns=").append(sample.underruns())
-					.append(" seeks=").append(sample.seeks())
-					.append(" playCalls=").append(sample.playCalls()).append('\n');
+		if (count == 0)
+			return null;
+		return SAMPLES[(nextIndex - 1 + CAPACITY) % CAPACITY];
+	}
+
+	/**
+	 * AUD-54 追加: formatting happens outside the sampling lock - only the
+	 * array copy is guarded.
+	 */
+	public static String format()
+	{
+		ProbeSample[] snapshot;
+		int sampleCount;
+		synchronized (ProbeRing.class) {
+			snapshot = SAMPLES.clone();
+			sampleCount = count;
+		}
+		StringBuilder builder = new StringBuilder(sampleCount * 260);
+		int start = sampleCount < CAPACITY ? 0 : nextIndex;
+		for (int i = 0; i < sampleCount; i++) {
+			ProbeSample sample = snapshot[(start + i) % CAPACITY];
+			if (sample != null)
+				formatSample(builder, sample);
 		}
 		return builder.toString();
+	}
+
+	public static String formatLastSample()
+	{
+		ProbeSample last = lastSample();
+		if (last == null)
+			return "";
+		StringBuilder builder = new StringBuilder(320);
+		formatSample(builder, last);
+		return builder.toString();
+	}
+
+	private static void formatSample(StringBuilder builder, ProbeSample s)
+	{
+		builder.append("t=").append(s.epochMillis())
+				.append(" tick=").append(s.tick())
+				.append(" | world=").append(s.worldState())
+				.append(" session=").append(s.sessionState())
+				.append(" focused=").append(s.focused())
+				.append(" paused=").append(s.paused())
+				.append(" published=").append(s.published())
+				.append(" clock=").append(s.clockState())
+				.append(" anchor=").append(s.anchorValid())
+				.append(" track=").append(String.format(Locale.ROOT, "%.2f", s.trackGain()))
+				.append(" mute=").append(String.format(Locale.ROOT, "%.2f", s.muteGain()))
+				.append(" seek=").append(String.format(Locale.ROOT, "%.2f", s.seekGain()))
+				.append(" trackTarget=").append(String.format(Locale.ROOT, "%.2f", s.trackTarget()))
+				.append(" gateOwner=").append(s.gateOwner())
+				.append(" audible=").append(s.audiblePosMillis())
+				.append(" decoded=").append(s.decodedPosMillis())
+				.append(" drift=").append(s.driftMillis())
+				.append(" lastSync=").append(s.lastSyncMillis())
+				.append(" injectedTtl=").append(s.injectedTtlMillis())
+				.append(" seeks=").append(s.seeks())
+				.append(" sinceSeek=").append(s.sinceSeekMillis())
+				.append(" seekCost=").append(s.seekCostMillis())
+				.append(" lineBuf=").append(s.lineBufferBytes())
+				.append(" lineFill=").append(s.lineFillBytes())
+				.append(" watermark=").append(s.watermarkMillis())
+				.append(" wmAdaptive=").append(s.watermarkAdaptive())
+				.append(" underruns=").append(s.underruns())
+				.append(" mix=").append(String.format(Locale.ROOT, "%.2f", s.mixCurrent()))
+				.append(" mixTarget=").append(String.format(Locale.ROOT, "%.2f", s.mixTarget()))
+				.append(" pendingRemoval=").append(s.removalPending())
+				.append(" handles=").append(s.handles())
+				.append(" markersFired=").append(s.markersFired())
+				.append(" playCalls=").append(s.playCalls()).append('\n');
 	}
 
 	/**

@@ -73,6 +73,14 @@ public class StreamMusicPlayer {
     // AUD-52 修订: first time the line fill reached the watermark in the
     // current generation (seek cost measurement)
     private volatile long lastWatermarkReachedAtMillis;
+    // AUD-48 v1.5: underrun transient-window suppression and the downward
+    // adaptive path (consecutive 10s without an underrun -> -10ms, floor 60ms)
+    private static final long UNDERRUN_TRANSIENT_BUFFERS = 8L;
+    private static final long WATERMARK_DOWN_MILLIS = 10L;
+    private static final long WATERMARK_DOWN_PERIOD_MILLIS = 10_000L;
+    private volatile long bufferIndex;
+    private volatile long resumeBufferIndex = -1L;
+    private volatile long lastUnderrunAtMillis;
     
     /**
      * AUD-44/45: a single gain envelope, shape
@@ -314,6 +322,10 @@ public class StreamMusicPlayer {
                                         * watermarkMillis / 1000.0D));
                         underruns = 0L;
                         lastWatermarkReachedAtMillis = 0L;
+                        // AUD-48 v1.5: transient-window tracking starts per generation
+                        bufferIndex = 0L;
+                        resumeBufferIndex = -1L;
+                        lastUnderrunAtMillis = 0L;
                         // AUD-47: a freshly opened line starts its frame counter at
                         // zero; record the frame rate for position derivation
                         lineFrameRate = decodedFormat.getFrameRate();
@@ -334,6 +346,7 @@ public class StreamMusicPlayer {
                         while (generation == playbackGeneration.get() && playing &&
                                 (bytesRead = decodedStream.read(buffer)) != -1) {
                             // Handle pause (manual or game pause)
+                            boolean wasGamePaused = gamePaused;
                             while ((paused || gamePaused) && generation == playbackGeneration.get() && playing) {
                                 try {
                                     Thread.sleep(100);
@@ -342,27 +355,53 @@ public class StreamMusicPlayer {
                                     break;
                                 }
                             }
+                            // AUD-48 v1.5: remember the resume point for the
+                            // underrun transient window
+                            if (wasGamePaused && !gamePaused)
+                                this.resumeBufferIndex = this.bufferIndex;
 
                             if (generation != playbackGeneration.get() || !playing)
                                 break;
 
-                            // AUD-30 v1.6: only count fully-drained writes
-                            // after the first successful write
-                            if (totalBytesWritten > 0L && playbackLine.available() >= playbackLine.getBufferSize()) {
+                            // AUD-48 v1.5: the adaptive watermark has a downward
+                            // path - 10s without an underrun lowers it by 10ms
+                            long nowMillis = System.currentTimeMillis();
+                            long currentWatermark = StreamMusicPlayer.adaptiveWatermarkMillis > 0L
+                                    ? StreamMusicPlayer.adaptiveWatermarkMillis : 60L;
+                            if (currentWatermark > 60L && this.lastUnderrunAtMillis > 0L
+                                    && nowMillis - this.lastUnderrunAtMillis >= WATERMARK_DOWN_PERIOD_MILLIS) {
+                                long lowered = Math.max(60L, currentWatermark - WATERMARK_DOWN_MILLIS);
+                                StreamMusicPlayer.adaptiveWatermarkMillis = lowered;
+                                this.lineWatermarkBytes = Math.max(1L, Math.round(
+                                        this.lineFrameRate * decodedFormat.getFrameSize()
+                                                * lowered / 1000.0D));
+                                this.lastUnderrunAtMillis = nowMillis;
+                                LOGGER.debug("[MBM] AUD-48 v1.5 watermark lowered to {}ms", lowered);
+                            }
+
+                            // AUD-30 v1.6/v1.5: count fully-drained writes only
+                            // after the first successful write and outside the
+                            // transient windows (startup, pause resume, seek -
+                            // the latter resets bufferIndex via startPlayback)
+                            boolean transientWindow = this.bufferIndex < UNDERRUN_TRANSIENT_BUFFERS
+                                    || (this.resumeBufferIndex >= 0L
+                                            && this.bufferIndex - this.resumeBufferIndex < UNDERRUN_TRANSIENT_BUFFERS);
+                            if (totalBytesWritten > 0L && !transientWindow
+                                    && playbackLine.available() >= playbackLine.getBufferSize()) {
                                 underruns++;
+                                this.lastUnderrunAtMillis = System.currentTimeMillis();
                                 // AUD-48 v1.4: adaptive watermark, +20ms per
                                 // underrun, capped at 150ms; persists across
                                 // startPlayback via the static field
-                                long current = StreamMusicPlayer.adaptiveWatermarkMillis > 0L
-                                        ? StreamMusicPlayer.adaptiveWatermarkMillis : 60L;
-                                long next = Math.min(150L, current + 20L);
-                                if (next != current) {
+                                long next = Math.min(150L, currentWatermark + 20L);
+                                if (next != currentWatermark) {
                                     StreamMusicPlayer.adaptiveWatermarkMillis = next;
                                     this.lineWatermarkBytes = Math.max(1L, Math.round(
                                             this.lineFrameRate * decodedFormat.getFrameSize()
                                                     * next / 1000.0D));
                                 }
                             }
+                            this.bufferIndex++;
                             // AUD-48: write throttling to the target watermark.
                             // Yield briefly while the fill exceeds the
                             // watermark; never fill the buffer. When playback

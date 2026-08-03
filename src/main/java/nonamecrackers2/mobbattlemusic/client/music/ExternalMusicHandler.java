@@ -38,6 +38,10 @@ public class ExternalMusicHandler {
             });
     // AUD-51: monotonic seek request number; stale tasks are dropped
     private final AtomicLong seekRequest = new AtomicLong();
+    // AUD-51 追加: sync-visible intent flag - stopMusic() sets it on the
+    // caller thread before dispatch, predicates read it instead of observing
+    // the async side effect
+    private volatile boolean stopRequested;
     private volatile String currentlyPlayingUrl;
     private volatile Path currentlyPlayingPath;
     private volatile long currentDurationHintMillis;
@@ -216,16 +220,27 @@ public class ExternalMusicHandler {
     
     /**
      * Stop currently playing music. AUD-51: runs on the audio-I/O executor to
-     * preserve ordering with play/seek; never blocks the caller.
+     * preserve ordering with play/seek; never blocks the caller. The intent is
+     * visible synchronously via {@link #isStopRequested()}.
      */
     public void stopMusic() {
+        this.stopRequested = true;
         this.audioIo.execute(() -> {
-            synchronized (this.playbackLock) {
-                this.playbackRequest.incrementAndGet();
-                this.player.stop();
-                clearPlaybackState();
+            try {
+                synchronized (this.playbackLock) {
+                    this.playbackRequest.incrementAndGet();
+                    this.player.stop();
+                    clearPlaybackState();
+                }
+            } finally {
+                this.stopRequested = false;
             }
         });
+    }
+
+    // AUD-51 追加: sync-visible stop intent
+    public boolean isStopRequested() {
+        return this.stopRequested;
     }
 
     public void stopPreviewMusic() {
@@ -265,17 +280,33 @@ public class ExternalMusicHandler {
     /**
      * AUD-51: queue a main-playback seek on the audio-I/O executor. Stale
      * requests (superseded by a newer seek) are dropped at execution time.
-     * AUD-52 修订: onComplete runs on the executor thread once the seek has
-     * actually completed (re-anchor + settle window).
+     * AUD-52 v1.2: onComplete runs on the executor thread with the measured
+     * watermark-fill time of the new line as completedAt (0 when the watermark
+     * was not reached within the timeout).
      */
-    public void seekMusicAsync(long positionMillis, Runnable onComplete) {
+    public void seekMusicAsync(long positionMillis, java.util.function.LongConsumer onComplete) {
         long request = this.seekRequest.incrementAndGet();
         this.audioIo.execute(() -> {
             if (request != this.seekRequest.get())
                 return;
             this.seekMusic(positionMillis);
+            // AUD-52 v1.2: wait for the new line's first watermark fill (the
+            // output actually reached the target position); capped at 1500ms
+            long deadline = System.currentTimeMillis() + 1500L;
+            long watermarkReached = 0L;
+            while (watermarkReached == 0L && System.currentTimeMillis() < deadline) {
+                watermarkReached = this.player.getLastWatermarkReachedAtMillis();
+                if (watermarkReached == 0L) {
+                    try {
+                        Thread.sleep(5);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
             if (onComplete != null)
-                onComplete.run();
+                onComplete.accept(watermarkReached);
         });
     }
 
@@ -332,7 +363,8 @@ public class ExternalMusicHandler {
     }
 
     public boolean isPreparingCurrentMusic() {
-        return this.currentlyPlayingUrl != null && this.currentlyPlayingPath == null;
+        // AUD-51 追加: a pending stop is intent, not preparation
+        return this.currentlyPlayingUrl != null && this.currentlyPlayingPath == null && !this.stopRequested;
     }
     
     /**

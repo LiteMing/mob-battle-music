@@ -13,7 +13,6 @@ import net.minecraftforge.client.event.RegisterClientCommandsEvent;
 import nonamecrackers2.mobbattlemusic.client.audio.AudioFilterManager;
 import nonamecrackers2.mobbattlemusic.client.audio.MarkerClock;
 import nonamecrackers2.mobbattlemusic.client.audio.MbmSessionState;
-import nonamecrackers2.mobbattlemusic.client.audio.PcmFilterChain;
 import nonamecrackers2.mobbattlemusic.client.audio.PlaybackHandle;
 import nonamecrackers2.mobbattlemusic.client.audio.PreviewChannel;
 import nonamecrackers2.mobbattlemusic.client.audio.ProbeRing;
@@ -74,89 +73,23 @@ public final class MobBattleMusicClientCommands
 
 	private static String buildDebugSessionOutput()
 	{
-		// AUD-54: every probe line carries t=<epochMillis> tick=<n>
-		String prefix = "t=" + System.currentTimeMillis() + " tick=" + WorldPlaybackChannel.tickNumber() + " | ";
+		// AUD-54 追加: the numeric frame comes from the ring's last sample, so
+		// debug session and the ring carry exactly the same field set
+		ProbeRing.ProbeSample last = ProbeRing.lastSample();
+		String prefix = "t=" + (last == null ? System.currentTimeMillis() : last.epochMillis())
+				+ " tick=" + (last == null ? WorldPlaybackChannel.tickNumber() : last.tick()) + " | ";
 		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
 		StreamMusicPlayer main = handler.getPlayer();
 
 		StringBuilder output = new StringBuilder();
-		output.append(prefix).append("session=").append(MbmSessionState.current())
-				.append(" focused=").append(MbmSessionState.isFocused())
-				.append(" paused=").append(MbmSessionState.isPausedNow())
-				.append(" published=").append(MbmSessionState.isPublishedNow()).append('\n');
-
-		WorldPlaybackChannel.ChannelState worldChannelState = WorldPlaybackChannel.state();
-		// AUD-44: gain envelope currents; final = track x mute x seek
-		float trackGain = main.trackEnv().current();
-		float muteGain = StreamMusicPlayer.MUTE_ENV.current();
-		float seekGain = main.seekEnv().current();
-		float finalGain = trackGain * muteGain * seekGain;
-		output.append(prefix).append("world.state=").append(worldChannelState.name())
-				.append(" gain=").append(String.format(Locale.ROOT, "%.2f", finalGain))
+		if (last != null)
+			output.append(ProbeRing.formatLastSample());
+		// Human-readable names for the numeric fields
+		output.append(prefix).append("session.name=").append(MbmSessionState.current())
+				.append(" state.name=").append(WorldPlaybackChannel.state().name())
+				.append(" clock.name=").append(MarkerClock.state().name())
 				.append(" track=").append(handler.getCurrentlyPlayingUrl() == null
-						? "none" : handler.getCurrentlyPlayingUrl())
-				.append(" pos=").append(formatSeconds(handler.getPositionMillis())).append('\n');
-		output.append(prefix).append("world.gain final=").append(String.format(Locale.ROOT, "%.2f", finalGain))
-				.append(" track=").append(String.format(Locale.ROOT, "%.2f", trackGain))
-				.append(" mute=").append(String.format(Locale.ROOT, "%.2f", muteGain))
-				.append(" seek=").append(String.format(Locale.ROOT, "%.2f", seekGain))
-				// AUD-30 v1.7: who is writing the envelopes
-				.append(" trackTarget=").append(String.format(Locale.ROOT, "%.2f", main.trackEnv().target()))
-				.append(" gateOwner=").append(gateOwner()).append('\n');
-
-		// AUD-30 v1.3/AUD-47: audible vs decoded position and their latency gap
-		long audiblePos = handler.getPositionMillis();
-		long decodedPos = handler.getDecodedPositionMillis();
-		output.append(prefix).append("world.pos audible=").append(formatSeconds(audiblePos))
-				.append(" decoded=").append(formatSeconds(decodedPos))
-				.append(" outLatency=").append(Math.max(0L, decodedPos - audiblePos)).append("ms").append('\n');
-
-		// AUD-30 v1.3/v1.5: output line capacity, fill, watermark, underruns
-		int lineBuffer = main.getLineBufferBytes();
-		int lineAvailable = main.getLineAvailableBytes();
-		long lineWatermark = main.getLineWatermarkBytes();
-		output.append(prefix).append("world.line buffer=").append(lineBuffer)
-				.append("B fill=").append(Math.max(0, lineBuffer - lineAvailable)).append("B")
-				.append(" watermark=").append(lineWatermark).append("B")
-				.append(" underruns=").append(main.getUnderruns())
-				// AUD-48 v1.4: has the adaptive watermark converged?
-				.append(" watermarkAdaptive=").append(StreamMusicPlayer.isWatermarkAdaptive()).append('\n');
-
-		// AUD-30 v1.3/AUD-48: active filters and dry/wet mix envelope
-		java.util.List<String> activeFilters = AudioFilterManager.activeMbmFilters().stream()
-				.map(definition -> definition.id().getPath())
-				.toList();
-		output.append(prefix).append("world.filter active=[").append(String.join(",", activeFilters))
-				.append("] mix=").append(String.format(Locale.ROOT, "%.2f", PcmFilterChain.mixCurrent()))
-				.append(" target=").append(String.format(Locale.ROOT, "%.2f", PcmFilterChain.mixTarget()))
-				// AUD-30 v1.6: explicit pending-removal flag
-				.append(" pendingRemoval=").append(AudioFilterManager.isRemovalPending())
-				// AUD-48 v1.4: decomposable response latency = tick detection
-				// (50ms) + output buffer (outLatency) + state-machine consume
-				// (next tick when a removal is pending)
-				.append(" latency=").append(50 + Math.max(0L, decodedPos - audiblePos)
-						+ (AudioFilterManager.isRemovalPending() ? 50 : 0)).append("ms").append('\n');
-
-		String clockState = !MarkerClock.isActive() ? "STOPPED" : MarkerClock.state().name();
-		double drift = 0.0D;
-		String currentUrl = handler.getCurrentlyPlayingUrl();
-		if (MarkerClock.isActive() && currentUrl != null)
-			drift = MarkerClock.driftSeconds(currentUrl, handler.getPositionMillis());
-		long lastSync = MarkerClock.millisSinceLastSync();
-		output.append(prefix).append("world.clock=").append(clockState)
-				.append(" drift=").append(formatSignedSeconds(drift))
-				.append(" lastSync=").append(lastSync < 0L
-						? "n/a" : String.format(Locale.ROOT, "%.1fs_ago", lastSync / 1000.0D))
-				// AUD-30 v1.2/v1.8: injected drift (S15) and its TTL; clock
-				// state; seek accounting (AUD-52)
-				.append(" injected=").append(String.format(Locale.ROOT, "%.2f",
-						MarkerClock.injectedDriftSeconds()))
-				.append(" state=").append(MarkerClock.state().name())
-				.append(" seeks=").append(WorldPlaybackChannel.seekCount())
-				.append(" sinceSeek=").append(WorldPlaybackChannel.millisSinceSeek())
-				.append(" injectedTtl=").append(MarkerClock.injectedTtlMillis())
-				// AUD-52 修订: measured seek cost (queue -> watermark fill)
-				.append(" seekCost=").append(WorldPlaybackChannel.seekCostMillis()).append('\n');
+						? "none" : handler.getCurrentlyPlayingUrl()).append('\n');
 
 		PlaybackHandle worldHandle = WorldPlaybackChannel.handle();
 		String playlistRef = "n/a";
@@ -185,22 +118,14 @@ public final class MobBattleMusicClientCommands
 				.append(" track=").append(PreviewChannel.currentTrack() == null
 						? "none" : PreviewChannel.currentTrack()).append('\n');
 
-		int handles = (WorldPlaybackChannel.handle() == null ? 0 : 1) + (PreviewChannel.handle() == null ? 0 : 1);
-		output.append(prefix).append("handles=").append(handles).append(" orphaned=0").append('\n');
+		java.util.List<String> activeFilters = AudioFilterManager.activeMbmFilters().stream()
+				.map(definition -> definition.id().getPath())
+				.toList();
+		output.append(prefix).append("world.filter active=[").append(String.join(",", activeFilters))
+				.append("]").append('\n');
 
-		output.append(prefix).append("markers.fired=").append(MarkerClock.firedMarkers())
-				.append(" markers.next=").append(nextMarker());
+		output.append(prefix).append("markers.next=").append(nextMarker());
 		return output.toString();
-	}
-
-	private static String gateOwner()
-	{
-		StreamMusicPlayer player = ExternalMusicHandler.getInstance().getPlayer();
-		if (WorldPlaybackChannel.gateOwns(player.trackEnv()))
-			return "track";
-		if (WorldPlaybackChannel.gateOwns(player.seekEnv()))
-			return "seek";
-		return "none";
 	}
 
 	private static String nextMarker()
@@ -229,10 +154,5 @@ public final class MobBattleMusicClientCommands
 	private static String formatSeconds(long millis)
 	{
 		return String.format(Locale.ROOT, "%.2fs", millis / 1000.0D);
-	}
-
-	private static String formatSignedSeconds(double seconds)
-	{
-		return String.format(Locale.ROOT, "%+.2fs", seconds);
 	}
 }
