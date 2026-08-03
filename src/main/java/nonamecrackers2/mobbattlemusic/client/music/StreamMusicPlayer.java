@@ -44,6 +44,10 @@ public class StreamMusicPlayer {
     private final Envelope trackEnv = new Envelope(0.0f);
     private final Envelope seekEnv = new Envelope(1.0f);
     public static final Envelope MUTE_ENV = new Envelope(1.0f);
+    // AUD-49 #5: fade-in duration for the next track start, set by a gated
+    // switch whose action only stops the old source; consumed by play().
+    // 0 = the default fadeTime applies.
+    private static volatile long pendingTrackFadeInMillis;
     private volatile SourceDataLine line;
     private final AtomicLong playbackGeneration = new AtomicLong();
     private volatile long playedPcmBytes;
@@ -111,6 +115,19 @@ public class StreamMusicPlayer {
         public float target() {
             return this.target;
         }
+        
+        /**
+         * AUD-49 #3: cancel-path reset of target AND current. Normal
+         * convergence never writes current from the tick thread (AUD-45);
+         * this is the one sanctioned exception for cancellation.
+         */
+        public void hardReset(float value) {
+            float clamped = Math.max(0.0f, Math.min(1.0f, value));
+            this.current = clamped;
+            this.target = clamped;
+            this.startValue = clamped;
+            this.durationMillis = 0L;
+        }
     }
     
     public Envelope trackEnv() {
@@ -119,6 +136,16 @@ public class StreamMusicPlayer {
     
     public Envelope seekEnv() {
         return this.seekEnv;
+    }
+
+    // AUD-49 #5: register the fade-in duration for the next track start
+    // (consumed by play())
+    public static void setPendingTrackFadeInMillis(long millis) {
+        StreamMusicPlayer.pendingTrackFadeInMillis = Math.max(0L, millis);
+    }
+
+    public static void clearPendingTrackFadeInMillis() {
+        StreamMusicPlayer.pendingTrackFadeInMillis = 0L;
     }
     
     /**
@@ -132,8 +159,18 @@ public class StreamMusicPlayer {
 
     public void play(Path file, int fadeTimeInTicks, long startPositionMillis, long durationHintMillis) {
         this.fadeTime = fadeTimeInTicks;
-        // AUD-44: the fade-in is driven by the track envelope
-        this.trackEnv.setTarget(1.0f, Math.max(0L, fadeTimeInTicks) * 50L);
+        // AUD-44: the fade-in is driven by the track envelope. AUD-49 #5:
+        // when a gated switch registered a fade-in duration, restart the
+        // envelope from zero so the target change cannot be short-circuited
+        // (setTarget would otherwise no-op when the target is already 1.0).
+        long pendingFadeIn = StreamMusicPlayer.pendingTrackFadeInMillis;
+        if (pendingFadeIn > 0L) {
+            StreamMusicPlayer.pendingTrackFadeInMillis = 0L;
+            this.trackEnv.setTarget(0.0f, 0L);
+            this.trackEnv.setTarget(1.0f, pendingFadeIn);
+        } else {
+            this.trackEnv.setTarget(1.0f, Math.max(0L, fadeTimeInTicks) * 50L);
+        }
         startPlayback(file, startPositionMillis, durationHintMillis);
     }
     

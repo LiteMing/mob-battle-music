@@ -329,14 +329,15 @@ public class BattleMusicManager {
 				}
 				if (externalTrack != null && !externalTrack.getUrl().equals(url)) {
 					// AUD-46: gated fade-out before switching (same-type switch
-					// durations)
+					// durations). AUD-49 #4: on rejection keep the old track;
+					// the switch retries on the next tick.
 					ExternalUrlMusicTrack oldTrack = externalTrack;
 					String newUrl = url;
 					long fadeOut = switchFadeOutMillis(type.isIdlePlayback(), type.isIdlePlayback());
 					long fadeIn = switchFadeInMillis(type.isIdlePlayback(), type.isIdlePlayback());
-					WorldPlaybackChannel.gatedTransition(
+					boolean queued = WorldPlaybackChannel.gatedTransition(
 							ExternalMusicHandler.getInstance().getPlayer().trackEnv(),
-							fadeOut,
+							fadeOut, "track-switch",
 							() -> {
 								cacheExternalResume(trackLocation, oldTrack);
 								oldTrack.stop();
@@ -345,7 +346,8 @@ public class BattleMusicManager {
 								LOGGER.info("Switched external URL track to selected playlist entry: {}", newUrl);
 							},
 							fadeIn);
-					externalTrack = null;
+					if (queued)
+						externalTrack = null;
 				}
 
 				if (allowNewTracks
@@ -551,12 +553,13 @@ public class BattleMusicManager {
 				continue;
 			ExternalUrlMusicTrack externalTrack = entry.getValue();
 			// AUD-46: asymmetric gated fade-out per switch direction; the stop
-			// happens only after the gain has reached zero
+			// happens only after the gain has reached zero. AUD-49 #4: on
+			// rejection keep the track; the switch retries on the next tick.
 			long fadeOut = switchFadeOutMillis(entry.getKey().isIdlePlayback(), keep.isIdlePlayback());
 			long fadeIn = switchFadeInMillis(entry.getKey().isIdlePlayback(), keep.isIdlePlayback());
-			WorldPlaybackChannel.gatedTransition(
+			boolean queued = WorldPlaybackChannel.gatedTransition(
 					ExternalMusicHandler.getInstance().getPlayer().trackEnv(),
-					fadeOut,
+					fadeOut, "switch-others",
 					() -> {
 						boolean resumable = cacheExternalResume(entry.getKey().getTrack(), externalTrack);
 						externalTrack.stop();
@@ -566,6 +569,8 @@ public class BattleMusicManager {
 						scheduleIdleNextStart(entry.getKey());
 					},
 					fadeIn);
+			if (!queued)
+				break;
 		}
 	}
 

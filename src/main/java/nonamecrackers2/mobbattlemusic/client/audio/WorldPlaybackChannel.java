@@ -53,11 +53,14 @@ public final class WorldPlaybackChannel
 	private static long lastClockReportMillis;
 	private static long lastMarkerPosition = -1L;
 	private static long firedThisTrack;
-	// AUD-46: unified gated transition (fade out -> gain-zero poll -> action ->
-	// fade in). Single slot: seek and track switches are mutually exclusive.
+	// AUD-46/AUD-49: unified gated transition (fade out -> gain-zero poll ->
+	// action -> fade in). Single slot; new requests fail explicitly (AUD-49 #4).
 	private static @Nullable PendingGate pendingGate;
+	// AUD-49 #2: deadline default = fadeOutMillis + 500ms
+	private static final long GATE_TIMEOUT_GRACE_MILLIS = 500L;
 	
-	private static record PendingGate(StreamMusicPlayer.Envelope env, Runnable action, long fadeInMillis) {}
+	private static record PendingGate(StreamMusicPlayer.Envelope env, Runnable action, long fadeInMillis,
+			long createdAtMillis, long deadlineMillis, String actionName) {}
 	
 	private WorldPlaybackChannel() {}
 	
@@ -78,6 +81,11 @@ public final class WorldPlaybackChannel
 		
 		// AUD-41: unconditional projection of all four flags, every tick
 		converge(target);
+		
+		// AUD-49 #1: gate advancement runs unconditionally right after
+		// converge(), before any early-returning method; it must never live
+		// inside a guarded method
+		advancePendingGate();
 		
 		// One-time side effects are allowed on the edge only (AUD-9 v1.3)
 		if (edge && target == ChannelState.STOPPED)
@@ -117,18 +125,23 @@ public final class WorldPlaybackChannel
 				player.setMutedForGame(false);    // gameMuted = false
 				MobBattleTrack.setMainPlaybackMuted(false);
 				MarkerClock.invalidate();
+				// AUD-49 G1.6: the built-in leg follows the mute envelope in
+				// every target state
+				applyMuteToSoundEngineTracks();
 			}
 			case PAUSED -> {
 				player.pauseForGame();            // gamePaused = true
 				player.setMutedForGame(false);
 				MobBattleTrack.setMainPlaybackMuted(false);
 				MarkerClock.setState(MarkerClock.ClockState.FROZEN);
+				applyMuteToSoundEngineTracks();
 			}
 			case PLAYING -> {
 				player.resumeFromGame();          // gamePaused = false
 				player.setMutedForGame(false);
 				MobBattleTrack.setMainPlaybackMuted(false);
 				MarkerClock.setState(MarkerClock.ClockState.RUNNING);
+				applyMuteToSoundEngineTracks();
 			}
 			case MUTED -> {
 				// AUD-41: gamePaused must be explicitly false here; the v1.2
@@ -192,7 +205,9 @@ public final class WorldPlaybackChannel
 		MarkerClock.invalidate();
 		WorldPlaybackChannel.firedThisTrack = 0L;
 		WorldPlaybackChannel.lastMarkerPosition = -1L;
-		WorldPlaybackChannel.pendingGate = null;
+		// AUD-49 #3: cancel-reset - the gate and its envelopes go back to 1.0
+		clearPendingGate();
+		resetEnvelopes();
 		LOGGER.debug("[MBM] world channel -> STOPPED (audio stopped)");
 	}
 	
@@ -205,19 +220,27 @@ public final class WorldPlaybackChannel
 	}
 	
 	/**
-	 * AUD-46: unified gated transition - fade out to gain zero (polled, not
-	 * fixed-tick waited), run the action, fade in. Used by correction seeks
+	 * AUD-46/AUD-49: unified gated transition - fade out to gain zero (polled,
+	 * not fixed-tick waited), run the action, fade in. Used by correction seeks
 	 * (AUD-24) and track switches (AUD-46 durations). Not used by AUD-19
 	 * invalidation stops.
+	 *
+	 * @return false when the gate slot is busy (AUD-49 #4: explicit failure,
+	 *         never a silent drop); callers must roll back their local state
 	 */
-	public static void gatedTransition(StreamMusicPlayer.Envelope env, long fadeOutMillis,
-			Runnable action, long fadeInMillis)
+	public static boolean gatedTransition(StreamMusicPlayer.Envelope env, long fadeOutMillis,
+			String actionName, Runnable action, long fadeInMillis)
 	{
-		if (WorldPlaybackChannel.pendingGate != null)
-			return;
+		if (WorldPlaybackChannel.pendingGate != null) {
+			LOGGER.debug("[MBM] gated transition rejected (slot busy): {}", actionName);
+			return false;
+		}
 		env.setTarget(0.0f, fadeOutMillis);
-		WorldPlaybackChannel.pendingGate = new PendingGate(env, action, fadeInMillis);
-		LOGGER.debug("[MBM] gated transition queued (fadeOut={}ms)", fadeOutMillis);
+		long createdAt = System.currentTimeMillis();
+		WorldPlaybackChannel.pendingGate = new PendingGate(env, action, fadeInMillis, createdAt,
+				createdAt + fadeOutMillis + GATE_TIMEOUT_GRACE_MILLIS, actionName);
+		LOGGER.debug("[MBM] gated transition queued (fadeOut={}ms, action={})", fadeOutMillis, actionName);
+		return true;
 	}
 	
 	public static boolean isGatedTransitionActive()
@@ -225,17 +248,57 @@ public final class WorldPlaybackChannel
 		return WorldPlaybackChannel.pendingGate != null;
 	}
 	
-	// AUD-46: poll the envelope gain; the action runs only after it is at zero
+	// AUD-46/AUD-49: poll the envelope gain; the action runs only after it is
+	// at zero, or on the deadline fallback. Advancement is unconditional
+	// (AUD-49 #1).
 	private static void advancePendingGate()
 	{
 		PendingGate gate = WorldPlaybackChannel.pendingGate;
 		if (gate == null)
 			return;
-		if (gate.env().current() > 0.001f)
+		if (gate.env().current() > 0.001f) {
+			// AUD-49 #2: timeout fallback - run the action anyway and pull
+			// the envelope back to 1.0, with a fixed-format log line
+			if (System.currentTimeMillis() > gate.deadlineMillis()) {
+				WorldPlaybackChannel.pendingGate = null;
+				LOGGER.warn("[MBM] AUD-49 gate timeout after {}ms (gain={}) action={}",
+						System.currentTimeMillis() - gate.createdAtMillis(),
+						String.format(java.util.Locale.ROOT, "%.3f", gate.env().current()),
+						gate.actionName());
+				gate.action().run();
+				gate.env().setTarget(1.0f, 0L);
+			}
 			return;
+		}
 		WorldPlaybackChannel.pendingGate = null;
 		gate.action().run();
-		gate.env().setTarget(1.0f, gate.fadeInMillis());
+		// AUD-49 #5: the fade-in must not fade silence. When the action
+		// started a source (e.g. seek), fade in now; when it only stopped the
+		// old source, the fade-in is triggered by the new source's start.
+		if (ExternalMusicHandler.getInstance().getPlayer().hasActiveTrack())
+			gate.env().setTarget(1.0f, gate.fadeInMillis());
+		else
+			StreamMusicPlayer.setPendingTrackFadeInMillis(gate.fadeInMillis());
+	}
+	
+	// AUD-49 #3: every path that clears the gate must also reset the occupied
+	// envelopes' target AND current to 1.0
+	private static void clearPendingGate()
+	{
+		PendingGate gate = WorldPlaybackChannel.pendingGate;
+		WorldPlaybackChannel.pendingGate = null;
+		StreamMusicPlayer.clearPendingTrackFadeInMillis();
+		if (gate != null) {
+			gate.env().hardReset(1.0f);
+			LOGGER.debug("[MBM] gated transition cancelled (env reset to 1.0): {}", gate.actionName());
+		}
+	}
+	
+	private static void resetEnvelopes()
+	{
+		// AUD-49 #3: target AND current back to 1.0 for both envelopes
+		ExternalMusicHandler.getInstance().getPlayer().trackEnv().hardReset(1.0f);
+		ExternalMusicHandler.getInstance().getPlayer().seekEnv().hardReset(1.0f);
 	}
 	
 	/**
@@ -372,8 +435,8 @@ public final class WorldPlaybackChannel
 		if (MarkerClock.isActive())
 			MarkerClock.tick(url, positionMillis, CORRECTION_SINK);
 		
-		// AUD-46: execute a pending gated transition (seek or track switch)
-		advancePendingGate();
+		// AUD-49 #1: gate advancement lives in update()'s unconditional section
+		// (after converge), never inside early-returning methods like this one
 		
 		// Marker counting for the probe (AUD-27: the actual firing stays in the
 		// main-playback selection engine; this is observation only)
@@ -395,7 +458,9 @@ public final class WorldPlaybackChannel
 		{
 			long targetMillis = Math.round(serverPositionSeconds * 1000.0D);
 			ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
-			WorldPlaybackChannel.gatedTransition(handler.getPlayer().seekEnv(), 120L, () -> {
+			// AUD-49 #4: an explicit failure here just means the drift is
+			// re-evaluated on the next tick; no state to roll back
+			WorldPlaybackChannel.gatedTransition(handler.getPlayer().seekEnv(), 120L, "clock-seek", () -> {
 				if (handler.seekMusic(targetMillis)) {
 					MarkerClock.clearInjectedDrift();
 					WorldPlaybackChannel.lastMarkerPosition = -1L;
@@ -403,9 +468,6 @@ public final class WorldPlaybackChannel
 					LOGGER.debug("[MBM] AUD-24 seek to {}ms (gain confirmed 0.00)", targetMillis);
 				}
 			}, 120L);
-			if (WorldPlaybackChannel.pendingGate != null)
-				LOGGER.debug("[MBM] AUD-24 correction seek to {}ms queued (fade out, drift={}s)", targetMillis,
-						String.format(java.util.Locale.ROOT, "%+.2f", drift));
 		}
 	};
 	
@@ -449,6 +511,9 @@ public final class WorldPlaybackChannel
 		MarkerClock.invalidate();
 		WorldPlaybackChannel.firedThisTrack = 0L;
 		WorldPlaybackChannel.lastMarkerPosition = -1L;
+		// AUD-49 #3: cancel-reset - the gate and its envelopes go back to 1.0
+		clearPendingGate();
+		resetEnvelopes();
 		LOGGER.debug("[MBM] world channel -> STOPPED (invalidated)");
 		// AUD-30 v1.2: fixed-format invalidation log. deltaMs is measured in
 		// code from the data-layer commit stamp to the audio stop above;
