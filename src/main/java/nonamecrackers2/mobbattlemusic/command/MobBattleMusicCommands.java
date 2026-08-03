@@ -33,10 +33,12 @@ import net.minecraftforge.registries.ForgeRegistries;
 import nonamecrackers2.mobbattlemusic.MobBattleMusicMod;
 import nonamecrackers2.mobbattlemusic.client.audio.MarkerClock;
 import nonamecrackers2.mobbattlemusic.client.audio.MbmSessionState;
+import nonamecrackers2.mobbattlemusic.client.audio.PcmFilterChain;
 import nonamecrackers2.mobbattlemusic.client.audio.PlaybackHandle;
 import nonamecrackers2.mobbattlemusic.client.audio.PreviewChannel;
 import nonamecrackers2.mobbattlemusic.client.audio.SourceRef;
 import nonamecrackers2.mobbattlemusic.client.audio.WorldPlaybackChannel;
+import nonamecrackers2.mobbattlemusic.client.audio.AudioFilterManager;
 import nonamecrackers2.mobbattlemusic.client.music.ExternalMusicHandler;
 import nonamecrackers2.mobbattlemusic.client.music.StreamMusicPlayer;
 import nonamecrackers2.mobbattlemusic.client.music.TimelineMarkerStore;
@@ -274,6 +276,22 @@ public class MobBattleMusicCommands
 		output.append("world.pos audible=").append(formatSeconds(audiblePos))
 				.append(" decoded=").append(formatSeconds(decodedPos))
 				.append(" outLatency=").append(Math.max(0L, decodedPos - audiblePos)).append("ms").append('\n');
+
+		// AUD-30 v1.3/AUD-48: output line capacity, fill and watermark
+		int lineBuffer = main.getLineBufferBytes();
+		int lineAvailable = main.getLineAvailableBytes();
+		long lineWatermark = main.getLineWatermarkBytes();
+		output.append("world.line buffer=").append(lineBuffer)
+				.append("B fill=").append(Math.max(0, lineBuffer - lineAvailable)).append("B")
+				.append(" watermark=").append(lineWatermark).append("B").append('\n');
+
+		// AUD-30 v1.3/AUD-48: active filters and dry/wet mix envelope
+		java.util.List<String> activeFilters = AudioFilterManager.activeMbmFilters().stream()
+				.map(definition -> definition.id().getPath())
+				.toList();
+		output.append("world.filter active=[").append(String.join(",", activeFilters))
+				.append("] mix=").append(String.format(Locale.ROOT, "%.2f", PcmFilterChain.mixCurrent()))
+				.append(" target=").append(String.format(Locale.ROOT, "%.2f", PcmFilterChain.mixTarget())).append('\n');
 
 		String clockState = !MarkerClock.isActive() ? "STOPPED" : MarkerClock.state().name();
 		double drift = 0.0D;

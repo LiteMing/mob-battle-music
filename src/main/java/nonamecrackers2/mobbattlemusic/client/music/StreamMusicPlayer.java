@@ -53,6 +53,9 @@ public class StreamMusicPlayer {
     // current line; getLongFramePosition() counts frames already played
     private volatile long positionOffsetMillis;
     private volatile float lineFrameRate;
+    // AUD-48: output watermark (target fill in bytes, default 120ms); the
+    // line capacity (500ms) is separate and acts as the underrun reserve
+    private volatile long lineWatermarkBytes;
     
     /**
      * AUD-44/45: a single gain envelope, shape
@@ -224,8 +227,15 @@ public class StreamMusicPlayer {
                         LOGGER.info("Got audio line: {}", playbackLine);
                 
                         LOGGER.info("Opening audio line...");
-                        playbackLine.open(decodedFormat);
+                        // AUD-48: explicit capacity (500ms) separated from the
+                        // target watermark (120ms); capacity is the underrun
+                        // reserve, the watermark decides actual latency
+                        long capacityBytes = Math.max(1L, Math.round(
+                                decodedFormat.getFrameRate() * decodedFormat.getFrameSize() * 0.5D));
+                        playbackLine.open(decodedFormat, (int)Math.min(Integer.MAX_VALUE, capacityBytes));
                         LOGGER.info("Audio line opened, buffer size: {}", playbackLine.getBufferSize());
+                        lineWatermarkBytes = Math.max(1L, Math.round(
+                                decodedFormat.getFrameRate() * decodedFormat.getFrameSize() * 0.12D));
                         // AUD-47: a freshly opened line starts its frame counter at
                         // zero; record the frame rate for position derivation
                         lineFrameRate = decodedFormat.getFrameRate();
@@ -258,6 +268,21 @@ public class StreamMusicPlayer {
                             if (generation != playbackGeneration.get() || !playing)
                                 break;
 
+                            // AUD-48: write throttling to the target watermark.
+                            // Yield briefly while the fill exceeds the
+                            // watermark; never fill the buffer. When playback
+                            // drains faster than we decode, the condition fails
+                            // and we write immediately (no added underrun risk).
+                            while (generation == playbackGeneration.get() && playing && !paused && !gamePaused) {
+                                int capacity = playbackLine.getBufferSize();
+                                int filled = capacity - playbackLine.available();
+                                if (filled <= this.lineWatermarkBytes || filled < BUFFER_SIZE)
+                                    break;
+                                Thread.sleep(2);
+                            }
+                            if (generation != playbackGeneration.get() || !playing)
+                                break;
+
                             // AUD-45: the single gain computation entry of the
                             // whole process, on the playback thread only
                             this.trackEnv.advance();
@@ -266,7 +291,11 @@ public class StreamMusicPlayer {
                             applyGain();
                             long currentFilterRevision = AudioFilterManager.revision();
                             if (currentFilterRevision != filterRevision) {
-                                filterChain = PcmFilterChain.create(AudioFilterManager.activeMbmFilters(), decodedFormat);
+                                // AUD-48: rebuild with state preservation
+                                // (same type+params keep their state; otherwise
+                                // a >=20ms crossfade runs)
+                                filterChain = PcmFilterChain.create(AudioFilterManager.activeMbmFilters(),
+                                        decodedFormat, filterChain);
                                 filterRevision = currentFilterRevision;
                             }
                             filterChain.process(buffer, bytesRead);
@@ -328,6 +357,7 @@ public class StreamMusicPlayer {
         // AUD-47: reset the audible-position base with the generation
         positionOffsetMillis = 0L;
         lineFrameRate = 0.0F;
+        lineWatermarkBytes = 0L;
         
         SourceDataLine activeLine = line;
         line = null;
@@ -358,6 +388,21 @@ public class StreamMusicPlayer {
     public long getDecodedPositionMillis() {
         double bytesPerSecond = decodedBytesPerSecond;
         return bytesPerSecond <= 0.0D ? 0L : Math.max(0L, Math.round(playedPcmBytes * 1000.0D / bytesPerSecond));
+    }
+
+    // AUD-48: line diagnostics for the probe (world.line)
+    public int getLineBufferBytes() {
+        SourceDataLine activeLine = line;
+        return activeLine == null || !activeLine.isOpen() ? 0 : activeLine.getBufferSize();
+    }
+
+    public int getLineAvailableBytes() {
+        SourceDataLine activeLine = line;
+        return activeLine == null || !activeLine.isOpen() ? 0 : activeLine.available();
+    }
+
+    public long getLineWatermarkBytes() {
+        return this.lineWatermarkBytes;
     }
 
     public long getDurationMillis() {

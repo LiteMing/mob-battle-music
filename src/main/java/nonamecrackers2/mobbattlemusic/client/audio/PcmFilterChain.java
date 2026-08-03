@@ -3,48 +3,115 @@ package nonamecrackers2.mobbattlemusic.client.audio;
 import java.util.ArrayList;
 import java.util.List;
 
+import javax.annotation.Nullable;
 import javax.sound.sampled.AudioFormat;
 
 public final class PcmFilterChain
 {
+	// AUD-48: dry/wet mix envelope (in 150ms, out 350ms), shared by all chains
+	private static final long MIX_IN_MILLIS = 150L;
+	private static final long MIX_OUT_MILLIS = 350L;
+	// AUD-48: crossfade between old and new chains when processor state cannot
+	// be preserved
+	private static final long CHAIN_TRANSITION_MILLIS = 20L;
+	private static final MixEnvelope MIX = new MixEnvelope();
+
 	private final List<Processor> processors;
 	private final int channels;
 	private final int frameSize;
+	private @Nullable PcmFilterChain transitionFrom;
+	private long transitionStartMillis;
 
 	private PcmFilterChain(List<Processor> processors, AudioFormat format)
 	{
 		this.processors = processors;
 		this.channels = format.getChannels();
 		this.frameSize = format.getFrameSize();
+		this.transitionStartMillis = System.currentTimeMillis();
 	}
 
 	public static PcmFilterChain create(List<AudioFilterDefinition> definitions, AudioFormat format)
+	{
+		return create(definitions, format, null);
+	}
+
+	/**
+	 * AUD-48: rebuild a chain from definitions. Processors with the same
+	 * definition (same type and parameters) at the same position keep their
+	 * internal state (biquad x1/x2/y1/y2, lofi counters/held); when state
+	 * cannot be preserved a >=20ms crossfade runs from the previous chain.
+	 */
+	public static PcmFilterChain create(List<AudioFilterDefinition> definitions, AudioFormat format,
+			@Nullable PcmFilterChain previous)
 	{
 		if (format.isBigEndian() || format.getSampleSizeInBits() != 16 ||
 				!AudioFormat.Encoding.PCM_SIGNED.equals(format.getEncoding()))
 			return new PcmFilterChain(List.of(), format);
 		List<Processor> processors = new ArrayList<>();
-		for (AudioFilterDefinition definition : definitions) {
+		boolean preservedAll = previous != null;
+		for (int i = 0; i < definitions.size(); i++) {
+			AudioFilterDefinition definition = definitions.get(i);
 			switch (definition.type()) {
-				case LOW_PASS, HIGH_PASS, PEAK_EQ -> processors.add(new Biquad(definition, format));
-				case LOFI -> processors.add(new Lofi(definition, format));
+				case LOW_PASS, HIGH_PASS, PEAK_EQ -> {
+					Biquad biquad = new Biquad(definition, format);
+					Biquad old = previous == null ? null : previous.biquadAt(i);
+					if (old != null && old.matches(definition))
+						biquad.copyStateFrom(old);
+					else
+						preservedAll = false;
+					processors.add(biquad);
+				}
+				case LOFI -> {
+					Lofi lofi = new Lofi(definition, format);
+					Lofi old = previous == null ? null : previous.lofiAt(i);
+					if (old != null && old.matches(definition))
+						lofi.copyStateFrom(old);
+					else
+						preservedAll = false;
+					processors.add(lofi);
+				}
 			}
 		}
-		return new PcmFilterChain(List.copyOf(processors), format);
+		PcmFilterChain chain = new PcmFilterChain(List.copyOf(processors), format);
+		if (!preservedAll && previous != null && !previous.processors.isEmpty())
+			chain.transitionFrom = previous;
+		return chain;
 	}
 
 	public void process(byte[] buffer, int length)
 	{
-		if (this.processors.isEmpty())
+		if (this.processors.isEmpty() && this.transitionFrom == null && MIX.current() <= 0.001f)
 			return;
 		int alignedLength = length - length % this.frameSize;
+		// AUD-48: the mix envelope advances on the playback thread
+		MIX.advance();
+		PcmFilterChain transition = this.transitionFrom;
 		for (int offset = 0; offset < alignedLength; offset += this.frameSize) {
 			for (int channel = 0; channel < this.channels; channel++) {
 				int sampleOffset = offset + channel * 2;
 				int sample = (short)((buffer[sampleOffset] & 0xFF) | (buffer[sampleOffset + 1] << 8));
-				double value = sample / 32768.0D;
+				double dry = sample / 32768.0D;
+				double value = dry;
 				for (Processor processor : this.processors)
 					value = processor.process(channel, value);
+				if (transition != null) {
+					// AUD-48: crossfade from the previous chain while its state
+					// drains
+					double oldValue = dry;
+					for (Processor processor : transition.processors)
+						oldValue = processor.process(channel, oldValue);
+					double progress = (System.currentTimeMillis() - this.transitionStartMillis)
+							/ (double)CHAIN_TRANSITION_MILLIS;
+					if (progress >= 1.0D) {
+						this.transitionFrom = null;
+						transition = null;
+					} else {
+						value = oldValue * (1.0D - progress) + value * progress;
+					}
+				}
+				// AUD-48: dry/wet crossfade, out = dry x (1 - mix) + wet x mix
+				double mix = MIX.current();
+				value = dry * (1.0D - mix) + value * mix;
 				int output = (int)Math.round(Math.max(-1.0D, Math.min(0.999969D, value)) * 32768.0D);
 				buffer[sampleOffset] = (byte)output;
 				buffer[sampleOffset + 1] = (byte)(output >>> 8);
@@ -52,13 +119,104 @@ public final class PcmFilterChain
 		}
 	}
 
+	// AUD-48: mix envelope accessors for the probe
+	public static float mixCurrent()
+	{
+		return MIX.current();
+	}
+
+	public static float mixTarget()
+	{
+		return MIX.target();
+	}
+
+	// AUD-48: called on activation (in, 150ms) / deactivation (out, 350ms)
+	public static void setMixTarget(float target, long fadeMillis)
+	{
+		MIX.setTarget(target, fadeMillis);
+	}
+
+	public static long mixInMillis()
+	{
+		return MIX_IN_MILLIS;
+	}
+
+	public static long mixOutMillis()
+	{
+		return MIX_OUT_MILLIS;
+	}
+
+	private @Nullable Biquad biquadAt(int index)
+	{
+		if (index >= 0 && index < this.processors.size() && this.processors.get(index) instanceof Biquad biquad)
+			return biquad;
+		return null;
+	}
+
+	private @Nullable Lofi lofiAt(int index)
+	{
+		if (index >= 0 && index < this.processors.size() && this.processors.get(index) instanceof Lofi lofi)
+			return lofi;
+		return null;
+	}
+
 	private interface Processor
 	{
 		double process(int channel, double input);
 	}
 
+	// AUD-44-shaped envelope (current, target, startValue, startMillis,
+	// durationMillis), advanced only on the playback thread
+	private static final class MixEnvelope
+	{
+		private volatile float current = 1.0f;
+		private volatile float target = 1.0f;
+		private volatile float startValue = 1.0f;
+		private volatile long startMillis;
+		private volatile long durationMillis;
+
+		private void setTarget(float newTarget, long fadeMillis)
+		{
+			float clamped = Math.max(0.0f, Math.min(1.0f, newTarget));
+			if (clamped == this.target)
+				return;
+			this.startValue = this.current;
+			this.startMillis = System.currentTimeMillis();
+			this.durationMillis = Math.max(0L, fadeMillis);
+			this.target = clamped;
+		}
+
+		private void advance()
+		{
+			float t = this.target;
+			if (this.current == t)
+				return;
+			long d = this.durationMillis;
+			if (d <= 0L) {
+				this.current = t;
+				return;
+			}
+			float progress = (float)((System.currentTimeMillis() - this.startMillis) / (double)d);
+			if (progress >= 1.0f)
+				this.current = t;
+			else
+				this.current = this.startValue + (t - this.startValue) * progress;
+		}
+
+		private float current()
+		{
+			return this.current;
+		}
+
+		private float target()
+		{
+			return this.target;
+		}
+	}
+
 	private static final class Biquad implements Processor
 	{
+		private final AudioFilterDefinition definition;
 		private final double b0;
 		private final double b1;
 		private final double b2;
@@ -71,6 +229,7 @@ public final class PcmFilterChain
 
 		private Biquad(AudioFilterDefinition definition, AudioFormat format)
 		{
+			this.definition = definition;
 			double sampleRate = format.getSampleRate();
 			double frequency = Math.min(definition.frequencyHz(), sampleRate * 0.45D);
 			double omega = 2.0D * Math.PI * frequency / sampleRate;
@@ -117,6 +276,20 @@ public final class PcmFilterChain
 			this.y2 = new double[format.getChannels()];
 		}
 
+		// AUD-48: same type and parameters -> state can be preserved
+		private boolean matches(AudioFilterDefinition other)
+		{
+			return this.definition.equals(other);
+		}
+
+		private void copyStateFrom(Biquad other)
+		{
+			System.arraycopy(other.x1, 0, this.x1, 0, this.x1.length);
+			System.arraycopy(other.x2, 0, this.x2, 0, this.x2.length);
+			System.arraycopy(other.y1, 0, this.y1, 0, this.y1.length);
+			System.arraycopy(other.y2, 0, this.y2, 0, this.y2.length);
+		}
+
 		@Override
 		public double process(int channel, double input)
 		{
@@ -132,6 +305,7 @@ public final class PcmFilterChain
 
 	private static final class Lofi implements Processor
 	{
+		private final AudioFilterDefinition definition;
 		private final int holdFrames;
 		private final double quantizationLevels;
 		private final int[] counters;
@@ -139,10 +313,23 @@ public final class PcmFilterChain
 
 		private Lofi(AudioFilterDefinition definition, AudioFormat format)
 		{
+			this.definition = definition;
 			this.holdFrames = Math.max(1, Math.round(format.getSampleRate() / definition.sampleRateHz()));
 			this.quantizationLevels = 1 << (definition.bitDepth() - 1);
 			this.counters = new int[format.getChannels()];
 			this.held = new double[format.getChannels()];
+		}
+
+		// AUD-48: same type and parameters -> state can be preserved
+		private boolean matches(AudioFilterDefinition other)
+		{
+			return this.definition.equals(other);
+		}
+
+		private void copyStateFrom(Lofi other)
+		{
+			System.arraycopy(other.counters, 0, this.counters, 0, this.counters.length);
+			System.arraycopy(other.held, 0, this.held, 0, this.held.length);
 		}
 
 		@Override

@@ -115,6 +115,14 @@ public final class AudioFilterManager
 		}
 		List<AudioFilterDefinition> immutable = List.copyOf(next);
 		if (!immutable.equals(active)) {
+			boolean wasActive = !active.isEmpty();
+			boolean nowActive = !immutable.isEmpty();
+			// AUD-48: the dry/wet mix envelope follows activation state;
+			// in 150ms, out 350ms - never a full switch inside one buffer
+			if (!wasActive && nowActive)
+				PcmFilterChain.setMixTarget(1.0f, PcmFilterChain.mixInMillis());
+			else if (wasActive && !nowActive)
+				PcmFilterChain.setMixTarget(0.0f, PcmFilterChain.mixOutMillis());
 			active = immutable;
 			REVISION.incrementAndGet();
 			GlobalAudioFilterManager.onDefinitionsChanged(immutable);
@@ -129,6 +137,8 @@ public final class AudioFilterManager
 	public static void deactivate()
 	{
 		if (!active.isEmpty()) {
+			// AUD-48: fade the filter out (350ms) rather than cutting
+			PcmFilterChain.setMixTarget(0.0f, PcmFilterChain.mixOutMillis());
 			active = List.of();
 			REVISION.incrementAndGet();
 			GlobalAudioFilterManager.onDefinitionsChanged(active);
