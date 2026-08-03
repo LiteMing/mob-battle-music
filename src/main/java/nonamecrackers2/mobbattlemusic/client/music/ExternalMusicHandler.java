@@ -442,25 +442,18 @@ public class ExternalMusicHandler {
         return cache.getCachedFile(url);
     }
     
-    // K9-3/K10-C: apply the persisted gains from config to both players at
-    // startup and whenever the user drags a volume slider (config already
-    // updated). When preview follows main, ONLY the preview user gain mirrors
-    // the main gain (previewGain stays 1.0) - the chain multiplies
-    // userGain x previewGain, so following through a single factor avoids
-    // squaring the volume. Otherwise the preview user gain is 1.0 and the
-    // preview gain is fully independent.
+    // K9-3/K10-C/K11-C: apply the persisted gains from config to both
+    // players. previewGain is the INDEPENDENT preview value and is never
+    // overwritten by follows-main (the switch only changes the runtime
+    // effective gain through the user-gain factor); toggling follows-main
+    // therefore preserves the user's independent preview volume.
     public void applyGainConfig() {
         double mainGain = MobBattleMusicConfig.CLIENT.mbmUserGain.get();
         double previewGain = MobBattleMusicConfig.CLIENT.previewGain.get();
         boolean follows = MobBattleMusicConfig.CLIENT.previewFollowsMain.get();
         this.player.setUserGain((float) mainGain);
-        if (follows) {
-            this.previewPlayer.setUserGain((float) mainGain);
-            this.previewPlayer.setPreviewGain(1.0f);
-        } else {
-            this.previewPlayer.setUserGain(1.0f);
-            this.previewPlayer.setPreviewGain((float) previewGain);
-        }
+        this.previewPlayer.setPreviewGain((float) previewGain);
+        this.previewPlayer.setUserGain((float) (follows ? mainGain : 1.0));
     }
 
     public float getMainUserGain() {

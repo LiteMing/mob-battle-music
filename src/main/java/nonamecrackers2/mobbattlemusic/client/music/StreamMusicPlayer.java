@@ -282,10 +282,11 @@ public class StreamMusicPlayer {
     private void startPlayback(Path file, long startPositionMillis, long durationHintMillis) {
         // K8-B: the new generation must not open a line while the old one is
         // still alive - cancel the old generation, close its line (close-once)
-        // and wait for the old playback thread to exit. Waiting stays on the
-        // caller thread; all callers here run on MBM-Audio-IO, never the
-        // client main thread.
-        stopAndAwaitThreadExit();
+        // and wait for the old playback thread to exit. K11-C: a thread that
+        // does not exit within the bound REFUSES the new generation - the
+        // single-line/single-thread invariant is strict.
+        if (!stopAndAwaitThreadExit())
+            return;
         long generationId = playbackGeneration.incrementAndGet();
         PlaybackGeneration generation = new PlaybackGeneration(generationId);
         this.currentGeneration = generation;
@@ -589,12 +590,17 @@ public class StreamMusicPlayer {
     }
     
     /**
-     * K8-B: stop playback and wait for the old playback thread to exit so a
-     * new generation can open its line safely (open-lines invariant <= 1).
-     * The wait is bounded (2s) and must only be invoked from MBM-Audio-IO -
-     * never from the client main thread.
+     * K8-B/K11-C: stop playback and wait for the old playback thread to exit
+     * so a new generation can open its line safely (open-lines invariant
+     * <= 1). The wait is bounded (2s). If the old thread does not exit in
+     * time, the new generation is REFUSED (never started) - the invariant is
+     * strict, not best-effort. Must only be invoked from MBM-Audio-IO or
+     * another background thread, never from the client main thread.
+     *
+     * @return true when the old thread has exited and a new generation may
+     *         start; false when the old thread is still alive
      */
-    private void stopAndAwaitThreadExit() {
+    private boolean stopAndAwaitThreadExit() {
         this.stop();
         Thread oldThread = this.playbackThread;
         if (oldThread != null && oldThread != Thread.currentThread() && oldThread.isAlive()) {
@@ -603,7 +609,15 @@ public class StreamMusicPlayer {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
+            if (oldThread.isAlive()) {
+                LOGGER.error("[MBM] K11-C refusing to start a new generation: "
+                        + "previous playback thread {} is still alive after 2000ms "
+                        + "(openLines={} threads={})", oldThread.getName(),
+                        this.openLines.get(), this.playbackThreads.get());
+                return false;
+            }
         }
+        return true;
     }
 
     /**

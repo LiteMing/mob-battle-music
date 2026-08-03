@@ -1002,12 +1002,13 @@ public class MusicPlaylistScreen extends Screen
 			MobBattleMusicConfig.CLIENT.mbmUserGain.set((double) value);
 			ExternalMusicHandler.getInstance().getPlayer().setUserGain(value);
 			if (this.previewFollowsMain) {
-				// K10-C: following mirrors ONE factor (user gain); the preview
-				// gain stays 1.0 so the chain never squares the volume
+				// K10-C/K11-C: following mirrors ONE factor (user gain); the
+				// independent previewGain config value stays untouched
 				ExternalMusicHandler.getInstance().getPreviewPlayer().setUserGain(value);
-				ExternalMusicHandler.getInstance().getPreviewPlayer().setPreviewGain(1.0f);
 			}
 		} else {
+			// the preview slider only ever writes the INDEPENDENT preview
+			// gain - it is remembered across follows-main toggles
 			this.previewGainValue = value;
 			MobBattleMusicConfig.CLIENT.previewGain.set((double) value);
 			ExternalMusicHandler.getInstance().getPreviewPlayer().setPreviewGain(value);
@@ -1020,14 +1021,16 @@ public class MusicPlaylistScreen extends Screen
 		MobBattleMusicConfig.CLIENT.previewFollowsMain.set(this.previewFollowsMain);
 		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
 		if (this.previewFollowsMain) {
-			// K10-C: exactly one factor inherits the main gain
+			// K11-C: only the runtime effective gain changes - the stored
+			// independent previewGain value is preserved for the next toggle
 			handler.getPreviewPlayer().setUserGain(this.mainGainValue);
 			handler.getPreviewPlayer().setPreviewGain(1.0f);
-			this.previewGainValue = 1.0F;
-			MobBattleMusicConfig.CLIENT.previewGain.set(1.0D);
 		} else {
 			handler.getPreviewPlayer().setUserGain(1.0f);
-			handler.getPreviewPlayer().setPreviewGain(this.previewGainValue);
+			// restore the remembered independent value
+			float independent = MobBattleMusicConfig.CLIENT.previewGain.get().floatValue();
+			this.previewGainValue = independent;
+			handler.getPreviewPlayer().setPreviewGain(independent);
 		}
 		saveVolumeConfig();
 	}

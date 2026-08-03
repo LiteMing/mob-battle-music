@@ -157,12 +157,17 @@ public final class ProbeRing
 				.append(" intent=").append(s.currentIntent() == null ? "-" : s.currentIntent())
 				.append(" userGain=").append(String.format(Locale.ROOT, "%.2f", s.userGain()))
 				.append(" previewGain=").append(String.format(Locale.ROOT, "%.2f", s.previewGain()));
-		// K10-C: per-player invariant checks - parallel main+preview playback
-		// is legal and must NOT trip either check
+		// K10-C/K11-C: per-player invariant checks - parallel main+preview
+		// playback is legal and must NOT trip either check; thread counts
+		// are checked too (a refused-generation event shows up here)
 		if (s.mainOpenLines() > 1)
 			builder.append(" ERROR mainOpenLines>1 single-line invariant violated");
 		if (s.previewOpenLines() > 1)
 			builder.append(" ERROR previewOpenLines>1 single-line invariant violated");
+		if (s.mainPlaybackThreads() > 1)
+			builder.append(" ERROR mainPlaybackThreads>1 single-thread invariant violated");
+		if (s.previewPlaybackThreads() > 1)
+			builder.append(" ERROR previewPlaybackThreads>1 single-thread invariant violated");
 		builder.append('\n');
 	}
 
