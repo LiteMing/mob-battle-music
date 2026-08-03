@@ -32,7 +32,25 @@ import nonamecrackers2.mobbattlemusic.client.audio.PcmFilterChain;
 public class StreamMusicPlayer {
     private static final Logger LOGGER = LogManager.getLogger("mobbattlemusic/StreamMusicPlayer");
     private static final int BUFFER_SIZE = 4096;
-    
+    // K8-B: single-lifecycle primitive for one playback generation. Invariant:
+    // open SourceDataLine count <= 1 AND live playback generation count <= 1.
+    // closeLineOnce() is the only closer and is idempotent (closeRequested
+    // gates it), so stop() and the playback thread's finally never race into
+    // a double close.
+    private static final class PlaybackGeneration {
+        final long id;
+        volatile SourceDataLine line;
+        volatile boolean closeRequested;
+        volatile boolean closed;
+        PlaybackGeneration(long id) { this.id = id; }
+    }
+    // K8-B: live diagnostics for the probe: open lines and running playback
+    // threads across all players (main + preview)
+    private static final java.util.concurrent.atomic.AtomicInteger OPEN_LINES =
+            new java.util.concurrent.atomic.AtomicInteger();
+    private static final java.util.concurrent.atomic.AtomicInteger PLAYBACK_THREADS =
+            new java.util.concurrent.atomic.AtomicInteger();
+
     private Thread playbackThread;
     private volatile boolean playing = false;
     private volatile boolean paused = false;
@@ -54,7 +72,11 @@ public class StreamMusicPlayer {
     // AUD-49 #7: ownership check registered by the main playback channel;
     // other writers of a gate-owned envelope must be no-ops
     private static volatile java.util.function.Predicate<Envelope> gateOwnershipCheck = env -> false;
-    private volatile SourceDataLine line;
+    // K8-B: the line reference lives on the PlaybackGeneration - pause/resume/
+    // position reads take it from the current generation, so an old playback
+    // thread can never operate a newer generation's line through a shared
+    // field
+    private volatile PlaybackGeneration currentGeneration;
     private final AtomicLong playbackGeneration = new AtomicLong();
     private volatile long playedPcmBytes;
     private volatile long totalDurationMillis;
@@ -236,8 +258,15 @@ public class StreamMusicPlayer {
     }
 
     private void startPlayback(Path file, long startPositionMillis, long durationHintMillis) {
-        stop();
-        long generation = playbackGeneration.incrementAndGet();
+        // K8-B: the new generation must not open a line while the old one is
+        // still alive - cancel the old generation, close its line (close-once)
+        // and wait for the old playback thread to exit. Waiting stays on the
+        // caller thread; all callers here run on MBM-Audio-IO, never the
+        // client main thread.
+        stopAndAwaitThreadExit();
+        long generationId = playbackGeneration.incrementAndGet();
+        PlaybackGeneration generation = new PlaybackGeneration(generationId);
+        this.currentGeneration = generation;
         // AUD-42: a new generation must not inherit the previous playback's
         // pause/mute intent; the channel re-applies its target state the same
         // tick (AUD-41)
@@ -249,6 +278,7 @@ public class StreamMusicPlayer {
         totalDurationMillis = Math.max(0L, durationHintMillis);
         decodedBytesPerSecond = 0.0D;
         
+        PLAYBACK_THREADS.incrementAndGet();
         playbackThread = new Thread(() -> {
             SourceDataLine playbackLine = null;
             try {
@@ -310,10 +340,13 @@ public class StreamMusicPlayer {
                         }
                 
                         LOGGER.debug("Getting audio line...");
-                        playbackLine = (SourceDataLine) AudioSystem.getLine(info);
-                        if (generation != playbackGeneration.get())
+                        // K8-B: generation check BEFORE the potentially
+                        // blocking line acquisition
+                        if (generation != this.currentGeneration)
                             return;
-                        line = playbackLine;
+                        playbackLine = (SourceDataLine) AudioSystem.getLine(info);
+                        if (generation != this.currentGeneration)
+                            return;
                         LOGGER.debug("Got audio line: {}", playbackLine);
                 
                         LOGGER.debug("Opening audio line...");
@@ -325,6 +358,11 @@ public class StreamMusicPlayer {
                                 decodedFormat.getFrameRate() * decodedFormat.getFrameSize() * 0.5D));
                         playbackLine.open(decodedFormat, (int)Math.min(Integer.MAX_VALUE, capacityBytes));
                         LOGGER.debug("Audio line opened, buffer size: {}", playbackLine.getBufferSize());
+                        // K8-B: the line joins THIS generation only; the
+                        // open-lines counter is incremented here and
+                        // decremented exactly once by closeLineOnce
+                        generation.line = playbackLine;
+                        OPEN_LINES.incrementAndGet();
                         long watermarkMillis = StreamMusicPlayer.adaptiveWatermarkMillis > 0L
                                 ? StreamMusicPlayer.adaptiveWatermarkMillis : 60L;
                         lineWatermarkBytes = Math.max(1L, Math.round(
@@ -357,7 +395,7 @@ public class StreamMusicPlayer {
                 
                         LOGGER.debug("Entering playback loop at {} ms...", getPositionMillis());
                         outerLoop:
-                        while (generation == playbackGeneration.get() && playing &&
+                        while (generation == this.currentGeneration && playing &&
                                 (bytesRead = decodedStream.read(buffer)) != -1) {
                             // Handle pause (manual or game pause)
                             // AUD-48 v1.6: paused and gamePaused are treated
@@ -365,7 +403,7 @@ public class StreamMusicPlayer {
                             // K3 P1-3: park instead of sleep - resume latency
                             // drops from up to 100ms (sleep quantum) to ~0
                             boolean suspended = false;
-                            while ((paused || gamePaused) && generation == playbackGeneration.get() && playing) {
+                            while ((paused || gamePaused) && generation == this.currentGeneration && playing) {
                                 suspended = true;
                                 java.util.concurrent.locks.LockSupport.park(this);
                                 if (Thread.interrupted()) {
@@ -381,7 +419,7 @@ public class StreamMusicPlayer {
                             if (suspended && !(paused || gamePaused))
                                 this.resumeBufferIndex = this.bufferIndex;
 
-                            if (generation != playbackGeneration.get() || !playing)
+                            if (generation != this.currentGeneration || !playing)
                                 break;
 
                             // AUD-48 v1.5/v1.6: the adaptive watermark has a
@@ -437,7 +475,7 @@ public class StreamMusicPlayer {
                             // watermark; never fill the buffer. When playback
                             // drains faster than we decode, the condition fails
                             // and we write immediately (no added underrun risk).
-                            while (generation == playbackGeneration.get() && playing && !paused && !gamePaused) {
+                            while (generation == this.currentGeneration && playing && !paused && !gamePaused) {
                                 int capacity = playbackLine.getBufferSize();
                                 int filled = capacity - playbackLine.available();
                                 if (filled <= this.lineWatermarkBytes || filled < BUFFER_SIZE) {
@@ -448,18 +486,18 @@ public class StreamMusicPlayer {
                                     // advances it before the new line opens)
                                     if (this.watermarkStamp.generation() < 0L
                                             && filled >= this.lineWatermarkBytes)
-                                        this.watermarkStamp = new WatermarkStamp(generation,
+                                        this.watermarkStamp = new WatermarkStamp(generation.id,
                                                 System.currentTimeMillis());
                                     break;
                                 }
                                 Thread.sleep(2);
                             }
-                            if (generation != playbackGeneration.get() || !playing)
+                            if (generation != this.currentGeneration || !playing)
                                 break;
 
                             // AUD-45 v1.1: envelope values are pure functions
                             // of time, computed on read inside applyGain
-                            applyGain();
+                            applyGain(playbackLine, generation);
                             long currentFilterRevision = AudioFilterManager.revision();
                             if (currentFilterRevision != filterRevision) {
                                 // AUD-48: rebuild with state preservation
@@ -476,6 +514,10 @@ public class StreamMusicPlayer {
                             if (MUTE_ENV.current() <= 0.001f)
                                 Arrays.fill(buffer, 0, bytesRead, (byte)0);
                             playbackLine.write(buffer, 0, bytesRead);
+                            // K8-B: generation check after the potentially
+                            // blocking write
+                            if (generation != this.currentGeneration)
+                                break;
                             totalBytesWritten += bytesRead;
                             playedPcmBytes += bytesRead;
                         }
@@ -486,21 +528,34 @@ public class StreamMusicPlayer {
                 LOGGER.debug("Finished playing MP3 stream");
                 
             } catch (Throwable e) {
-                if (generation == playbackGeneration.get())
+                if (generation == this.currentGeneration) {
                     LOGGER.error("Error playing MP3 stream: {}", e.getMessage(), e);
-            } finally {
-                if (playbackLine != null) {
-                    try {
-                        playbackLine.stop();
-                        playbackLine.close();
-                    } catch (Exception ignored) {
-                    }
+                } else if (isExpectedCancel(e)) {
+                    // K8-B: an expected line-closed exception from a
+                    // generation cancelled by stop()/switch is debug-level
+                    LOGGER.debug("[MBM] stale generation {} line closed as expected: {}", generation.id, e.toString());
+                } else {
+                    // K8-B: an unexpected throwable from an old generation is
+                    // NEVER swallowed - report it with the full lifecycle
+                    // context
+                    SourceDataLine staleLine = generation.line;
+                    LOGGER.error("[MBM] stale-generation throwable gen={} currentGen={} lineOpen={} "
+                                    + "sessionGen={} levelGen={} exceptionClass={}",
+                            generation.id, this.playbackGeneration.get(),
+                            staleLine != null && staleLine.isOpen(),
+                            nonamecrackers2.mobbattlemusic.client.audio.WorldPlaybackChannel.sessionGeneration(),
+                            nonamecrackers2.mobbattlemusic.client.audio.WorldPlaybackChannel.levelGeneration(),
+                            e.getClass().getName(), e);
                 }
-                if (generation == playbackGeneration.get()) {
+            } finally {
+                // K8-B: close-once - idempotent with stop()'s close
+                closeLineOnce(generation);
+                if (generation == this.currentGeneration) {
                     playing = false;
                     paused = false;
-                    line = null;
+                    this.currentGeneration = null;
                 }
+                PLAYBACK_THREADS.decrementAndGet();
                 LOGGER.debug("Playback thread finished");
             }
         });
@@ -512,7 +567,68 @@ public class StreamMusicPlayer {
     }
     
     /**
-     * Stop playback - non-blocking
+     * K8-B: stop playback and wait for the old playback thread to exit so a
+     * new generation can open its line safely (open-lines invariant <= 1).
+     * The wait is bounded (2s) and must only be invoked from MBM-Audio-IO -
+     * never from the client main thread.
+     */
+    private void stopAndAwaitThreadExit() {
+        this.stop();
+        Thread oldThread = this.playbackThread;
+        if (oldThread != null && oldThread != Thread.currentThread() && oldThread.isAlive()) {
+            try {
+                oldThread.join(2000L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    /**
+     * K8-B: idempotent close-once for a playback generation's line - the only
+     * closer. Both stop() and the playback thread's finally call this; the
+     * closeRequested flag arbitrates the race. The open-lines counter is
+     * decremented exactly once here.
+     */
+    private static void closeLineOnce(PlaybackGeneration generation) {
+        if (generation == null)
+            return;
+        synchronized (generation) {
+            if (generation.closeRequested)
+                return;
+            generation.closeRequested = true;
+        }
+        SourceDataLine activeLine = generation.line;
+        if (activeLine != null && activeLine.isOpen()) {
+            try {
+                activeLine.stop();
+            } catch (Exception ignored) {
+            }
+            try {
+                activeLine.close();
+            } catch (Exception ignored) {
+            }
+        }
+        synchronized (generation) {
+            if (generation.line != null) {
+                OPEN_LINES.decrementAndGet();
+                generation.line = null;
+            }
+            generation.closed = true;
+        }
+    }
+
+    // K8-B: expected cancellation of a stale generation - the line was closed
+    // by stop() while the playback thread was mid-write/read
+    private static boolean isExpectedCancel(Throwable e) {
+        return e instanceof IllegalStateException
+                || e instanceof javax.sound.sampled.LineUnavailableException
+                || e instanceof java.io.IOException;
+    }
+
+    /**
+     * Stop playback - non-blocking (a bounded join happens only inside
+     * stopAndAwaitThreadExit on the audio-I/O thread).
      */
     public void stop() {
         playbackGeneration.incrementAndGet();
@@ -538,12 +654,11 @@ public class StreamMusicPlayer {
         // K3 P1-3: a parked playback thread must be woken so it can observe
         // the generation change and exit its pause spin
         java.util.concurrent.locks.LockSupport.unpark(this.playbackThread);
-        
-        SourceDataLine activeLine = line;
-        line = null;
-        if (activeLine != null && activeLine.isOpen()) {
-            activeLine.stop();
-            activeLine.close();
+        // K8-B: close the current generation's line once, idempotently
+        PlaybackGeneration activeGeneration = this.currentGeneration;
+        if (activeGeneration != null) {
+            this.currentGeneration = null;
+            closeLineOnce(activeGeneration);
         }
     }
 
@@ -553,9 +668,12 @@ public class StreamMusicPlayer {
      * A stopped (paused) line does not advance its frame counter.
      * K3 P0-a: with no usable line the position is UNKNOWN (-1), never a
      * fabricated offset - consumers must not treat -1 as zero.
+     * K8-B: the line is read from the current generation - a stale generation
+     * never contributes its line here.
      */
     public long getPositionMillis() {
-        SourceDataLine activeLine = line;
+        PlaybackGeneration activeGeneration = this.currentGeneration;
+        SourceDataLine activeLine = activeGeneration == null ? null : activeGeneration.line;
         float rate = this.lineFrameRate;
         if (activeLine == null || !activeLine.isOpen() || rate <= 0.0F)
             return -1L;
@@ -574,12 +692,15 @@ public class StreamMusicPlayer {
     }
 
     // AUD-48: line diagnostics for the probe (world.line)
-    public int getLineBufferBytes() {        SourceDataLine activeLine = line;
+    public int getLineBufferBytes() {
+        PlaybackGeneration activeGeneration = this.currentGeneration;
+        SourceDataLine activeLine = activeGeneration == null ? null : activeGeneration.line;
         return activeLine == null || !activeLine.isOpen() ? 0 : activeLine.getBufferSize();
     }
 
     public int getLineAvailableBytes() {
-        SourceDataLine activeLine = line;
+        PlaybackGeneration activeGeneration = this.currentGeneration;
+        SourceDataLine activeLine = activeGeneration == null ? null : activeGeneration.line;
         return activeLine == null || !activeLine.isOpen() ? 0 : activeLine.available();
     }
 
@@ -667,10 +788,11 @@ public class StreamMusicPlayer {
      */
     public void pause() {
         // AUD-42: unconditional flag write; only hardware ops keep liveness
-        // checks
+        // checks. K8-B: the hardware op targets the current generation's line
         paused = true;
-        if (line != null && line.isOpen()) {
-            line.stop();
+        PlaybackGeneration activeGeneration = this.currentGeneration;
+        if (activeGeneration != null && activeGeneration.line != null && activeGeneration.line.isOpen()) {
+            activeGeneration.line.stop();
         }
     }
     
@@ -681,8 +803,9 @@ public class StreamMusicPlayer {
         // AUD-42: unconditional flag write; only hardware ops keep liveness
         // checks
         paused = false;
-        if (line != null && line.isOpen()) {
-            line.start();
+        PlaybackGeneration activeGeneration = this.currentGeneration;
+        if (activeGeneration != null && activeGeneration.line != null && activeGeneration.line.isOpen()) {
+            activeGeneration.line.start();
         }
         // K3 P1-3: wake the paused playback thread immediately
         java.util.concurrent.locks.LockSupport.unpark(this.playbackThread);
@@ -697,8 +820,9 @@ public class StreamMusicPlayer {
         boolean wasPaused = this.gamePaused;
         this.gamePaused = true;
         if (!wasPaused) {
-            if (line != null && line.isOpen()) {
-                line.stop();
+            PlaybackGeneration activeGeneration = this.currentGeneration;
+            if (activeGeneration != null && activeGeneration.line != null && activeGeneration.line.isOpen()) {
+                activeGeneration.line.stop();
             }
             // K6-A: the log fires only on the state edge
             LOGGER.debug("Paused music due to game pause");
@@ -714,8 +838,9 @@ public class StreamMusicPlayer {
         boolean wasPaused = this.gamePaused;
         this.gamePaused = false;
         if (wasPaused) {
-            if (line != null && line.isOpen()) {
-                line.start();
+            PlaybackGeneration activeGeneration = this.currentGeneration;
+            if (activeGeneration != null && activeGeneration.line != null && activeGeneration.line.isOpen()) {
+                activeGeneration.line.start();
             }
             // K3 P1-3: wake the paused playback thread immediately
             java.util.concurrent.locks.LockSupport.unpark(this.playbackThread);
@@ -789,11 +914,14 @@ public class StreamMusicPlayer {
     
     /**
      * AUD-45: the single gain computation of the process, called from the
-     * playback thread main loop only. finalGain = master × music ×
-     * trackEnv × muteEnv × seekEnv (AUD-44).
+     * playback thread main loop only with ITS OWN generation and line -
+     * finalGain = master × music × trackEnv × muteEnv × seekEnv (AUD-44).
+     * K8-B: the operation targets the caller's local line only and aborts
+     * when the generation is no longer current, so a stale thread can never
+     * touch a newer generation's line.
      */
-    private void applyGain() {
-        if (line == null || !line.isOpen())
+    private void applyGain(SourceDataLine playbackLine, PlaybackGeneration generation) {
+        if (playbackLine == null || !playbackLine.isOpen() || generation != this.currentGeneration)
             return;
         try {
             Minecraft mc = Minecraft.getInstance();
@@ -801,8 +929,8 @@ public class StreamMusicPlayer {
             float musicVolume = mc.options.getSoundSourceVolume(SoundSource.RECORDS);
             float finalGain = masterVolume * musicVolume
                     * this.trackEnv.current() * MUTE_ENV.current() * this.seekEnv.current();
-            if (line.isControlSupported(FloatControl.Type.MASTER_GAIN)) {
-                FloatControl gainControl = (FloatControl) line.getControl(FloatControl.Type.MASTER_GAIN);
+            if (playbackLine.isControlSupported(FloatControl.Type.MASTER_GAIN)) {
+                FloatControl gainControl = (FloatControl) playbackLine.getControl(FloatControl.Type.MASTER_GAIN);
                 float dB = (float) (Math.log(Math.max(0.0001f, finalGain)) / Math.log(10.0) * 20.0);
                 dB = Math.max(gainControl.getMinimum(), Math.min(gainControl.getMaximum(), dB));
                 gainControl.setValue(dB);
@@ -810,5 +938,17 @@ public class StreamMusicPlayer {
         } catch (Exception e) {
             // Ignore volume control errors
         }
+    }
+
+    // K8-B: live diagnostics for the probe ring - open SourceDataLine count
+    // and running playback thread count across all players
+    public static int getOpenLines()
+    {
+        return OPEN_LINES.get();
+    }
+
+    public static int getPlaybackThreads()
+    {
+        return PLAYBACK_THREADS.get();
     }
 }

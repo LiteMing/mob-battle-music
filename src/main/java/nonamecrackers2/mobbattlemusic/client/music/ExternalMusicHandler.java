@@ -36,6 +36,9 @@ public class ExternalMusicHandler {
                 thread.setDaemon(true);
                 return thread;
             });
+    // K8-B: cumulative stopMusic() invocations for the probe ring
+    private final java.util.concurrent.atomic.AtomicLong stopRequests =
+            new java.util.concurrent.atomic.AtomicLong();
     // AUD-51: monotonic seek request number; stale tasks are dropped
     private final AtomicLong seekRequest = new AtomicLong();
     // AUD-51 追加: sync-visible intent flag - stopMusic() sets it on the
@@ -228,6 +231,7 @@ public class ExternalMusicHandler {
      * visible synchronously via {@link #isStopRequested()}.
      */
     public void stopMusic() {
+        this.stopRequests.incrementAndGet();
         this.stopRequested = true;
         this.audioIo.execute(() -> {
             try {
@@ -441,6 +445,16 @@ public class ExternalMusicHandler {
      */
     public StreamMusicPlayer getPlayer() {
         return player;
+    }
+
+    // K8-B: cumulative playback requests (playbackRequest counter) and stop
+    // requests for the probe ring
+    public long getPlaybackRequestCount() {
+        return this.playbackRequest.get();
+    }
+
+    public long getStopRequestCount() {
+        return this.stopRequests.get();
     }
 
     public StreamMusicPlayer getPreviewPlayer() {

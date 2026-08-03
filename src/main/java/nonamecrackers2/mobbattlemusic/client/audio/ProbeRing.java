@@ -37,7 +37,11 @@ public final class ProbeRing
 			long injectedTtlMillis, int seeks, long sinceSeekMillis, long seekCostMillis,
 			long lineBufferBytes, int lineFillBytes, long watermarkMillis, boolean watermarkAdaptive, long underruns,
 			float mixCurrent, float mixTarget, boolean removalPending,
-			int handles, long markersFired, long playCalls) {}
+			int handles, long markersFired, long playCalls,
+			// K8-B: lifecycle generations and line/thread diagnostics
+			long levelGen, long sessionGen, long playerGen,
+			int openLines, int playbackThreads, long playRequests, long stopRequests,
+			String currentIntent) {}
 
 	public static synchronized void sample(ProbeSample sample)
 	{
@@ -130,7 +134,21 @@ public final class ProbeRing
 				.append(" pendingRemoval=").append(s.removalPending())
 				.append(" handles=").append(s.handles())
 				.append(" markersFired=").append(s.markersFired())
-				.append(" playCalls=").append(s.playCalls()).append('\n');
+				.append(" playCalls=").append(s.playCalls())
+				// K8-B: lifecycle generations and line/thread diagnostics;
+				// openLines > 1 violates the single-line invariant and is
+				// emitted as a fixed-format error
+				.append(" levelGen=").append(s.levelGen())
+				.append(" sessionGen=").append(s.sessionGen())
+				.append(" playerGen=").append(s.playerGen())
+				.append(" playbackThreads=").append(s.playbackThreads())
+				.append(" openLines=").append(s.openLines())
+				.append(" playRequests=").append(s.playRequests())
+				.append(" stopRequests=").append(s.stopRequests())
+				.append(" intent=").append(s.currentIntent() == null ? "-" : s.currentIntent());
+		if (s.openLines() > 1)
+			builder.append(" ERROR openLines>1 single-line invariant violated");
+		builder.append('\n');
 	}
 
 	/**

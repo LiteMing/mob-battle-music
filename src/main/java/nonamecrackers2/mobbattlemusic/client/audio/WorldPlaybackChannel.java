@@ -258,7 +258,16 @@ public final class WorldPlaybackChannel
 				AudioFilterManager.isRemovalPending(),
 				(WorldPlaybackChannel.handle() == null ? 0 : 1) + (PreviewChannel.handle() == null ? 0 : 1),
 				MarkerClock.firedMarkers(),
-				player.getPlayCallCount()));
+				player.getPlayCallCount(),
+				// K8-B: lifecycle generations and line/thread diagnostics
+				WorldPlaybackChannel.levelGeneration,
+				WorldPlaybackChannel.playbackSessionGeneration,
+				player.getPlaybackGeneration(),
+				StreamMusicPlayer.getOpenLines(),
+				StreamMusicPlayer.getPlaybackThreads(),
+				handler.getPlaybackRequestCount(),
+				handler.getStopRequestCount(),
+				WorldPlaybackChannel.currentIntentUrl()));
 	}
 	
 	private static int gateOwnerOrdinal()
