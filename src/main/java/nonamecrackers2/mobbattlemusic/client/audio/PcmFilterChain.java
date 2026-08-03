@@ -73,6 +73,9 @@ public final class PcmFilterChain
 			}
 		}
 		PcmFilterChain chain = new PcmFilterChain(List.copyOf(processors), format);
+		// AUD-48 v1.3: state preservation additionally requires equal chain
+		// length - a prefix/suffix rebuild must crossfade
+		preservedAll &= previous == null || previous.processors.size() == processors.size();
 		if (!preservedAll && previous != null && !previous.processors.isEmpty())
 			chain.transitionFrom = previous;
 		return chain;

@@ -360,10 +360,15 @@ public class BattleMusicManager {
 					// Only create new track if it doesn't exist or has stopped
 					if (externalTrack == null || externalTrack.isStopped()) {
 						expireExternalResume(trackLocation, tracksManager);
+						// AUD-49 #6: when a gate was queued (or another track
+						// still needs stopping), no source may be created this
+						// tick; selectExternalUrl is deferred so its side
+						// effects (session selection, SEQUENTIAL advance) do
+						// not run before the early return
+						if (stopOtherExternalTracks(type, tracksManager))
+							return;
 						url = tracksManager.selectExternalUrl(trackLocation);
 						if (url == null)
-							return;
-						if (stopOtherExternalTracks(type, tracksManager))
 							return;
 						long resumePosition = consumeExternalResume(trackLocation, url);
 						if (resumePosition <= 0L)

@@ -64,6 +64,12 @@ public final class WorldPlaybackChannel
 	
 	private WorldPlaybackChannel() {}
 	
+	static {
+		// AUD-49 #7: the ownership predicate is registered once on the player;
+		// consumers must not work around the dependency by moving the check
+		StreamMusicPlayer.setGateOwnershipCheck(WorldPlaybackChannel::gateOwns);
+	}
+	
 	/**
 	 * Called once per client tick (AUD-5). AUD-9 v1.3: computes the target
 	 * state and converges idempotently every tick; edge detection is used only
@@ -86,6 +92,8 @@ public final class WorldPlaybackChannel
 		// converge(), before any early-returning method; it must never live
 		// inside a guarded method
 		advancePendingGate();
+		// AUD-49 #8: a pending start fade-in expires after 2000ms
+		StreamMusicPlayer.expirePendingTrackFadeInMillis(System.currentTimeMillis());
 		
 		// One-time side effects are allowed on the edge only (AUD-9 v1.3)
 		if (edge && target == ChannelState.STOPPED)
@@ -235,7 +243,10 @@ public final class WorldPlaybackChannel
 			LOGGER.debug("[MBM] gated transition rejected (slot busy): {}", actionName);
 			return false;
 		}
-		env.setTarget(0.0f, fadeOutMillis);
+		// AUD-49 #7: the gate takes exclusive ownership; the fade-out restarts
+		// unconditionally (AUD-45 v1.2) even if another writer left the target
+		// at the same value
+		env.forceFade(0.0f, fadeOutMillis);
 		long createdAt = System.currentTimeMillis();
 		WorldPlaybackChannel.pendingGate = new PendingGate(env, action, fadeInMillis, createdAt,
 				createdAt + fadeOutMillis + GATE_TIMEOUT_GRACE_MILLIS, actionName);
@@ -246,6 +257,13 @@ public final class WorldPlaybackChannel
 	public static boolean isGatedTransitionActive()
 	{
 		return WorldPlaybackChannel.pendingGate != null;
+	}
+	
+	// AUD-49 #7: does the gate currently own this envelope?
+	public static boolean gateOwns(StreamMusicPlayer.Envelope env)
+	{
+		PendingGate gate = WorldPlaybackChannel.pendingGate;
+		return gate != null && gate.env() == env;
 	}
 	
 	// AUD-46/AUD-49: poll the envelope gain; the action runs only after it is

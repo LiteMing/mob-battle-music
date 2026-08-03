@@ -44,10 +44,14 @@ public class StreamMusicPlayer {
     private final Envelope trackEnv = new Envelope(0.0f);
     private final Envelope seekEnv = new Envelope(1.0f);
     public static final Envelope MUTE_ENV = new Envelope(1.0f);
-    // AUD-49 #5: fade-in duration for the next track start, set by a gated
-    // switch whose action only stops the old source; consumed by play().
-    // 0 = the default fadeTime applies.
+    // AUD-49 #5/#8: fade-in duration for the next track start, set by a gated
+    // switch whose action only stops the old source; consumed by play() and
+    // expired after 2000ms if unconsumed. 0 = the default fadeTime applies.
     private static volatile long pendingTrackFadeInMillis;
+    private static volatile long pendingTrackFadeInSetAtMillis;
+    // AUD-49 #7: ownership check registered by the main playback channel;
+    // other writers of a gate-owned envelope must be no-ops
+    private static volatile java.util.function.Predicate<Envelope> gateOwnershipCheck = env -> false;
     private volatile SourceDataLine line;
     private final AtomicLong playbackGeneration = new AtomicLong();
     private volatile long playedPcmBytes;
@@ -113,6 +117,19 @@ public class StreamMusicPlayer {
         }
         
         /**
+         * AUD-45 v1.2: contract fade - always restarts a fade of the given
+         * duration, no target-equality early-out. Used where a determinate
+         * audible fade is required (gate fade-out, unconditional start).
+         */
+        public void forceFade(float newTarget, long fadeMillis) {
+            float clamped = Math.max(0.0f, Math.min(1.0f, newTarget));
+            this.startValue = this.current();
+            this.startMillis = System.currentTimeMillis();
+            this.durationMillis = Math.max(0L, fadeMillis);
+            this.target = clamped;
+        }
+        
+        /**
          * AUD-49 #3: cancel-path reset of target AND start state. Pure
          * function values make this safe from any thread.
          */
@@ -137,10 +154,28 @@ public class StreamMusicPlayer {
     // (consumed by play())
     public static void setPendingTrackFadeInMillis(long millis) {
         StreamMusicPlayer.pendingTrackFadeInMillis = Math.max(0L, millis);
+        StreamMusicPlayer.pendingTrackFadeInSetAtMillis = System.currentTimeMillis();
     }
 
     public static void clearPendingTrackFadeInMillis() {
         StreamMusicPlayer.pendingTrackFadeInMillis = 0L;
+        StreamMusicPlayer.pendingTrackFadeInSetAtMillis = 0L;
+    }
+
+    // AUD-49 #8: a pending start fade-in that is not consumed within 2000ms
+    // is cleared; no indefinitely hanging cross-event state
+    public static void expirePendingTrackFadeInMillis(long nowMillis) {
+        if (StreamMusicPlayer.pendingTrackFadeInMillis > 0L
+                && nowMillis - StreamMusicPlayer.pendingTrackFadeInSetAtMillis > 2000L) {
+            StreamMusicPlayer.pendingTrackFadeInMillis = 0L;
+            StreamMusicPlayer.pendingTrackFadeInSetAtMillis = 0L;
+            LOGGER.debug("[MBM] AUD-49 #8 pending track fade-in expired");
+        }
+    }
+
+    // AUD-49 #7: ownership predicate registered by the main playback channel
+    public static void setGateOwnershipCheck(java.util.function.Predicate<Envelope> check) {
+        StreamMusicPlayer.gateOwnershipCheck = check == null ? env -> false : check;
     }
     
     /**
@@ -154,18 +189,15 @@ public class StreamMusicPlayer {
 
     public void play(Path file, int fadeTimeInTicks, long startPositionMillis, long durationHintMillis) {
         this.fadeTime = fadeTimeInTicks;
-        // AUD-44: the fade-in is driven by the track envelope. AUD-49 #5:
-        // when a gated switch registered a fade-in duration, restart the
-        // envelope from zero so the target change cannot be short-circuited
-        // (setTarget would otherwise no-op when the target is already 1.0).
+        // AUD-44 v1.1: every start unconditionally restarts the track envelope
+        // from zero; the fade-in duration is the gate-registered one, or the
+        // player default fadeTime. Never depends on envelope history.
         long pendingFadeIn = StreamMusicPlayer.pendingTrackFadeInMillis;
-        if (pendingFadeIn > 0L) {
-            StreamMusicPlayer.pendingTrackFadeInMillis = 0L;
-            this.trackEnv.setTarget(0.0f, 0L);
-            this.trackEnv.setTarget(1.0f, pendingFadeIn);
-        } else {
-            this.trackEnv.setTarget(1.0f, Math.max(0L, fadeTimeInTicks) * 50L);
-        }
+        long fadeInMillis = pendingFadeIn > 0L ? pendingFadeIn : Math.max(0L, fadeTimeInTicks) * 50L;
+        StreamMusicPlayer.pendingTrackFadeInMillis = 0L;
+        StreamMusicPlayer.pendingTrackFadeInSetAtMillis = 0L;
+        this.trackEnv.setTarget(0.0f, 0L);
+        this.trackEnv.setTarget(1.0f, fadeInMillis);
         startPlayback(file, startPositionMillis, durationHintMillis);
     }
     
@@ -580,9 +612,15 @@ public class StreamMusicPlayer {
      * Set target volume of the track envelope (track fade in/out, AUD-44).
      * The fade duration follows the playback fadeTime; a new fade starts only
      * when the target actually changes (judged inside the envelope).
+     * AUD-49 #7: while the gate owns the track envelope, this writer is a
+     * no-op with a log line.
      */
     public void setTargetVolume(float volume) {
         float clamped = Math.max(0.0f, Math.min(1.0f, volume));
+        if (StreamMusicPlayer.gateOwnershipCheck.test(this.trackEnv)) {
+            LOGGER.debug("[MBM] AUD-49 #7 setTargetVolume suppressed (gate owns trackEnv, requested={})", clamped);
+            return;
+        }
         this.trackEnv.setTarget(clamped, Math.max(0L, this.fadeTime) * 50L);
     }
     

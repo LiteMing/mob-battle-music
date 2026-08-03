@@ -268,7 +268,10 @@ public class MobBattleMusicCommands
 		output.append("world.gain final=").append(String.format(Locale.ROOT, "%.2f", finalGain))
 				.append(" track=").append(String.format(Locale.ROOT, "%.2f", trackGain))
 				.append(" mute=").append(String.format(Locale.ROOT, "%.2f", muteGain))
-				.append(" seek=").append(String.format(Locale.ROOT, "%.2f", seekGain)).append('\n');
+				.append(" seek=").append(String.format(Locale.ROOT, "%.2f", seekGain))
+				// AUD-30 v1.7: who is writing the envelopes
+				.append(" trackTarget=").append(String.format(Locale.ROOT, "%.2f", main.trackEnv().target()))
+				.append(" gateOwner=").append(gateOwner()).append('\n');
 
 		// AUD-30 v1.3/AUD-47: audible vs decoded position and their latency gap
 		long audiblePos = handler.getPositionMillis();
@@ -347,6 +350,16 @@ public class MobBattleMusicCommands
 		output.append("markers.fired=").append(MarkerClock.firedMarkers())
 				.append(" markers.next=").append(nextMarker());
 		return output.toString();
+	}
+
+	private static String gateOwner()
+	{
+		StreamMusicPlayer player = ExternalMusicHandler.getInstance().getPlayer();
+		if (WorldPlaybackChannel.gateOwns(player.trackEnv()))
+			return "track";
+		if (WorldPlaybackChannel.gateOwns(player.seekEnv()))
+			return "seek";
+		return "none";
 	}
 
 	private static String nextMarker()
