@@ -260,7 +260,7 @@ public class StreamMusicPlayer {
                 
                         LOGGER.info("Opening audio line...");
                         // AUD-48: explicit capacity (500ms) separated from the
-                        // target watermark (120ms); capacity is the underrun
+                        // target watermark (150ms); capacity is the underrun
                         // reserve, the watermark decides actual latency
                         long capacityBytes = Math.max(1L, Math.round(
                                 decodedFormat.getFrameRate() * decodedFormat.getFrameSize() * 0.5D));
@@ -301,9 +301,9 @@ public class StreamMusicPlayer {
                             if (generation != playbackGeneration.get() || !playing)
                                 break;
 
-                            // AUD-30 v1.5: count fully-drained writes before
-                            // the throttling check
-                            if (playbackLine.available() >= playbackLine.getBufferSize())
+                            // AUD-30 v1.6: only count fully-drained writes
+                            // after the first successful write
+                            if (totalBytesWritten > 0L && playbackLine.available() >= playbackLine.getBufferSize())
                                 underruns++;
                             // AUD-48: write throttling to the target watermark.
                             // Yield briefly while the fill exceeds the

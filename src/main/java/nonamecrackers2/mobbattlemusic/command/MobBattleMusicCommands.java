@@ -292,7 +292,9 @@ public class MobBattleMusicCommands
 				.toList();
 		output.append("world.filter active=[").append(String.join(",", activeFilters))
 				.append("] mix=").append(String.format(Locale.ROOT, "%.2f", PcmFilterChain.mixCurrent()))
-				.append(" target=").append(String.format(Locale.ROOT, "%.2f", PcmFilterChain.mixTarget())).append('\n');
+				.append(" target=").append(String.format(Locale.ROOT, "%.2f", PcmFilterChain.mixTarget()))
+				// AUD-30 v1.6: explicit pending-removal flag
+				.append(" pendingRemoval=").append(AudioFilterManager.isRemovalPending()).append('\n');
 
 		String clockState = !MarkerClock.isActive() ? "STOPPED" : MarkerClock.state().name();
 		double drift = 0.0D;
