@@ -45,6 +45,10 @@ public final class MarkerClock
 	// expressed via FROZEN, never clears the anchor, never triggers a
 	// re-anchor; cleared only by beginPlayback (track switch) and invalidate
 	private static volatile boolean correctionDisabled;
+	// K6-A: unforgeable source version - bumped whenever the source is
+	// replaced (realign / realignServerDomain) or invalidated; a seek-failure
+	// anchor restore only succeeds when the version is unchanged
+	private static volatile long sourceVersion;
 	// K5: CUE-4 clock offset (server clock - client clock), from the
 	// lowest-RTT handshake sample in the window
 	private static volatile double clockOffsetMillis;
@@ -81,6 +85,7 @@ public final class MarkerClock
 			MarkerClock.bestSampleAtMillis = t4;
 			MarkerClock.clockOffsetMillis = offset;
 		}
+		MarkerClock.sourceVersion++;
 		MarkerClock.source = new ClockSource(trackId,
 				startEpochMillis + Math.round(MarkerClock.clockOffsetMillis),
 				sendServerEpochMillis, t4);
@@ -101,6 +106,7 @@ public final class MarkerClock
 	public static void realignServerDomain(String trackId, long startEpochServerMillis,
 			long sendServerEpochMillis)
 	{
+		MarkerClock.sourceVersion++;
 		MarkerClock.source = new ClockSource(trackId, startEpochServerMillis, sendServerEpochMillis,
 				System.currentTimeMillis());
 		MarkerClock.lastAnchorMillis = System.currentTimeMillis();
@@ -117,6 +123,7 @@ public final class MarkerClock
 
 	public static void invalidate()
 	{
+		MarkerClock.sourceVersion++;
 		MarkerClock.source = null;
 		MarkerClock.lastAnchorMillis = 0L;
 		MarkerClock.state = ClockState.STOPPED;
@@ -147,10 +154,31 @@ public final class MarkerClock
 	}
 
 	// R4: a track switch invalidates the anchor - the new track is not yet
-	// anchored; only the anchor bit is touched
+	// anchored; only the anchor bit is touched (the source version is NOT
+	// bumped here - a seek-failure restore on the SAME source must succeed)
 	public static void invalidateAnchor()
 	{
 		MarkerClock.anchorValid = false;
+	}
+
+	// K6-A: restore the previously invalidated anchor - only the validity bit;
+	// never touches the source, the epoch or the position
+	public static void restoreAnchor()
+	{
+		MarkerClock.anchorValid = true;
+	}
+
+	// K6-A: unforgeable source version for seek-failure restore checks
+	public static long sourceVersion()
+	{
+		return MarkerClock.sourceVersion;
+	}
+
+	// K6-A: the current source's track id (null when no source)
+	public static @Nullable String sourceTrackId()
+	{
+		ClockSource clockSource = MarkerClock.source;
+		return clockSource == null ? null : clockSource.trackId();
 	}
 
 	// AUD-50 v1.2: explicit re-anchor request API
@@ -212,8 +240,9 @@ public final class MarkerClock
 	public static double serverPositionSeconds(String trackId)
 	{
 		ClockSource clockSource = MarkerClock.source;
+		// K6-A: no matching source is NO DATA - NaN, never a fabricated 0
 		if (clockSource == null || !clockSource.trackId().equals(trackId))
-			return 0.0D;
+			return Double.NaN;
 		return serverPositionSeconds(clockSource);
 	}
 

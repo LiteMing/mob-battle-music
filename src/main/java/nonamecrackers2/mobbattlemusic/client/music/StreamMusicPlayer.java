@@ -696,10 +696,13 @@ public class StreamMusicPlayer {
     public void pauseForGame() {
         boolean wasPaused = this.gamePaused;
         this.gamePaused = true;
-        if (!wasPaused && line != null && line.isOpen()) {
-            line.stop();
+        if (!wasPaused) {
+            if (line != null && line.isOpen()) {
+                line.stop();
+            }
+            // K6-A: the log fires only on the state edge
+            LOGGER.debug("Paused music due to game pause");
         }
-        LOGGER.debug("Paused music due to game pause");
     }
     
     /**
@@ -716,8 +719,9 @@ public class StreamMusicPlayer {
             }
             // K3 P1-3: wake the paused playback thread immediately
             java.util.concurrent.locks.LockSupport.unpark(this.playbackThread);
+            // K6-A: the log fires only on the state edge
+            LOGGER.debug("Resumed music after game unpause");
         }
-        LOGGER.debug("Resumed music after game unpause");
     }
     
     /**

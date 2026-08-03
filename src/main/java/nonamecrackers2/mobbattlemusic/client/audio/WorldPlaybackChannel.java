@@ -76,7 +76,11 @@ public final class WorldPlaybackChannel
 	private static long correctionBackoffMillis = GIVE_UP_BACKOFF_FIRST_MILLIS;
 	// AUD-52 修订: seek cost measurement (queue time -> first watermark fill)
 	private static long seekQueuedAtMillis;
-	private static long seekQueuedTargetMillis;
+	// K6-A: the source token captured BEFORE the seek gate invalidates the
+	// anchor; a failed seek may restore the old anchor only when the token is
+	// still valid (same track, same source version)
+	private static long seekGateSourceVersion;
+	private static String seekGateTrackId;
 	// AUD-46/AUD-49: unified gated transition (fade out -> gain-zero poll ->
 	// action -> fade in). Single slot; new requests fail explicitly (AUD-49 #4).
 	private static @Nullable PendingGate pendingGate;
@@ -147,10 +151,9 @@ public final class WorldPlaybackChannel
 		// One-time side effects are allowed on the edge only (AUD-9 v1.3)
 		if (edge && target == ChannelState.STOPPED)
 			stopMusic();
-		// AUD-25: leaving PAUSED requests a resync
-		if (edge && previous == ChannelState.PAUSED
-				&& (target == ChannelState.PLAYING || target == ChannelState.MUTED))
-			reportPlaybackStart();
+		// K6-A: the early PAUSED-leave resync is removed - it reported
+		// handle.startedEpochMillis() which is meaningless after a pause; the
+		// resume report happens below, only after the re-anchor succeeded
 		
 		// Handle observation only, never a playback action
 		syncHandle();
@@ -186,6 +189,10 @@ public final class WorldPlaybackChannel
 				MarkerClock.realignServerDomain(active.track(),
 						now + offset - localPosition, now + offset);
 				MarkerClock.clearReanchorRequest();
+				// K6-A: the resume report uses the true resume moment
+				// (now - localPosition) - covering both PAUSED->PLAYING and
+				// PAUSED->MUTED, since the request fires for any PAUSED-leave
+				reportPlaybackResume(now - localPosition);
 			}
 			// prerequisites not met: the request survives to the next tick
 		}
@@ -385,7 +392,7 @@ public final class WorldPlaybackChannel
 		WorldPlaybackChannel.recentSeekIndex = 0;
 		WorldPlaybackChannel.giveUpWarned = false;
 		WorldPlaybackChannel.seekQueuedAtMillis = 0L;
-		WorldPlaybackChannel.seekQueuedTargetMillis = 0L;
+		WorldPlaybackChannel.seekGateSourceVersion = 0L;
 		WorldPlaybackChannel.correctionDisabledAtMillis = 0L;
 		WorldPlaybackChannel.correctionBackoffMillis = GIVE_UP_BACKOFF_FIRST_MILLIS;
 		WorldPlaybackChannel.seekSettleUntilMillis = 0L;
@@ -597,7 +604,7 @@ public final class WorldPlaybackChannel
 		WorldPlaybackChannel.giveUpWarned = false;
 		// AUD-52 修订/O9: track switch resets the seek-cost queue stamp
 		WorldPlaybackChannel.seekQueuedAtMillis = 0L;
-		WorldPlaybackChannel.seekQueuedTargetMillis = 0L;
+		WorldPlaybackChannel.seekGateSourceVersion = 0L;
 		// AUD-22: report the playback start so the server can anchor the clock
 		reportPlaybackStart();
 	}
@@ -628,6 +635,8 @@ public final class WorldPlaybackChannel
 		return reached - queued;
 	}
 	
+	// K6-A: distinct names - start report (new playback) vs resume report
+	// (after a pause, carrying the true resume epoch)
 	private static void reportPlaybackStart()
 	{
 		PlaybackHandle active = WorldPlaybackChannel.handle;
@@ -635,6 +644,15 @@ public final class WorldPlaybackChannel
 			return;
 		// K5: the report carries its own send time (t1) for the CUE-4 handshake
 		MobBattleMusicNetwork.sendPlaybackStartReport(active.track(), active.startedEpochMillis(),
+				System.currentTimeMillis());
+	}
+	
+	private static void reportPlaybackResume(long resumeEpochMillis)
+	{
+		PlaybackHandle active = WorldPlaybackChannel.handle;
+		if (active == null)
+			return;
+		MobBattleMusicNetwork.sendPlaybackStartReport(active.track(), resumeEpochMillis,
 				System.currentTimeMillis());
 	}
 	
@@ -749,6 +767,11 @@ public final class WorldPlaybackChannel
 			long targetMillis = Math.round(serverPositionSeconds * 1000.0D);
 			ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
 			String trackId = handler.getCurrentlyPlayingUrl();
+			// K6-A: capture the unforgeable source token BEFORE the gate
+			// invalidates the anchor; a failed seek may only restore the old
+			// authoritative anchor when the token is still valid
+			WorldPlaybackChannel.seekGateSourceVersion = MarkerClock.sourceVersion();
+			WorldPlaybackChannel.seekGateTrackId = trackId;
 			// AUD-49 #4: an explicit failure here just means the drift is
 			// re-evaluated on the next tick; no state to roll back
 			boolean queued = WorldPlaybackChannel.gatedTransition(handler.getPlayer().seekEnv(), 120L, "clock-seek", () -> {
@@ -757,13 +780,22 @@ public final class WorldPlaybackChannel
 				handler.seekMusicAsync(targetMillis, completedAt -> {
 					// AUD-52 v1.2: the anchor moment is the measured watermark
 					// fill time of the new line, never the dispatch time.
-					// K5 P0-2: a failed seek means "give up this sync" - no
-					// re-anchor that launders the failure into convergence
-					// (that would keep the give-up window unreachable); the
-					// anchor stays invalid until a successful seek or an event
-					// re-anchor
+					// K6-A: on failure restore the OLD authoritative anchor -
+					// but only if the source is unchanged (same track, same
+					// source version). No local re-anchor: the epoch is never
+					// touched and the current local position is never used to
+					// fabricate a new anchor.
 					if (completedAt <= 0L) {
-						LOGGER.warn("[MBM] AUD-52 seek to {}ms failed (watermark not reached); sync abandoned", targetMillis);
+						LOGGER.warn("[MBM] AUD-52 seek to {}ms failed (watermark not reached); restoring old anchor", targetMillis);
+						if (trackId != null && WorldPlaybackChannel.seekGateTrackId != null
+								&& WorldPlaybackChannel.seekGateTrackId.equals(trackId)
+								&& MarkerClock.sourceVersion() == WorldPlaybackChannel.seekGateSourceVersion
+								&& trackId.equals(MarkerClock.sourceTrackId())) {
+							MarkerClock.restoreAnchor();
+							LOGGER.debug("[MBM] old authoritative anchor restored (token valid)");
+						} else {
+							LOGGER.debug("[MBM] anchor restore skipped (source changed)");
+						}
 						// the cost was already paid - the rate limit must count it
 						WorldPlaybackChannel.lastSeekAtMillis = System.currentTimeMillis();
 						return;
@@ -794,7 +826,7 @@ public final class WorldPlaybackChannel
 				WorldPlaybackChannel.lastSeekAtMillis = now;
 				WorldPlaybackChannel.seekSettleUntilMillis = now + SEEK_SETTLE_MILLIS;
 				WorldPlaybackChannel.seekQueuedAtMillis = now;
-				WorldPlaybackChannel.seekQueuedTargetMillis = targetMillis;
+
 			}
 		}
 	};
