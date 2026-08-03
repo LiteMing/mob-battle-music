@@ -119,6 +119,8 @@ public class MusicPlaylistScreen extends Screen
 	private static final int DOCK_HEIGHT = 56;
 	private boolean dockSeekDragging;
 	private boolean dockPausedByUser;
+	// K10-B: drag previews the position; the seek is committed once on release
+	private long dockPreviewPosition = -1L;
 	private EditBox sceneBox;
 	private EditBox targetBox;
 	private EditBox searchBox;
@@ -1109,8 +1111,11 @@ public class MusicPlaylistScreen extends Screen
 			// must not run on every mouse move
 			saveVolumeConfig();
 		}
-		if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT)
+		if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT && this.dockSeekDragging) {
 			this.dockSeekDragging = false;
+			// K10-B: exactly one seek per drag - committed on release
+			commitDockSeek();
+		}
 		return super.mouseReleased(mouseX, mouseY, button);
 	}
 
@@ -1164,6 +1169,9 @@ public class MusicPlaylistScreen extends Screen
 		graphics.drawString(this.font, source, 52, dockY() + 18, 0xFF8B929C);
 		WorldPlaybackChannel.PlaybackOwner owner = WorldPlaybackChannel.playbackOwner();
 		graphics.drawString(this.font, "[" + owner + "]", 8, dockY() + 24, ownerColor(owner));
+		// K10-B: the owner badge is the explicit way back to AUTO
+		if (owner != WorldPlaybackChannel.PlaybackOwner.AUTO)
+			graphics.drawString(this.font, "click to return to AUTO", 52, dockY() + 32, 0xFF8B929C);
 
 		int progressLeft = 150;
 		int progressRight = this.width - 220;
@@ -1172,10 +1180,15 @@ public class MusicPlaylistScreen extends Screen
 		long position = handler.getPositionMillis();
 		graphics.fill(progressLeft, progressY, progressRight, progressY + 4, 0xFF3A4550);
 		if (duration > 0L && position >= 0L) {
-			long filledLong = Math.round((progressRight - progressLeft) * Math.min(1.0D, position / (double) duration));
+			// K10-B: while dragging, show the previewed position, not the
+			// live one - the seek commits only on release
+			long displayed = this.dockSeekDragging && this.dockPreviewPosition >= 0L
+					? this.dockPreviewPosition : position;
+			long filledLong = Math.round((progressRight - progressLeft)
+					* Math.min(1.0D, displayed / (double) duration));
 			int filled = (int) Math.min(progressRight - progressLeft, filledLong);
 			graphics.fill(progressLeft, progressY, progressLeft + filled, progressY + 4, 0xFF73D98A);
-			graphics.drawString(this.font, formatMillis(position) + " / " + formatMillis(duration),
+			graphics.drawString(this.font, formatMillis(displayed) + " / " + formatMillis(duration),
 					progressLeft, progressY + 8, 0xFFB8C0CA);
 		} else {
 			graphics.drawString(this.font, buffering ? "preparing..." : "position n/a", progressLeft, progressY + 8,
@@ -1235,7 +1248,13 @@ public class MusicPlaylistScreen extends Screen
 		if (handle != null && handle.sourceRef() != null && !handle.sourceRef().isDirect()) {
 			try {
 				ResourceLocation playlist = new ResourceLocation(handle.sourceRef().playlistId());
-				List<TimelineMarker> markers = TimelineMarkerStore.markers(playlist, url);
+				// K10-B: markers bind to the concrete entry index - resolve
+				// it from the source reference; fall back to the whole-
+				// playlist check only when the entry cannot be located
+				int entryIndex = resolveEntryIndex(playlist, url);
+				List<TimelineMarker> markers = entryIndex >= 0
+						? TimelineMarkerStore.markers(playlist, url, entryIndex)
+						: TimelineMarkerStore.markers(playlist, url);
 				if (!markers.isEmpty())
 					return false;
 			} catch (Exception ignored) {
@@ -1244,11 +1263,33 @@ public class MusicPlaylistScreen extends Screen
 		return true;
 	}
 
+	// K10-B: the entry index of the currently playing URL inside its playlist
+	private int resolveEntryIndex(ResourceLocation playlist, String url)
+	{
+		MusicTracksManager manager = MusicTracksManager.getInstance();
+		for (MusicTracksManager.DynamicExternalTrack track : manager.getDynamicExternalTracksSnapshot()) {
+			if (!track.configLocation().toString().equals(playlist.toString()))
+				continue;
+			List<MusicTracksManager.ExternalPlaylistEntry> entries = track.entries();
+			for (int i = 0; i < entries.size(); i++) {
+				if (entries.get(i).url().equals(url))
+					return i;
+			}
+		}
+		return -1;
+	}
+
 	private boolean clickDock(double mouseX, double mouseY)
 	{
 		if (mouseY < dockY())
 			return false;
 		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
+		// K10-B: the owner badge is the explicit way back to AUTO
+		if (mouseX >= 8 && mouseX <= 48 && mouseY >= dockY() + 20 && mouseY <= dockY() + 32
+				&& WorldPlaybackChannel.playbackOwner() != WorldPlaybackChannel.PlaybackOwner.AUTO) {
+			WorldPlaybackChannel.setPlaybackOwner(WorldPlaybackChannel.PlaybackOwner.AUTO);
+			return true;
+		}
 		// progress seek
 		int progressLeft = 150;
 		int progressRight = this.width - 220;
@@ -1277,6 +1318,8 @@ public class MusicPlaylistScreen extends Screen
 				return true;
 			}
 			if (mouseX >= x + 76 && mouseX < x + 110) {
+				// K10-B: stop keeps the MAN hold - the AUTO engine stays
+				// suspended until the user explicitly returns to AUTO
 				handler.stopMusic();
 				return true;
 			}
@@ -1297,10 +1340,17 @@ public class MusicPlaylistScreen extends Screen
 		int progressLeft = 150;
 		int progressRight = this.width - 220;
 		double progress = (mouseX - progressLeft) / Math.max(1.0D, progressRight - progressLeft);
-		long position = Math.round(duration * Math.max(0.0D, Math.min(1.0D, progress)));
-		// the seek is dispatched async (seekMusicAsync) - the drag only
-		// updates the local position preview via the current playback
-		handler.seekMusicAsync(position, null);
+		// K10-B: dragging only previews the position; the single seek is
+		// committed in mouseReleased
+		this.dockPreviewPosition = Math.round(duration * Math.max(0.0D, Math.min(1.0D, progress)));
+	}
+
+	private void commitDockSeek()
+	{
+		if (this.dockPreviewPosition >= 0L) {
+			ExternalMusicHandler.getInstance().seekMusicAsync(this.dockPreviewPosition, null);
+			this.dockPreviewPosition = -1L;
+		}
 	}
 
 	// K9-4: manual prev/next within the current playlist (owner becomes MAN);

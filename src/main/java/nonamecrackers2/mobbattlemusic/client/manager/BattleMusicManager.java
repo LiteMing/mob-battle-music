@@ -233,6 +233,18 @@ public class BattleMusicManager {
 			}
 		}
 
+		// K10-B: MAN hold - while the user holds the main-channel dock (MAN
+		// owner), the AUTO selection engine must NOT overwrite, fade out,
+		// stop or restart the manually chosen track. Threat/combat-session
+		// bookkeeping and timeline markers still run (they observe, they do
+		// not select). Returning to AUTO requires the explicit dock action.
+		boolean manHold = WorldPlaybackChannel.playbackOwner() == WorldPlaybackChannel.PlaybackOwner.MAN;
+		if (manHold) {
+			LOGGER.debug("[MBM] MAN hold active - AUTO selection suspended");
+			tickTimelineMarkers();
+			return;
+		}
+
 		// 更新音轨
 		List<TrackType> tracks = MusicTracksManager.getInstance().getTracks();
 
