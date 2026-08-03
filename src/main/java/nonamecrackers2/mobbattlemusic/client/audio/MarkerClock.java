@@ -6,12 +6,14 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 /**
- * Server-authoritative playback clock (AUD-22/23/24/25).
+ * Server-clock-normalized client anchor (AUD-22/23/24/25, K6-B naming).
  * The anchor is expressed in the SERVER clock domain (startEpochServer,
  * sendServerEpoch): the client never subtracts two machines' wall clocks
- * directly - a CUE-4 minimal-RTT handshake supplies the clock offset, and the
- * lowest-RTT sample within a 60s window is kept (AUD-24 K5).
- * drift is local position minus the server-derived position.
+ * directly - the connection-level ClockOffsetEstimator supplies the offset,
+ * and MarkerClock only ever accepts already-normalized anchors.
+ * Honest boundary (AUD-23): machine clock calibration is implemented; a
+ * shared cross-client playback axis (multi-client ±1s) is NOT - anchors are
+ * per-client self-anchors.
  */
 public final class MarkerClock
 {
@@ -24,8 +26,6 @@ public final class MarkerClock
 
 	// AUD-24 v1.1 thresholds - fixed, must not be adjusted
 	public static final double DRIFT_TOLERANCE_SECONDS = 1.0D;
-	// K5: the lowest-RTT offset sample is kept within this window after start
-	private static final long OFFSET_SAMPLE_WINDOW_MILLIS = 60_000L;
 
 	private static final Logger LOGGER = LogManager.getLogger("mobbattlemusic/MarkerClock");
 
@@ -46,62 +46,22 @@ public final class MarkerClock
 	// re-anchor; cleared only by beginPlayback (track switch) and invalidate
 	private static volatile boolean correctionDisabled;
 	// K6-A: unforgeable source version - bumped whenever the source is
-	// replaced (realign / realignServerDomain) or invalidated; a seek-failure
-	// anchor restore only succeeds when the version is unchanged
+	// replaced (realignServerDomain) or invalidated; a seek-failure anchor
+	// restore only succeeds when the version is unchanged
 	private static volatile long sourceVersion;
-	// K5: CUE-4 clock offset (server clock - client clock), from the
-	// lowest-RTT handshake sample in the window
-	private static volatile double clockOffsetMillis;
-	private static volatile long bestSampleRttMillis = Long.MAX_VALUE;
-	private static volatile long bestSampleAtMillis;
-	private static volatile long offsetWindowStartMillis;
 
 	private MarkerClock() {}
 
-	// K5: the anchor is stored in the SERVER clock domain - no cross-machine
-	// wall-clock subtraction anywhere in the position math
+	// K6-B: the anchor is stored in the SERVER clock domain - the offset is
+	// provided by the connection-level estimator and applied before the anchor
+	// reaches this class; no cross-machine wall-clock subtraction anywhere
 	private record ClockSource(String trackId, long startEpochServerMillis, long sendServerEpochMillis,
 			long recvClientEpochMillis) {}
 
 	/**
-	 * AUD-22/K5: server-anchored resync from a CUE-4 handshake sample.
-	 * t1 = clientSendEpoch, t2 = serverRecvEpoch, t3 = serverSendEpoch,
-	 * t4 = now. Computes offset = ((t2-t1)+(t3-t4))/2 and keeps the
-	 * lowest-RTT sample within the window; the anchor is converted to the
-	 * server clock domain (startEpochServer = startEpochClient + offset).
-	 */
-	public static void realign(String trackId, long startEpochMillis, long sendServerEpochMillis,
-			long clientSendEpochMillis, long serverRecvEpochMillis)
-	{
-		long t4 = System.currentTimeMillis();
-		long rtt = (t4 - clientSendEpochMillis) - (sendServerEpochMillis - serverRecvEpochMillis);
-		double offset = ((serverRecvEpochMillis - clientSendEpochMillis)
-				+ (sendServerEpochMillis - t4)) / 2.0D;
-		if (MarkerClock.offsetWindowStartMillis <= 0L)
-			MarkerClock.offsetWindowStartMillis = t4;
-		if (rtt >= 0L && rtt < MarkerClock.bestSampleRttMillis
-				&& t4 - MarkerClock.offsetWindowStartMillis <= OFFSET_SAMPLE_WINDOW_MILLIS) {
-			MarkerClock.bestSampleRttMillis = rtt;
-			MarkerClock.bestSampleAtMillis = t4;
-			MarkerClock.clockOffsetMillis = offset;
-		}
-		MarkerClock.sourceVersion++;
-		MarkerClock.source = new ClockSource(trackId,
-				startEpochMillis + Math.round(MarkerClock.clockOffsetMillis),
-				sendServerEpochMillis, t4);
-		MarkerClock.lastAnchorMillis = t4;
-		MarkerClock.state = ClockState.RUNNING;
-		// AUD-50 v1.1: a realign establishes a valid anchor
-		MarkerClock.anchorValid = true;
-		LOGGER.debug("[MBM] clock realign track={} startEpochServer={}ms offset={}ms rtt={}ms",
-				trackId, startEpochMillis + Math.round(MarkerClock.clockOffsetMillis),
-				Math.round(MarkerClock.clockOffsetMillis), rtt);
-	}
-
-	/**
-	 * AUD-50/K5: local re-anchor (PAUSED-leave, seek completion) - the anchor
-	 * is expressed directly in the server clock domain (the caller converts
-	 * local times with the current offset).
+	 * K6-B: the only anchor entry - the caller (PlaybackSyncHandler) must
+	 * already have normalized the times into the server clock domain with the
+	 * connection-level offset. AUD-50: re-anchors resume the clock.
 	 */
 	public static void realignServerDomain(String trackId, long startEpochServerMillis,
 			long sendServerEpochMillis)
@@ -115,10 +75,11 @@ public final class MarkerClock
 		LOGGER.debug("[MBM] clock re-anchor track={} startEpochServer={}ms", trackId, startEpochServerMillis);
 	}
 
-	// K5: the client-clock-domain offset accessor for anchor conversions
+	// K6-B: the connection-level offset lives in ClockOffsetEstimator; this
+	// accessor forwards for anchor conversions
 	public static double clockOffsetMillis()
 	{
-		return MarkerClock.clockOffsetMillis;
+		return ClockOffsetEstimator.offsetMillis();
 	}
 
 	public static void invalidate()
@@ -132,11 +93,6 @@ public final class MarkerClock
 		// AUD-52 v1.3: invalidation also clears the give-up state
 		MarkerClock.correctionDisabled = false;
 		MarkerClock.reanchorRequested = false;
-		// K5: a fresh session restarts the offset-sample window
-		MarkerClock.offsetWindowStartMillis = System.currentTimeMillis();
-		MarkerClock.bestSampleRttMillis = Long.MAX_VALUE;
-		MarkerClock.bestSampleAtMillis = 0L;
-		MarkerClock.clockOffsetMillis = 0.0D;
 	}
 
 	public static void setState(ClockState state)
@@ -285,7 +241,7 @@ public final class MarkerClock
 			// AUD-24 v1.1: |drift| <= 1s -> no intervention
 			sink.noCorrection(drift);
 		} else {
-			// AUD-24 v1.1: |drift| > 1s -> direct seek to the server-anchored
+			// AUD-24 v1.1: |drift| > 1s -> direct seek to the normalized
 			// position, wrapped in a ~120ms fade-out/fade-in
 			sink.seek(serverPositionSeconds(clockSource), drift);
 		}

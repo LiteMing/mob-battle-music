@@ -12,7 +12,7 @@ import nonamecrackers2.mobbattlemusic.MobBattleMusicMod;
 
 public class MobBattleMusicNetwork
 {
-	private static final String PROTOCOL_VERSION = "14";
+	private static final String PROTOCOL_VERSION = "15";
 	private static int nextId;
 	private static final SimpleChannel CHANNEL = NetworkRegistry.ChannelBuilder
 			.named(MobBattleMusicMod.id("main"))
@@ -76,7 +76,10 @@ public class MobBattleMusicNetwork
 		CHANNEL.messageBuilder(PlaybackStartReportPacket.class, nextId++, NetworkDirection.PLAY_TO_SERVER)
 				.encoder(PlaybackStartReportPacket::encode)
 				.decoder(PlaybackStartReportPacket::decode)
-				.consumerMainThread(MobBattleMusicNetwork::handlePlaybackStartReport)
+				// K6-B: the server-receive moment t2 must be captured BEFORE
+				// the server main-thread queue - the consumer runs on the
+				// network thread
+				.consumerNetworkThread(MobBattleMusicNetwork::handlePlaybackStartReport)
 				.add();
 		CHANNEL.messageBuilder(PlaybackClockSyncPacket.class, nextId++, NetworkDirection.PLAY_TO_CLIENT)
 				.encoder(PlaybackClockSyncPacket::encode)
@@ -135,9 +138,11 @@ public class MobBattleMusicNetwork
 		CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), packet);
 	}
 
-	public static void sendPlaybackStartReport(String trackId, long clientStartEpochMillis, long clientSendEpochMillis)
+	public static void sendPlaybackStartReport(String trackId, long clientStartEpochMillis,
+			long clientSendEpochMillis, long sessionGeneration)
 	{
-		CHANNEL.sendToServer(new PlaybackStartReportPacket(trackId, clientStartEpochMillis, clientSendEpochMillis));
+		CHANNEL.sendToServer(new PlaybackStartReportPacket(trackId, clientStartEpochMillis,
+				clientSendEpochMillis, sessionGeneration));
 	}
 
 	public static void sendPlaybackClockSync(ServerPlayer player, PlaybackClockSyncPacket packet)

@@ -139,3 +139,11 @@ playbackGeneration 一同发布，消费方必须校验代号；stop() 必须清
 ### AUD-38【追加】走查表须含失败/边界路径。
 
 ### AUD-39【追加】注释与代码不符视同静默偏差。
+
+### AUD-23【边界声明 K6-B】机器钟差校准已实现，跨客户端共同播放轴未实现
+
+当前实现完成的是「客户端自锚 + 连接级机器钟差校准」
+（ClockOffsetEstimator，CUE-4 最小 RTT 握手）。跨客户端的共享播放轴
+（多人 ±1s 共同轴）**未实现**：锚是每客户端自锚
+（server-clock-normalized client anchor），两个客户端之间没有共享
+canonical start。任何声称「多人 ±1s 已完成」的文字均不成立。

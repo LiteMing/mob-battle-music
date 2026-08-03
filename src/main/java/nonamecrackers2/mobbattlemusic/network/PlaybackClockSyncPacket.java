@@ -9,11 +9,11 @@ import net.minecraftforge.network.NetworkEvent;
 import nonamecrackers2.mobbattlemusic.client.audio.MarkerClock;
 
 /**
- * S2C: server-anchored clock sync (AUD-22/CUE-4). Carries the CUE-4 handshake
- * sample: t1 (client send, echoed), t2 (server receive), t3 (server send) -
- * the client computes the clock offset and keeps the lowest-RTT sample.
- * (trackId, startEpochMillis[client domain], clientSendEpochMillis,
- * serverRecvEpochMillis, sendServerEpochMillis)
+ * S2C: server clock-sync response (AUD-22/K6-B). Carries the CUE-4 handshake
+ * sample: t1 (echoed), t2 (server recv, captured pre-queue), t3 (server
+ * send), plus the echoed session generation. The client feeds the estimator
+ * and applies a normalized anchor only when the generation matches - a stale
+ * response must never overwrite a newer track.
  */
 public class PlaybackClockSyncPacket
 {
@@ -22,15 +22,17 @@ public class PlaybackClockSyncPacket
 	private final long clientSendEpochMillis;
 	private final long serverRecvEpochMillis;
 	private final long sendServerEpochMillis;
+	private final long sessionGeneration;
 
 	public PlaybackClockSyncPacket(String trackId, long startEpochMillis, long clientSendEpochMillis,
-			long serverRecvEpochMillis, long sendServerEpochMillis)
+			long serverRecvEpochMillis, long sendServerEpochMillis, long sessionGeneration)
 	{
 		this.trackId = trackId;
 		this.startEpochMillis = startEpochMillis;
 		this.clientSendEpochMillis = clientSendEpochMillis;
 		this.serverRecvEpochMillis = serverRecvEpochMillis;
 		this.sendServerEpochMillis = sendServerEpochMillis;
+		this.sessionGeneration = sessionGeneration;
 	}
 
 	public String trackId()
@@ -58,6 +60,11 @@ public class PlaybackClockSyncPacket
 		return this.sendServerEpochMillis;
 	}
 
+	public long sessionGeneration()
+	{
+		return this.sessionGeneration;
+	}
+
 	public void encode(FriendlyByteBuf buffer)
 	{
 		buffer.writeUtf(this.trackId);
@@ -65,20 +72,20 @@ public class PlaybackClockSyncPacket
 		buffer.writeLong(this.clientSendEpochMillis);
 		buffer.writeLong(this.serverRecvEpochMillis);
 		buffer.writeLong(this.sendServerEpochMillis);
+		buffer.writeLong(this.sessionGeneration);
 	}
 
 	public static PlaybackClockSyncPacket decode(FriendlyByteBuf buffer)
 	{
 		return new PlaybackClockSyncPacket(buffer.readUtf(), buffer.readLong(), buffer.readLong(),
-				buffer.readLong(), buffer.readLong());
+				buffer.readLong(), buffer.readLong(), buffer.readLong());
 	}
 
 	public void handle(Supplier<NetworkEvent.Context> context)
 	{
 		context.get().enqueueWork(() -> {
 			DistExecutor.unsafeRunWhenOn(Dist.CLIENT, () -> () ->
-					MarkerClock.realign(this.trackId, this.startEpochMillis, this.sendServerEpochMillis,
-							this.clientSendEpochMillis, this.serverRecvEpochMillis));
+					nonamecrackers2.mobbattlemusic.client.audio.WorldPlaybackChannel.handleClockSync(this));
 		});
 		context.get().setPacketHandled(true);
 	}

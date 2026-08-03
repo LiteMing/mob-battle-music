@@ -22,6 +22,7 @@ import nonamecrackers2.mobbattlemusic.client.sound.MobBattleTrack;
 import nonamecrackers2.mobbattlemusic.mixin.MixinSoundEngineAccessor;
 import nonamecrackers2.mobbattlemusic.mixin.MixinSoundManagerAccessor;
 import nonamecrackers2.mobbattlemusic.network.MobBattleMusicNetwork;
+import nonamecrackers2.mobbattlemusic.network.PlaybackClockSyncPacket;
 import nonamecrackers2.mobbattlemusic.playlist.TimelineMarker;
 
 /**
@@ -81,6 +82,9 @@ public final class WorldPlaybackChannel
 	// still valid (same track, same source version)
 	private static long seekGateSourceVersion;
 	private static String seekGateTrackId;
+	// K6-B: session generation - bumped per playback session; a stale S2C
+	// response (older generation) must never overwrite a newer track's anchor
+	private static volatile long playbackSessionGeneration;
 	// AUD-46/AUD-49: unified gated transition (fade out -> gain-zero poll ->
 	// action -> fade in). Single slot; new requests fail explicitly (AUD-49 #4).
 	private static @Nullable PendingGate pendingGate;
@@ -387,6 +391,10 @@ public final class WorldPlaybackChannel
 		MarkerClock.clearInjectedDrift();
 		// AUD-48 v1.4: world unload resets the converged watermark
 		StreamMusicPlayer.resetAdaptiveWatermark();
+		// K6-B: world unload resets the connection-level estimator and the
+		// session generation
+		ClockOffsetEstimator.reset();
+		WorldPlaybackChannel.playbackSessionGeneration = 0L;
 		WorldPlaybackChannel.lastSeekAtMillis = 0L;
 		WorldPlaybackChannel.recentSeekCount = 0;
 		WorldPlaybackChannel.recentSeekIndex = 0;
@@ -589,6 +597,8 @@ public final class WorldPlaybackChannel
 		WorldPlaybackChannel.handle = created;
 		WorldPlaybackChannel.firedThisTrack = 0L;
 		WorldPlaybackChannel.lastMarkerPosition = -1L;
+		// K6-B: a new playback session - stale S2C responses are rejected
+		WorldPlaybackChannel.playbackSessionGeneration++;
 		// AUD-52 v1.3: a track switch re-enables correction and clears the
 		// frequency window and the backoff state
 		MarkerClock.enableCorrection();
@@ -642,9 +652,10 @@ public final class WorldPlaybackChannel
 		PlaybackHandle active = WorldPlaybackChannel.handle;
 		if (active == null)
 			return;
-		// K5: the report carries its own send time (t1) for the CUE-4 handshake
+		// K6-B: the report carries its own send time (t1) and the session
+		// generation for the CUE-4 handshake / staleness check
 		MobBattleMusicNetwork.sendPlaybackStartReport(active.track(), active.startedEpochMillis(),
-				System.currentTimeMillis());
+				System.currentTimeMillis(), WorldPlaybackChannel.playbackSessionGeneration);
 	}
 	
 	private static void reportPlaybackResume(long resumeEpochMillis)
@@ -653,7 +664,22 @@ public final class WorldPlaybackChannel
 		if (active == null)
 			return;
 		MobBattleMusicNetwork.sendPlaybackStartReport(active.track(), resumeEpochMillis,
-				System.currentTimeMillis());
+				System.currentTimeMillis(), WorldPlaybackChannel.playbackSessionGeneration);
+	}
+	
+	// K6-B: S2C clock-sync response - feed the connection-level estimator,
+	// then apply the normalized anchor only when the session generation
+	// matches (a stale response must never overwrite a newer track)
+	public static void handleClockSync(PlaybackClockSyncPacket packet)
+	{
+		long t4 = System.currentTimeMillis();
+		ClockOffsetEstimator.sample(packet.clientSendEpochMillis(), packet.serverRecvEpochMillis(),
+				packet.sendServerEpochMillis(), t4);
+		if (packet.sessionGeneration() != WorldPlaybackChannel.playbackSessionGeneration)
+			return;
+		long offset = Math.round(ClockOffsetEstimator.offsetMillis());
+		MarkerClock.realignServerDomain(packet.trackId(),
+				packet.startEpochMillis() + offset, packet.sendServerEpochMillis());
 	}
 	
 	private static void tickClockAndInvalidation()
