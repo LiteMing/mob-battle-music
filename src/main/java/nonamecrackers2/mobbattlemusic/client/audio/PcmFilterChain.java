@@ -80,9 +80,8 @@ public final class PcmFilterChain
 
 	public void process(byte[] buffer, int length)
 	{
-		// AUD-48 v1.1: the envelope advances even when the chain bypasses,
-		// so a pending fade-in is never starved by an empty chain
-		MIX.advance();
+		// AUD-45 v1.1: envelope values are pure functions of time, computed on
+		// read; no advancement step, no thread dependency
 		if (this.processors.isEmpty() && this.transitionFrom == null && MIX.current() <= 0.001f)
 			return;
 		int alignedLength = length - length % this.frameSize;
@@ -168,12 +167,11 @@ public final class PcmFilterChain
 		double process(int channel, double input);
 	}
 
-	// AUD-44-shaped envelope (current, target, startValue, startMillis,
-	// durationMillis), advanced only on the playback thread. AUD-48 v1.1:
-	// steady-state default is 0.0 (no filters).
+	// AUD-44-shaped envelope (startValue, target, startMillis, durationMillis),
+	// computed on read (AUD-45 v1.1). AUD-48 v1.1: steady-state default is
+	// 0.0 (no filters).
 	private static final class MixEnvelope
 	{
-		private volatile float current = 0.0f;
 		private volatile float target = 0.0f;
 		private volatile float startValue = 0.0f;
 		private volatile long startMillis;
@@ -184,32 +182,22 @@ public final class PcmFilterChain
 			float clamped = Math.max(0.0f, Math.min(1.0f, newTarget));
 			if (clamped == this.target)
 				return;
-			this.startValue = this.current;
+			this.startValue = this.current();
 			this.startMillis = System.currentTimeMillis();
 			this.durationMillis = Math.max(0L, fadeMillis);
 			this.target = clamped;
 		}
 
-		private void advance()
-		{
-			float t = this.target;
-			if (this.current == t)
-				return;
-			long d = this.durationMillis;
-			if (d <= 0L) {
-				this.current = t;
-				return;
-			}
-			float progress = (float)((System.currentTimeMillis() - this.startMillis) / (double)d);
-			if (progress >= 1.0f)
-				this.current = t;
-			else
-				this.current = this.startValue + (t - this.startValue) * progress;
-		}
-
 		private float current()
 		{
-			return this.current;
+			long d = this.durationMillis;
+			float t = this.target;
+			if (d <= 0L)
+				return t;
+			float progress = (float)((System.currentTimeMillis() - this.startMillis) / (double)d);
+			if (progress >= 1.0f)
+				return t;
+			return this.startValue + (t - this.startValue) * progress;
 		}
 
 		private float target()

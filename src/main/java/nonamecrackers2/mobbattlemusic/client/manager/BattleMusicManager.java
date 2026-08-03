@@ -346,8 +346,12 @@ public class BattleMusicManager {
 								LOGGER.info("Switched external URL track to selected playlist entry: {}", newUrl);
 							},
 							fadeIn);
-					if (queued)
+					if (queued) {
 						externalTrack = null;
+						// AUD-49 #6: after queueing a gate, this leg must not
+						// create or start any source this tick
+						return;
+					}
 				}
 
 				if (allowNewTracks
@@ -359,7 +363,8 @@ public class BattleMusicManager {
 						url = tracksManager.selectExternalUrl(trackLocation);
 						if (url == null)
 							return;
-						stopOtherExternalTracks(type, tracksManager);
+						if (stopOtherExternalTracks(type, tracksManager))
+							return;
 						long resumePosition = consumeExternalResume(trackLocation, url);
 						if (resumePosition <= 0L)
 							resumePosition = wrapSynchronizedPosition(url, synchronizedPosition);
@@ -546,32 +551,41 @@ public class BattleMusicManager {
 		this.idleNextStartMillis.put(type.getTrack(), System.currentTimeMillis() + delay);
 	}
 
-	private void stopOtherExternalTracks(TrackType keep, MusicTracksManager tracksManager)
+	/**
+	 * AUD-46/AUD-49 #6: stop other external tracks through gated transitions.
+	 * Returns true when this tick queued a gate OR another external track
+	 * still needs stopping (gate slot busy); the caller must return early so
+	 * no source is created this tick. The lambda captures the TrackType and
+	 * ExternalUrlMusicTrack as final locals, never a Map.Entry.
+	 */
+	private boolean stopOtherExternalTracks(TrackType keep, MusicTracksManager tracksManager)
 	{
+		boolean pending = false;
 		for (Map.Entry<TrackType, ExternalUrlMusicTrack> entry : List.copyOf(this.externalTracks.entrySet())) {
 			if (entry.getKey() == keep)
 				continue;
+			pending = true;
+			if (WorldPlaybackChannel.isGatedTransitionActive())
+				break;
+			TrackType otherType = entry.getKey();
 			ExternalUrlMusicTrack externalTrack = entry.getValue();
-			// AUD-46: asymmetric gated fade-out per switch direction; the stop
-			// happens only after the gain has reached zero. AUD-49 #4: on
-			// rejection keep the track; the switch retries on the next tick.
-			long fadeOut = switchFadeOutMillis(entry.getKey().isIdlePlayback(), keep.isIdlePlayback());
-			long fadeIn = switchFadeInMillis(entry.getKey().isIdlePlayback(), keep.isIdlePlayback());
+			long fadeOut = switchFadeOutMillis(otherType.isIdlePlayback(), keep.isIdlePlayback());
+			long fadeIn = switchFadeInMillis(otherType.isIdlePlayback(), keep.isIdlePlayback());
 			boolean queued = WorldPlaybackChannel.gatedTransition(
 					ExternalMusicHandler.getInstance().getPlayer().trackEnv(),
 					fadeOut, "switch-others",
 					() -> {
-						boolean resumable = cacheExternalResume(entry.getKey().getTrack(), externalTrack);
+						boolean resumable = cacheExternalResume(otherType.getTrack(), externalTrack);
 						externalTrack.stop();
-						this.externalTracks.remove(entry.getKey());
+						this.externalTracks.remove(otherType);
 						if (!resumable)
-							tracksManager.clearExternalSessionSelection(entry.getKey().getTrack());
-						scheduleIdleNextStart(entry.getKey());
+							tracksManager.clearExternalSessionSelection(otherType.getTrack());
+						scheduleIdleNextStart(otherType);
 					},
 					fadeIn);
-			if (!queued)
-				break;
+			break;
 		}
+		return pending;
 	}
 
 	// AUD-46: asymmetric switch durations (idle->aggressive 200/150,

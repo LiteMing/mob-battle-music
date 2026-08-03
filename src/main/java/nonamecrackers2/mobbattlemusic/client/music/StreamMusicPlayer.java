@@ -66,22 +66,23 @@ public class StreamMusicPlayer {
     
     /**
      * AUD-44/45: a single gain envelope, shape
-     * (current, target, startValue, startMillis, durationMillis), advanced by
-     * linear interpolation. current may only be written by the playback
-     * thread; target may be written by any thread. A new fade starts only
-     * when the target actually changes (judged inside the envelope).
+     * (startValue, target, startMillis, durationMillis), advanced by linear
+     * interpolation. AUD-45 v1.1: the current value is a pure function of
+     * time - computed on read, no advancement role, no dependency on any
+     * thread being alive or scheduled. setTarget starts a new fade only when
+     * the target actually changes (judged inside the envelope).
      */
     public static final class Envelope {
-        private volatile float current;
         private volatile float target;
         private volatile float startValue;
         private volatile long startMillis;
         private volatile long durationMillis;
         
         public Envelope(float initial) {
-            this.current = initial;
             this.target = initial;
             this.startValue = initial;
+            this.startMillis = System.currentTimeMillis();
+            this.durationMillis = 0L;
         }
         
         public void setTarget(float newTarget, long fadeMillis) {
@@ -89,30 +90,22 @@ public class StreamMusicPlayer {
             // AUD-45: judgment stays inside the envelope
             if (clamped == this.target)
                 return;
-            this.startValue = this.current;
+            // AUD-45 v1.1: startValue is the computed value at call time
+            this.startValue = this.current();
             this.startMillis = System.currentTimeMillis();
             this.durationMillis = Math.max(0L, fadeMillis);
             this.target = clamped;
         }
         
-        public void advance() {
-            float t = this.target;
-            if (this.current == t)
-                return;
+        public float current() {
             long d = this.durationMillis;
-            if (d <= 0L) {
-                this.current = t;
-                return;
-            }
+            float t = this.target;
+            if (d <= 0L)
+                return t;
             float progress = (float)((System.currentTimeMillis() - this.startMillis) / (double)d);
             if (progress >= 1.0f)
-                this.current = t;
-            else
-                this.current = this.startValue + (t - this.startValue) * progress;
-        }
-        
-        public float current() {
-            return this.current;
+                return t;
+            return this.startValue + (t - this.startValue) * progress;
         }
         
         public float target() {
@@ -120,15 +113,14 @@ public class StreamMusicPlayer {
         }
         
         /**
-         * AUD-49 #3: cancel-path reset of target AND current. Normal
-         * convergence never writes current from the tick thread (AUD-45);
-         * this is the one sanctioned exception for cancellation.
+         * AUD-49 #3: cancel-path reset of target AND start state. Pure
+         * function values make this safe from any thread.
          */
         public void hardReset(float value) {
             float clamped = Math.max(0.0f, Math.min(1.0f, value));
-            this.current = clamped;
             this.target = clamped;
             this.startValue = clamped;
+            this.startMillis = System.currentTimeMillis();
             this.durationMillis = 0L;
         }
     }
@@ -328,11 +320,8 @@ public class StreamMusicPlayer {
                             if (generation != playbackGeneration.get() || !playing)
                                 break;
 
-                            // AUD-45: the single gain computation entry of the
-                            // whole process, on the playback thread only
-                            this.trackEnv.advance();
-                            this.seekEnv.advance();
-                            MUTE_ENV.advance();
+                            // AUD-45 v1.1: envelope values are pure functions
+                            // of time, computed on read inside applyGain
                             applyGain();
                             long currentFilterRevision = AudioFilterManager.revision();
                             if (currentFilterRevision != filterRevision) {

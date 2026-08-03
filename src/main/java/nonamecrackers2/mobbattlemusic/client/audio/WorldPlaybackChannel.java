@@ -257,20 +257,26 @@ public final class WorldPlaybackChannel
 		if (gate == null)
 			return;
 		if (gate.env().current() > 0.001f) {
-			// AUD-49 #2: timeout fallback - run the action anyway and pull
-			// the envelope back to 1.0, with a fixed-format log line
-			if (System.currentTimeMillis() > gate.deadlineMillis()) {
-				WorldPlaybackChannel.pendingGate = null;
-				LOGGER.warn("[MBM] AUD-49 gate timeout after {}ms (gain={}) action={}",
-						System.currentTimeMillis() - gate.createdAtMillis(),
-						String.format(java.util.Locale.ROOT, "%.3f", gate.env().current()),
-						gate.actionName());
-				gate.action().run();
-				gate.env().setTarget(1.0f, 0L);
-			}
+			// AUD-49 #2: timeout fallback
+			if (System.currentTimeMillis() > gate.deadlineMillis())
+				finishGate(gate, true);
 			return;
 		}
+		finishGate(gate, false);
+	}
+	
+	// AUD-49 #2: the timeout path and the normal completion path share the
+	// exact same reset behaviour - fade-in per source presence, or register
+	// the fade-in duration for the next source's start. The timeout only adds
+	// a fixed-format warning log.
+	private static void finishGate(PendingGate gate, boolean timedOut)
+	{
 		WorldPlaybackChannel.pendingGate = null;
+		if (timedOut)
+			LOGGER.warn("[MBM] AUD-49 gate timeout after {}ms (gain={}) action={}",
+					System.currentTimeMillis() - gate.createdAtMillis(),
+					String.format(java.util.Locale.ROOT, "%.3f", gate.env().current()),
+					gate.actionName());
 		gate.action().run();
 		// AUD-49 #5: the fade-in must not fade silence. When the action
 		// started a source (e.g. seek), fade in now; when it only stopped the
