@@ -77,11 +77,6 @@ public final class WorldPlaybackChannel
 	private static long correctionBackoffMillis = GIVE_UP_BACKOFF_FIRST_MILLIS;
 	// AUD-52 修订: seek cost measurement (queue time -> first watermark fill)
 	private static long seekQueuedAtMillis;
-	// K6-A: the source token captured BEFORE the seek gate invalidates the
-	// anchor; a failed seek may restore the old anchor only when the token is
-	// still valid (same track, same source version)
-	private static long seekGateSourceVersion;
-	private static String seekGateTrackId;
 	// K6-B: session generation - bumped per playback session; a stale S2C
 	// response (older generation) must never overwrite a newer track's anchor
 	private static volatile long playbackSessionGeneration;
@@ -400,7 +395,6 @@ public final class WorldPlaybackChannel
 		WorldPlaybackChannel.recentSeekIndex = 0;
 		WorldPlaybackChannel.giveUpWarned = false;
 		WorldPlaybackChannel.seekQueuedAtMillis = 0L;
-		WorldPlaybackChannel.seekGateSourceVersion = 0L;
 		WorldPlaybackChannel.correctionDisabledAtMillis = 0L;
 		WorldPlaybackChannel.correctionBackoffMillis = GIVE_UP_BACKOFF_FIRST_MILLIS;
 		WorldPlaybackChannel.seekSettleUntilMillis = 0L;
@@ -605,16 +599,16 @@ public final class WorldPlaybackChannel
 		WorldPlaybackChannel.recentSeekCount = 0;
 		WorldPlaybackChannel.correctionDisabledAtMillis = 0L;
 		WorldPlaybackChannel.correctionBackoffMillis = GIVE_UP_BACKOFF_FIRST_MILLIS;
-		// R4: the new track is not yet anchored - the old anchor must not
-		// masquerade as a healthy zero-drift state
-		MarkerClock.invalidateAnchor();
+		// K7-A: track switch - version bump, source cleared and the anchor
+		// invalidated atomically; an in-flight seek's old token can never
+		// restore across this boundary
+		MarkerClock.invalidateForTrackSwitch();
 		// AUD-52: track switch resets the seek accounting
 		WorldPlaybackChannel.lastSeekAtMillis = 0L;
 		WorldPlaybackChannel.seekSettleUntilMillis = 0L;
 		WorldPlaybackChannel.giveUpWarned = false;
-		// AUD-52 修订/O9: track switch resets the seek-cost queue stamp
+		// AUD-52 �޶�/O9: track switch resets the seek-cost queue stamp
 		WorldPlaybackChannel.seekQueuedAtMillis = 0L;
-		WorldPlaybackChannel.seekGateSourceVersion = 0L;
 		// AUD-22: report the playback start so the server can anchor the clock
 		reportPlaybackStart();
 	}
@@ -793,31 +787,28 @@ public final class WorldPlaybackChannel
 			long targetMillis = Math.round(serverPositionSeconds * 1000.0D);
 			ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
 			String trackId = handler.getCurrentlyPlayingUrl();
-			// K6-A: capture the unforgeable source token BEFORE the gate
-			// invalidates the anchor; a failed seek may only restore the old
-			// authoritative anchor when the token is still valid
-			WorldPlaybackChannel.seekGateSourceVersion = MarkerClock.sourceVersion();
-			WorldPlaybackChannel.seekGateTrackId = trackId;
 			// AUD-49 #4: an explicit failure here just means the drift is
 			// re-evaluated on the next tick; no state to roll back
 			boolean queued = WorldPlaybackChannel.gatedTransition(handler.getPlayer().seekEnv(), 120L, "clock-seek", () -> {
 				// AUD-51: the action only accounts state; the audio seek is
 				// offloaded to the audio-I/O executor (no blocking work here)
+				// K7-A: the atomic token is captured after the gate queued
+				// (the gate already invalidated the anchor); it carries the
+				// source version, the track identity and the session
+				// generation - restore only succeeds while all three match
+				MarkerClock.AnchorToken token = MarkerClock.captureAndInvalidateForSeek(trackId,
+						WorldPlaybackChannel.playbackSessionGeneration);
 				handler.seekMusicAsync(targetMillis, completedAt -> {
 					// AUD-52 v1.2: the anchor moment is the measured watermark
 					// fill time of the new line, never the dispatch time.
-					// K6-A: on failure restore the OLD authoritative anchor -
-					// but only if the source is unchanged (same track, same
-					// source version). No local re-anchor: the epoch is never
-					// touched and the current local position is never used to
-					// fabricate a new anchor.
+					// K7-A: on failure restore the OLD anchor - atomically,
+					// only when the token still matches the current source.
+					// No local re-anchor: the epoch is never touched and the
+					// current local position is never used to fabricate a new
+					// anchor.
 					if (completedAt <= 0L) {
 						LOGGER.warn("[MBM] AUD-52 seek to {}ms failed (watermark not reached); restoring old anchor", targetMillis);
-						if (trackId != null && WorldPlaybackChannel.seekGateTrackId != null
-								&& WorldPlaybackChannel.seekGateTrackId.equals(trackId)
-								&& MarkerClock.sourceVersion() == WorldPlaybackChannel.seekGateSourceVersion
-								&& trackId.equals(MarkerClock.sourceTrackId())) {
-							MarkerClock.restoreAnchor();
+						if (MarkerClock.restoreAfterFailedSeek(token)) {
 							LOGGER.debug("[MBM] old authoritative anchor restored (token valid)");
 						} else {
 							LOGGER.debug("[MBM] anchor restore skipped (source changed)");

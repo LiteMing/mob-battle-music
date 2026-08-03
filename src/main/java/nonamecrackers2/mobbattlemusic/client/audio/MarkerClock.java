@@ -46,11 +46,16 @@ public final class MarkerClock
 	// re-anchor; cleared only by beginPlayback (track switch) and invalidate
 	private static volatile boolean correctionDisabled;
 	// K6-A: unforgeable source version - bumped whenever the source is
-	// replaced (realignServerDomain) or invalidated; a seek-failure anchor
-	// restore only succeeds when the version is unchanged
+	// replaced or invalidated; a seek-failure anchor restore only succeeds
+	// when the version is unchanged. K7-A: increments happen only inside
+	// synchronized methods (atomic), reads are volatile
 	private static volatile long sourceVersion;
 
 	private MarkerClock() {}
+
+	// K7-A: immutable seek-anchor token - source version, track identity and
+	// the playback session generation that captured it
+	public record AnchorToken(long sourceVersion, String trackId, long playbackSessionGeneration) {}
 
 	// K6-B: the anchor is stored in the SERVER clock domain - the offset is
 	// provided by the connection-level estimator and applied before the anchor
@@ -59,11 +64,10 @@ public final class MarkerClock
 			long recvClientEpochMillis) {}
 
 	/**
-	 * K6-B: the only anchor entry - the caller (PlaybackSyncHandler) must
-	 * already have normalized the times into the server clock domain with the
-	 * connection-level offset. AUD-50: re-anchors resume the clock.
+	 * K6-B/K7-A: the only anchor entry. All source mutations are synchronized
+	 * so version increments are atomic. AUD-50: re-anchors resume the clock.
 	 */
-	public static void realignServerDomain(String trackId, long startEpochServerMillis,
+	public static synchronized void realignServerDomain(String trackId, long startEpochServerMillis,
 			long sendServerEpochMillis)
 	{
 		MarkerClock.sourceVersion++;
@@ -82,7 +86,7 @@ public final class MarkerClock
 		return ClockOffsetEstimator.offsetMillis();
 	}
 
-	public static void invalidate()
+	public static synchronized void invalidate()
 	{
 		MarkerClock.sourceVersion++;
 		MarkerClock.source = null;
@@ -109,19 +113,63 @@ public final class MarkerClock
 		return MarkerClock.anchorValid;
 	}
 
-	// R4: a track switch invalidates the anchor - the new track is not yet
-	// anchored; only the anchor bit is touched (the source version is NOT
-	// bumped here - a seek-failure restore on the SAME source must succeed)
+	// R4: a track switch invalidates the anchor - only the anchor bit is
+	// touched (the source version is NOT bumped - a seek-failure restore on
+	// the SAME source must succeed)
 	public static void invalidateAnchor()
 	{
 		MarkerClock.anchorValid = false;
 	}
 
-	// K6-A: restore the previously invalidated anchor - only the validity bit;
-	// never touches the source, the epoch or the position
-	public static void restoreAnchor()
+	/**
+	 * K7-A: atomic capture-and-invalidate for a seek gate. Runs under the
+	 * same lock as every source mutation, so the returned token is consistent
+	 * with the invalidated state; callers must never hand-assemble a token
+	 * from three volatile reads.
+	 *
+	 * @return the token for restoreAfterFailedSeek(), or null when no source
+	 *         exists
+	 */
+	public static synchronized @Nullable AnchorToken captureAndInvalidateForSeek(String trackId,
+			long playbackSessionGeneration)
 	{
+		ClockSource clockSource = MarkerClock.source;
+		if (clockSource == null)
+			return null;
+		AnchorToken token = new AnchorToken(MarkerClock.sourceVersion, clockSource.trackId(),
+				playbackSessionGeneration);
+		MarkerClock.anchorValid = false;
+		return token;
+	}
+
+	/**
+	 * K7-A: atomic restore after a failed seek - the token's track identity
+	 * and source version must both still match the current source; otherwise
+	 * the old anchor is gone (track switch, new S2C anchor, world unload,
+	 * successful seek all bump the version and must fail this check).
+	 */
+	public static synchronized boolean restoreAfterFailedSeek(AnchorToken token)
+	{
+		if (token == null)
+			return false;
+		ClockSource clockSource = MarkerClock.source;
+		if (clockSource == null || !clockSource.trackId().equals(token.trackId())
+				|| MarkerClock.sourceVersion != token.sourceVersion())
+			return false;
 		MarkerClock.anchorValid = true;
+		return true;
+	}
+
+	/**
+	 * K7-A: beginPlayback calls this - version bump, source cleared and the
+	 * anchor invalidated in one atomic step, so an in-flight seek's old token
+	 * can never restore across a track switch.
+	 */
+	public static synchronized void invalidateForTrackSwitch()
+	{
+		MarkerClock.sourceVersion++;
+		MarkerClock.source = null;
+		MarkerClock.anchorValid = false;
 	}
 
 	// K6-A: unforgeable source version for seek-failure restore checks
