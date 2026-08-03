@@ -80,6 +80,11 @@ public class StreamMusicPlayer {
     private void startPlayback(Path file, long startPositionMillis, long durationHintMillis) {
         stop();
         long generation = playbackGeneration.incrementAndGet();
+        // AUD-42: a new generation must not inherit the previous playback's
+        // pause/mute intent; the channel re-applies its target state the same
+        // tick (AUD-41)
+        gamePaused = false;
+        gameMuted = false;
         playing = true;
         paused = false;
         playedPcmBytes = 0L;
@@ -236,6 +241,10 @@ public class StreamMusicPlayer {
      */
     public void stop() {
         playbackGeneration.incrementAndGet();
+        // AUD-42: stop() resets the game pause/mute intent so no future
+        // generation inherits it
+        gamePaused = false;
+        gameMuted = false;
         playing = false;
         paused = false;
         playedPcmBytes = 0L;
@@ -300,11 +309,11 @@ public class StreamMusicPlayer {
      * Pause playback
      */
     public void pause() {
-        if (playing && !paused) {
-            paused = true;
-            if (line != null && line.isOpen()) {
-                line.stop();
-            }
+        // AUD-42: unconditional flag write; only hardware ops keep liveness
+        // checks
+        paused = true;
+        if (line != null && line.isOpen()) {
+            line.stop();
         }
     }
     
@@ -312,11 +321,11 @@ public class StreamMusicPlayer {
      * Resume playback
      */
     public void resume() {
-        if (playing && paused) {
-            paused = false;
-            if (line != null && line.isOpen()) {
-                line.start();
-            }
+        // AUD-42: unconditional flag write; only hardware ops keep liveness
+        // checks
+        paused = false;
+        if (line != null && line.isOpen()) {
+            line.start();
         }
     }
     
@@ -324,26 +333,26 @@ public class StreamMusicPlayer {
      * Pause playback due to game pause
      */
     public void pauseForGame() {
-        if (playing && !gamePaused) {
-            gamePaused = true;
-            if (line != null && line.isOpen()) {
-                line.stop();
-            }
-            LOGGER.debug("Paused music due to game pause");
+        // AUD-42: gamePaused is a projection of channel intent, not the
+        // player's own state - the write is unconditional
+        gamePaused = true;
+        if (line != null && line.isOpen()) {
+            line.stop();
         }
+        LOGGER.debug("Paused music due to game pause");
     }
     
     /**
      * Resume playback after game unpause
      */
     public void resumeFromGame() {
-        if (playing && gamePaused) {
-            gamePaused = false;
-            if (line != null && line.isOpen()) {
-                line.start();
-            }
-            LOGGER.debug("Resumed music after game unpause");
+        // AUD-42: unconditional flag write; the old `if (playing && gamePaused)`
+        // guard swallowed cleanup because stop() clears playing first
+        gamePaused = false;
+        if (line != null && line.isOpen()) {
+            line.start();
         }
+        LOGGER.debug("Resumed music after game unpause");
     }
     
     /**
@@ -367,9 +376,17 @@ public class StreamMusicPlayer {
         return gamePaused;
     }
 
+    /**
+     * AUD-43: liveness predicate, independent of pause/mute. "Is there an
+     * active track" vs. isPlaying()'s "is it currently audible".
+     */
+    public boolean hasActiveTrack() {
+        return playing;
+    }
+
     public void setMutedForGame(boolean muted) {
-        if (this.gameMuted == muted)
-            return;
+        // AUD-42: unconditional intent projection; the gain is applied via
+        // updateVolumeOutput() regardless of playback state
         this.gameMuted = muted;
         updateVolumeOutput();
     }

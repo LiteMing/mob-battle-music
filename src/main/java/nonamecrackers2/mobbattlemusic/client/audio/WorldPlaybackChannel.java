@@ -175,11 +175,14 @@ public final class WorldPlaybackChannel
 	
 	public static void stop()
 	{
-		ExternalMusicHandler.getInstance().stopMusic();
-		ExternalMusicHandler.getInstance().getPlayer().resumeFromGame();
-		ExternalMusicHandler.getInstance().getPlayer().setMutedForGame(false);
-		ExternalMusicHandler.getInstance().getPlayer().setTargetVolume(1.0F);
+		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
+		// AUD-42 #4: flags are cleared before stopMusic() and independently of
+		// it; never rely on post-stop guards (the setters are unconditional)
+		handler.getPlayer().resumeFromGame();
+		handler.getPlayer().setMutedForGame(false);
+		handler.getPlayer().setTargetVolume(1.0F);
 		MobBattleTrack.setMainPlaybackMuted(false);
+		handler.stopMusic();
 		clearHandle();
 		MarkerClock.invalidate();
 		WorldPlaybackChannel.firedThisTrack = 0L;
