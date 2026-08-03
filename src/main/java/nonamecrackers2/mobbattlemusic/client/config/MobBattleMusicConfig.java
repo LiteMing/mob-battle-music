@@ -49,6 +49,10 @@ public class MobBattleMusicConfig
 		public final ForgeConfigSpec.BooleanValue showErrorNotifications;
 		public final ForgeConfigSpec.BooleanValue ignoreServerPlaylistRequests;
 		public final ForgeConfigSpec.BooleanValue showTrackActionbar;
+		// AUD-48 v1.4: filter mix ramp durations (0 = instant, default); the
+		// chain crossfade is NOT configurable (AUD-48)
+		public final ForgeConfigSpec.IntValue audioFilterFadeInMillis;
+		public final ForgeConfigSpec.IntValue audioFilterFadeOutMillis;
 		
 		public ClientConfig(ForgeConfigSpec.Builder builder)
 		{
@@ -131,6 +135,16 @@ public class MobBattleMusicConfig
 			this.showTrackActionbar = builder
 				.comment("Show an actionbar message when Mob Battle Music switches tracks")
 				.define("showTrackActionbar", false);
+
+			// AUD-48 v1.4: filter mix ramps default to 0 (instant response,
+			// filters reflect environment state); creators may raise them.
+			// The 20ms chain crossfade stays fixed and is NOT configurable.
+			this.audioFilterFadeInMillis = builder
+				.comment("Dry/wet mix ramp when filters activate, in ms (0 = instant)")
+				.defineInRange("audioFilterFadeInMillis", 0, 0, 2000);
+			this.audioFilterFadeOutMillis = builder
+				.comment("Dry/wet mix ramp when filters deactivate, in ms (0 = instant)")
+				.defineInRange("audioFilterFadeOutMillis", 0, 0, 2000);
 			
 			builder.pop();
 		}

@@ -278,6 +278,8 @@ public final class WorldPlaybackChannel
 		WorldPlaybackChannel.lastClockReportMillis = 0L;
 		// AUD-53: world unload clears debug injection unconditionally
 		MarkerClock.clearInjectedDrift();
+		// AUD-48 v1.4: world unload resets the converged watermark
+		StreamMusicPlayer.resetAdaptiveWatermark();
 		WorldPlaybackChannel.lastSeekAtMillis = 0L;
 		WorldPlaybackChannel.consecutiveSeeks = 0;
 		WorldPlaybackChannel.seekSettleUntilMillis = 0L;

@@ -118,7 +118,9 @@ public final class MobBattleMusicClientCommands
 		output.append(prefix).append("world.line buffer=").append(lineBuffer)
 				.append("B fill=").append(Math.max(0, lineBuffer - lineAvailable)).append("B")
 				.append(" watermark=").append(lineWatermark).append("B")
-				.append(" underruns=").append(main.getUnderruns()).append('\n');
+				.append(" underruns=").append(main.getUnderruns())
+				// AUD-48 v1.4: has the adaptive watermark converged?
+				.append(" watermarkAdaptive=").append(StreamMusicPlayer.isWatermarkAdaptive()).append('\n');
 
 		// AUD-30 v1.3/AUD-48: active filters and dry/wet mix envelope
 		java.util.List<String> activeFilters = AudioFilterManager.activeMbmFilters().stream()
@@ -128,7 +130,12 @@ public final class MobBattleMusicClientCommands
 				.append("] mix=").append(String.format(Locale.ROOT, "%.2f", PcmFilterChain.mixCurrent()))
 				.append(" target=").append(String.format(Locale.ROOT, "%.2f", PcmFilterChain.mixTarget()))
 				// AUD-30 v1.6: explicit pending-removal flag
-				.append(" pendingRemoval=").append(AudioFilterManager.isRemovalPending()).append('\n');
+				.append(" pendingRemoval=").append(AudioFilterManager.isRemovalPending())
+				// AUD-48 v1.4: decomposable response latency = tick detection
+				// (50ms) + output buffer (outLatency) + state-machine consume
+				// (next tick when a removal is pending)
+				.append(" latency=").append(50 + Math.max(0L, decodedPos - audiblePos)
+						+ (AudioFilterManager.isRemovalPending() ? 50 : 0)).append("ms").append('\n');
 
 		String clockState = !MarkerClock.isActive() ? "STOPPED" : MarkerClock.state().name();
 		double drift = 0.0D;

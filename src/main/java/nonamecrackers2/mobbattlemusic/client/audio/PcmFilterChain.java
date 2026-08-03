@@ -8,11 +8,8 @@ import javax.sound.sampled.AudioFormat;
 
 public final class PcmFilterChain
 {
-	// AUD-48: dry/wet mix envelope (in 150ms, out 350ms), shared by all chains
-	private static final long MIX_IN_MILLIS = 150L;
-	private static final long MIX_OUT_MILLIS = 350L;
-	// AUD-48: crossfade between old and new chains when processor state cannot
-	// be preserved
+	// AUD-48 v1.4: the chain crossfade is a sample-level anti-click mechanism,
+	// NOT a fade performance - fixed, never configurable
 	private static final long CHAIN_TRANSITION_MILLIS = 20L;
 	private static final MixEnvelope MIX = new MixEnvelope();
 
@@ -141,14 +138,15 @@ public final class PcmFilterChain
 		MIX.setTarget(target, fadeMillis);
 	}
 
+	// AUD-48 v1.4: mix ramp durations are client config (default 0 = instant)
 	public static long mixInMillis()
 	{
-		return MIX_IN_MILLIS;
+		return Math.max(0L, nonamecrackers2.mobbattlemusic.client.config.MobBattleMusicConfig.CLIENT.audioFilterFadeInMillis.get());
 	}
 
 	public static long mixOutMillis()
 	{
-		return MIX_OUT_MILLIS;
+		return Math.max(0L, nonamecrackers2.mobbattlemusic.client.config.MobBattleMusicConfig.CLIENT.audioFilterFadeOutMillis.get());
 	}
 
 	private @Nullable Biquad biquadAt(int index)

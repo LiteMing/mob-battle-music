@@ -63,8 +63,10 @@ public class StreamMusicPlayer {
     // current line; getLongFramePosition() counts frames already played
     private volatile long positionOffsetMillis;
     private volatile float lineFrameRate;
-    // AUD-48: output watermark (target fill in bytes, default 150ms); the
-    // line capacity (500ms) is separate and acts as the underrun reserve
+    // AUD-48 v1.4: adaptive output watermark. Starts at 60ms; each underrun
+    // raises it by 20ms up to 150ms. The converged value is kept in a static
+    // field so it survives startPlayback; reset() clears it.
+    private static volatile long adaptiveWatermarkMillis;
     private volatile long lineWatermarkBytes;
     // AUD-30 v1.5: cumulative underrun count since the last playback start
     private volatile long underruns;
@@ -297,15 +299,19 @@ public class StreamMusicPlayer {
                         LOGGER.debug("Got audio line: {}", playbackLine);
                 
                         LOGGER.debug("Opening audio line...");
-                        // AUD-48: explicit capacity (500ms) separated from the
-                        // target watermark (150ms); capacity is the underrun
+                        // AUD-48 v1.4: explicit capacity (500ms) separated from
+                        // the adaptive watermark (60ms start, +20ms per
+                        // underrun, cap 150ms); capacity is the underrun
                         // reserve, the watermark decides actual latency
                         long capacityBytes = Math.max(1L, Math.round(
                                 decodedFormat.getFrameRate() * decodedFormat.getFrameSize() * 0.5D));
                         playbackLine.open(decodedFormat, (int)Math.min(Integer.MAX_VALUE, capacityBytes));
                         LOGGER.debug("Audio line opened, buffer size: {}", playbackLine.getBufferSize());
+                        long watermarkMillis = StreamMusicPlayer.adaptiveWatermarkMillis > 0L
+                                ? StreamMusicPlayer.adaptiveWatermarkMillis : 60L;
                         lineWatermarkBytes = Math.max(1L, Math.round(
-                                decodedFormat.getFrameRate() * decodedFormat.getFrameSize() * 0.15D));
+                                decodedFormat.getFrameRate() * decodedFormat.getFrameSize()
+                                        * watermarkMillis / 1000.0D));
                         underruns = 0L;
                         lastWatermarkReachedAtMillis = 0L;
                         // AUD-47: a freshly opened line starts its frame counter at
@@ -342,8 +348,21 @@ public class StreamMusicPlayer {
 
                             // AUD-30 v1.6: only count fully-drained writes
                             // after the first successful write
-                            if (totalBytesWritten > 0L && playbackLine.available() >= playbackLine.getBufferSize())
+                            if (totalBytesWritten > 0L && playbackLine.available() >= playbackLine.getBufferSize()) {
                                 underruns++;
+                                // AUD-48 v1.4: adaptive watermark, +20ms per
+                                // underrun, capped at 150ms; persists across
+                                // startPlayback via the static field
+                                long current = StreamMusicPlayer.adaptiveWatermarkMillis > 0L
+                                        ? StreamMusicPlayer.adaptiveWatermarkMillis : 60L;
+                                long next = Math.min(150L, current + 20L);
+                                if (next != current) {
+                                    StreamMusicPlayer.adaptiveWatermarkMillis = next;
+                                    this.lineWatermarkBytes = Math.max(1L, Math.round(
+                                            this.lineFrameRate * decodedFormat.getFrameSize()
+                                                    * next / 1000.0D));
+                                }
+                            }
                             // AUD-48: write throttling to the target watermark.
                             // Yield briefly while the fill exceeds the
                             // watermark; never fill the buffer. When playback
@@ -497,6 +516,16 @@ public class StreamMusicPlayer {
     // AUD-52 修订: first watermark fill of the current generation (seek cost)
     public long getLastWatermarkReachedAtMillis() {
         return this.lastWatermarkReachedAtMillis;
+    }
+
+    // AUD-48 v1.4: has the adaptive watermark converged above the 60ms start?
+    public static boolean isWatermarkAdaptive() {
+        return StreamMusicPlayer.adaptiveWatermarkMillis > 0L;
+    }
+
+    // AUD-48 v1.4: reset the converged watermark (world unload)
+    public static void resetAdaptiveWatermark() {
+        StreamMusicPlayer.adaptiveWatermarkMillis = 0L;
     }
 
     public long getDurationMillis() {
