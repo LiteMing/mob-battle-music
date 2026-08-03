@@ -52,6 +52,10 @@ public class StreamMusicPlayer {
     private volatile long totalDurationMillis;
     private volatile double decodedBytesPerSecond;
     private long lastVolumeUpdate = 0;
+    // AUD-47: audible-position base (start/seek offset) and frame rate of the
+    // current line; getLongFramePosition() counts frames already played
+    private volatile long positionOffsetMillis;
+    private volatile float lineFrameRate;
     
     /**
      * Play an MP3 stream with fade-in
@@ -142,6 +146,8 @@ public class StreamMusicPlayer {
                                 ? Math.floorMod(startPositionMillis, totalDurationMillis) : startPositionMillis;
                         long targetBytes = millisToPcmBytes(effectiveStartMillis, decodedFormat);
                         playedPcmBytes = skipDecodedBytes(decodedStream, targetBytes, decodedFormat.getFrameSize());
+                        // AUD-47: audible-position base for this generation
+                        positionOffsetMillis = effectiveStartMillis;
 
                         // Get a line to play the audio
                         DataLine.Info info = new DataLine.Info(SourceDataLine.class, decodedFormat);
@@ -160,6 +166,9 @@ public class StreamMusicPlayer {
                         LOGGER.info("Opening audio line...");
                         playbackLine.open(decodedFormat);
                         LOGGER.info("Audio line opened, buffer size: {}", playbackLine.getBufferSize());
+                        // AUD-47: a freshly opened line starts its frame counter at
+                        // zero; record the frame rate for position derivation
+                        lineFrameRate = decodedFormat.getFrameRate();
                 
                         // Set initial volume
                         updateVolume();
@@ -250,6 +259,9 @@ public class StreamMusicPlayer {
         playedPcmBytes = 0L;
         totalDurationMillis = 0L;
         decodedBytesPerSecond = 0.0D;
+        // AUD-47: reset the audible-position base with the generation
+        positionOffsetMillis = 0L;
+        lineFrameRate = 0.0F;
         
         SourceDataLine activeLine = line;
         line = null;
@@ -259,7 +271,25 @@ public class StreamMusicPlayer {
         }
     }
 
+    /**
+     * AUD-47: audible position, derived from the frames the line has actually
+     * played (SourceDataLine.getLongFramePosition), plus the start/seek offset.
+     * A stopped (paused) line does not advance its frame counter.
+     */
     public long getPositionMillis() {
+        SourceDataLine activeLine = line;
+        float rate = this.lineFrameRate;
+        if (activeLine == null || !activeLine.isOpen() || rate <= 0.0F)
+            return positionOffsetMillis;
+        long frames = activeLine.getLongFramePosition();
+        return positionOffsetMillis + Math.round(frames * 1000.0D / rate);
+    }
+
+    /**
+     * AUD-47: decoded (written) position, kept as a diagnostic quantity for
+     * the probe and buffer diagnostics only.
+     */
+    public long getDecodedPositionMillis() {
         double bytesPerSecond = decodedBytesPerSecond;
         return bytesPerSecond <= 0.0D ? 0L : Math.max(0L, Math.round(playedPcmBytes * 1000.0D / bytesPerSecond));
     }

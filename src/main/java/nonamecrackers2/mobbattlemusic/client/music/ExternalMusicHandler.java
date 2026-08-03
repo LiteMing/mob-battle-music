@@ -246,6 +246,11 @@ public class ExternalMusicHandler {
         return player.getPositionMillis();
     }
 
+    // AUD-47: decoded (written) position, diagnostic only
+    public long getDecodedPositionMillis() {
+        return player.getDecodedPositionMillis();
+    }
+
     public long getDurationMillis() {
         return Math.max(player.getDurationMillis(), currentDurationHintMillis);
     }

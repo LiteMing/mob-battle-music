@@ -261,6 +261,13 @@ public class MobBattleMusicCommands
 						? "none" : handler.getCurrentlyPlayingUrl())
 				.append(" pos=").append(formatSeconds(handler.getPositionMillis())).append('\n');
 
+		// AUD-30 v1.3/AUD-47: audible vs decoded position and their latency gap
+		long audiblePos = handler.getPositionMillis();
+		long decodedPos = handler.getDecodedPositionMillis();
+		output.append("world.pos audible=").append(formatSeconds(audiblePos))
+				.append(" decoded=").append(formatSeconds(decodedPos))
+				.append(" outLatency=").append(Math.max(0L, decodedPos - audiblePos)).append("ms").append('\n');
+
 		String clockState = !MarkerClock.isActive() ? "STOPPED" : MarkerClock.state().name();
 		double drift = 0.0D;
 		String currentUrl = handler.getCurrentlyPlayingUrl();
