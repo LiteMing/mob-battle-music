@@ -439,6 +439,27 @@ public class ExternalMusicHandler {
         return cache.getCachedFile(url);
     }
     
+    // K9-3: apply the persisted gains from config to both players at startup
+    // and whenever the user drags a volume slider (config already updated).
+    // When preview follows main, the preview player's user gain mirrors the
+    // main gain; otherwise it stays at 1.0 and the preview gain is independent.
+    public void applyGainConfig() {
+        double mainGain = MobBattleMusicConfig.CLIENT.mbmUserGain.get();
+        double previewGain = MobBattleMusicConfig.CLIENT.previewGain.get();
+        boolean follows = MobBattleMusicConfig.CLIENT.previewFollowsMain.get();
+        this.player.setUserGain((float) mainGain);
+        this.previewPlayer.setUserGain((float) (follows ? mainGain : 1.0));
+        this.previewPlayer.setPreviewGain((float) previewGain);
+    }
+
+    public float getMainUserGain() {
+        return this.player.getUserGain();
+    }
+
+    public float getPreviewGainNow() {
+        return this.previewPlayer.getPreviewGain() * this.previewPlayer.getUserGain();
+    }
+
     /**
      * Get the stream player instance
      * @return The StreamMusicPlayer instance

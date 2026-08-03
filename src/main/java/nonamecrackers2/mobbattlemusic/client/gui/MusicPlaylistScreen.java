@@ -28,6 +28,7 @@ import org.lwjgl.glfw.GLFW;
 import net.minecraftforge.registries.ForgeRegistries;
 import nonamecrackers2.mobbattlemusic.client.audio.MbmSessionState;
 import nonamecrackers2.mobbattlemusic.client.audio.PreviewChannel;
+import nonamecrackers2.mobbattlemusic.client.config.MobBattleMusicConfig;
 import nonamecrackers2.mobbattlemusic.client.music.ExternalMusicHandler;
 import nonamecrackers2.mobbattlemusic.client.music.IdleConditionStateClient;
 import nonamecrackers2.mobbattlemusic.client.music.MusicMetadata;
@@ -106,6 +107,13 @@ public class MusicPlaylistScreen extends Screen
 	private Button addBindingButton;
 	private Button importButton;
 	private Button exportButton;
+	private Button volumeButton;
+	// K9-3: volume popup state - two sliders + preview-follows-main toggle
+	private boolean volumePanelOpen;
+	private float mainGainValue = 1.0F;
+	private float previewGainValue = 1.0F;
+	private boolean previewFollowsMain = true;
+	private int volumeDraggingIndex = -1;
 	private EditBox sceneBox;
 	private EditBox targetBox;
 	private EditBox searchBox;
@@ -341,6 +349,13 @@ public class MusicPlaylistScreen extends Screen
 				.bounds(actions.cancelX(), actions.y(), actions.cancelWidth(), 20).build());
 		this.saveButton = this.addRenderableWidget(Button.builder(text("button.save"), button -> saveInspector())
 				.bounds(actions.saveX(), actions.y(), actions.saveWidth(), 20).build());
+		// K9-3: persistent volume popup (main MBM gain + preview gain)
+		this.mainGainValue = MobBattleMusicConfig.CLIENT.mbmUserGain.get().floatValue();
+		this.previewGainValue = MobBattleMusicConfig.CLIENT.previewGain.get().floatValue();
+		this.previewFollowsMain = MobBattleMusicConfig.CLIENT.previewFollowsMain.get();
+		this.volumeButton = this.addRenderableWidget(Button.builder(Component.literal("Vol"),
+				button -> this.volumePanelOpen = !this.volumePanelOpen)
+				.bounds(this.width - 46, 6, 40, 18).build());
 		this.previousPageButton = this.addRenderableWidget(Button.builder(text("button.previous"), button -> startSearch(this.searchPage - 1))
 				.bounds(sidebar.innerX(), sidebar.innerY() + 59, Math.max(1, (sidebar.innerWidth() - 4) / 2), 20).build());
 		this.nextPageButton = this.addRenderableWidget(Button.builder(text("button.next"), button -> startSearch(this.searchPage + 1))
@@ -670,6 +685,8 @@ public class MusicPlaylistScreen extends Screen
 					this.layout.main().y() + 7, 0xFF7F8791, false);
 		this.renderInspector(graphics, mouseX, mouseY);
 		renderPreviewProgress(graphics);
+		if (this.volumePanelOpen)
+			renderVolumePanel(graphics, mouseX, mouseY);
 		super.render(graphics, mouseX, mouseY, partialTick);
 		if (this.priorityBox != null && this.priorityBox.visible && parseInteger(this.priorityBox.getValue(), -1000, 1000) == null)
 			graphics.renderOutline(this.priorityBox.getX() - 1, this.priorityBox.getY() - 1,
@@ -906,6 +923,111 @@ public class MusicPlaylistScreen extends Screen
 		return handler.seekPreviewMusic(position);
 	}
 
+	// ==================== K9-3: volume popup ====================
+
+	private int volumePanelX()
+	{
+		return this.width - 236;
+	}
+
+	private int volumePanelY()
+	{
+		return 28;
+	}
+
+	private void renderVolumePanel(GuiGraphics graphics, int mouseX, int mouseY)
+	{
+		int x = volumePanelX();
+		int y = volumePanelY();
+		graphics.fill(x, y, x + 230, y + 96, 0xE81A1F26);
+		graphics.renderOutline(x, y, 230, 96, 0xFF3A4550);
+		graphics.drawString(this.font, "Main MBM", x + 8, y + 6, 0xFFB8C0CA);
+		renderVolumeSlider(graphics, 0, x + 8, y + 18, 166);
+		graphics.drawString(this.font, Component.literal(String.format(Locale.ROOT, "%.0f%%", this.mainGainValue * 100)),
+				x + 180, y + 20, 0xFFD6D9DE);
+		graphics.drawString(this.font, "Preview", x + 8, y + 38, 0xFFB8C0CA);
+		boolean follows = this.previewFollowsMain;
+		renderVolumeSlider(graphics, 1, x + 8, y + 50, follows ? 166 : 166);
+		graphics.drawString(this.font, Component.literal(String.format(Locale.ROOT, "%.0f%%",
+				(follows ? this.mainGainValue : this.previewGainValue) * 100)),
+				x + 180, y + 52, follows ? 0xFF8B929C : 0xFFD6D9DE);
+		Component followsLabel = Component.literal(follows ? "[x] preview follows main" : "[ ] preview follows main");
+		graphics.drawString(this.font, followsLabel, x + 8, y + 74, follows ? 0xFF73D98A : 0xFF8B929C);
+	}
+
+	private void renderVolumeSlider(GuiGraphics graphics, int index, int x, int y, int width)
+	{
+		float value = index == 0 ? this.mainGainValue : this.previewGainValue;
+		if (index == 1 && this.previewFollowsMain)
+			value = this.mainGainValue;
+		graphics.fill(x, y + 4, x + width, y + 6, 0xFF3A4550);
+		int filled = Math.round(width * value);
+		graphics.fill(x, y + 4, x + filled, y + 6, 0xFF73D98A);
+		graphics.fill(x + filled - 2, y + 1, x + filled + 2, y + 9, 0xFFE8F4F8);
+	}
+
+	private int volumeSliderAt(double mouseX, double mouseY)
+	{
+		int x = volumePanelX();
+		int y = volumePanelY();
+		int sliderWidth = 166;
+		if (mouseY >= y + 16 && mouseY <= y + 28)
+			return mouseX >= x + 8 && mouseX <= x + 8 + sliderWidth ? 0 : -1;
+		if (mouseY >= y + 48 && mouseY <= y + 60)
+			return mouseX >= x + 8 && mouseX <= x + 8 + sliderWidth ? 1 : -1;
+		return -1;
+	}
+
+	private boolean volumeFollowsButtonAt(double mouseX, double mouseY)
+	{
+		int x = volumePanelX();
+		int y = volumePanelY();
+		return mouseX >= x + 8 && mouseX <= x + 200 && mouseY >= y + 70 && mouseY <= y + 90;
+	}
+
+	private void updateVolumeSlider(int index, double mouseX)
+	{
+		int x = volumePanelX();
+		float value = (float) Math.max(0.0D, Math.min(1.0D, (mouseX - (x + 8)) / 166.0D));
+		if (index == 0) {
+			this.mainGainValue = value;
+			MobBattleMusicConfig.CLIENT.mbmUserGain.set((double) value);
+			ExternalMusicHandler.getInstance().getPlayer().setUserGain(value);
+			if (this.previewFollowsMain) {
+				ExternalMusicHandler.getInstance().getPreviewPlayer().setUserGain(value);
+				MobBattleMusicConfig.CLIENT.previewGain.set((double) value);
+			}
+		} else {
+			this.previewGainValue = value;
+			MobBattleMusicConfig.CLIENT.previewGain.set((double) value);
+			ExternalMusicHandler.getInstance().getPreviewPlayer().setPreviewGain(value);
+		}
+	}
+
+	private void togglePreviewFollowsMain()
+	{
+		this.previewFollowsMain = !this.previewFollowsMain;
+		MobBattleMusicConfig.CLIENT.previewFollowsMain.set(this.previewFollowsMain);
+		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
+		handler.getPreviewPlayer().setUserGain(this.previewFollowsMain ? this.mainGainValue : 1.0F);
+		if (this.previewFollowsMain) {
+			MobBattleMusicConfig.CLIENT.previewGain.set((double) this.mainGainValue);
+			this.previewGainValue = this.mainGainValue;
+			handler.getPreviewPlayer().setPreviewGain(this.mainGainValue);
+		}
+		saveVolumeConfig();
+	}
+
+	private void saveVolumeConfig()
+	{
+		try {
+			MobBattleMusicConfig.CLIENT_SPEC.save();
+		} catch (Exception e) {
+			org.apache.logging.log4j.LogManager.getLogger("mobbattlemusic")
+					.warn("Failed to save volume config", e);
+		}
+	}
+
 	private int previewProgressLeft()
 	{
 		return this.layout.main().innerX();
@@ -950,6 +1072,19 @@ public class MusicPlaylistScreen extends Screen
 		}
 		if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT && clickCompletion(mouseX, mouseY))
 			return true;
+		// K9-3: volume panel sliders come before the preview seek handling
+		if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT && this.volumePanelOpen) {
+			int sliderIndex = volumeSliderAt(mouseX, mouseY);
+			if (sliderIndex >= 0) {
+				this.volumeDraggingIndex = sliderIndex;
+				updateVolumeSlider(sliderIndex, mouseX);
+				return true;
+			}
+			if (volumeFollowsButtonAt(mouseX, mouseY)) {
+				togglePreviewFollowsMain();
+				return true;
+			}
+		}
 		if (seekPreview(mouseX, mouseY))
 			return true;
 		if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT && clickConditionRow(mouseX, mouseY))
@@ -957,9 +1092,30 @@ public class MusicPlaylistScreen extends Screen
 		return super.mouseClicked(mouseX, mouseY, button);
 	}
 
-	private boolean clickConditionRow(double mouseX, double mouseY)
+	@Override
+	public boolean mouseReleased(double mouseX, double mouseY, int button)
 	{
-		if (this.viewMode != ViewMode.LIBRARY || this.inspectorPage != InspectorPage.CONDITIONS)
+		if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT && this.volumeDraggingIndex >= 0) {
+			this.volumeDraggingIndex = -1;
+			// K9-3: persist on release - the config save is a disk write and
+			// must not run on every mouse move
+			saveVolumeConfig();
+		}
+		return super.mouseReleased(mouseX, mouseY, button);
+	}
+
+	@Override
+	public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY)
+	{
+		if (this.volumeDraggingIndex >= 0) {
+			updateVolumeSlider(this.volumeDraggingIndex, mouseX);
+			return true;
+		}
+		return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
+	}
+
+	private boolean clickConditionRow(double mouseX, double mouseY)
+	{		if (this.viewMode != ViewMode.LIBRARY || this.inspectorPage != InspectorPage.CONDITIONS)
 			return false;
 		Row row = selectedRow();
 		if (row == null || !selectedRowEditable())

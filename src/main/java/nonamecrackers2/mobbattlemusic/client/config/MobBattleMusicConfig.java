@@ -53,6 +53,11 @@ public class MobBattleMusicConfig
 		// chain crossfade is NOT configurable (AUD-48)
 		public final ForgeConfigSpec.IntValue audioFilterFadeInMillis;
 		public final ForgeConfigSpec.IntValue audioFilterFadeOutMillis;
+		// K9-3: persistent main and preview gain (0..1) and the preview-follows-
+		// main switch
+		public final ForgeConfigSpec.DoubleValue mbmUserGain;
+		public final ForgeConfigSpec.DoubleValue previewGain;
+		public final ForgeConfigSpec.BooleanValue previewFollowsMain;
 		
 		public ClientConfig(ForgeConfigSpec.Builder builder)
 		{
@@ -145,7 +150,21 @@ public class MobBattleMusicConfig
 			this.audioFilterFadeOutMillis = builder
 				.comment("Dry/wet mix ramp when filters deactivate, in ms (0 = instant)")
 				.defineInRange("audioFilterFadeOutMillis", 0, 0, 2000);
-			
+
+			// K9-3: persistent gains. These multiply the final gain chain of
+			// the main player (mbmUserGain) and the preview player
+			// (previewGain); preview-follows-main makes the preview use the
+			// main gain instead of its own.
+			this.mbmUserGain = builder
+				.comment("Mob Battle Music main playback gain (0..1), persisted across restarts")
+				.defineInRange("mbmUserGain", 1.0D, 0.0D, 1.0D);
+			this.previewGain = builder
+				.comment("Preview player gain (0..1), persisted across restarts")
+				.defineInRange("previewGain", 1.0D, 0.0D, 1.0D);
+			this.previewFollowsMain = builder
+				.comment("If true, the preview volume follows the main MBM gain")
+				.define("previewFollowsMain", true);
+
 			builder.pop();
 		}
 	}

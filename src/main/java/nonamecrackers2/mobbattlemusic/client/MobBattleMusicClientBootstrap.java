@@ -37,6 +37,8 @@ public class MobBattleMusicClientBootstrap
 			MobBattleMusicCompat.checkModCompat();
 			AudioFilterManager.loadConfig();
 			initializeExternalMusicCache();
+			// K9-3: restore the persisted main/preview gains
+			nonamecrackers2.mobbattlemusic.client.music.ExternalMusicHandler.getInstance().applyGainConfig();
 		});
 	}
 	

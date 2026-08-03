@@ -64,6 +64,12 @@ public class StreamMusicPlayer {
     private final Envelope trackEnv = new Envelope(0.0f);
     private final Envelope seekEnv = new Envelope(1.0f);
     public static final Envelope MUTE_ENV = new Envelope(1.0f);
+    // K9-3: independent persistent user gain (main playback) and preview gain.
+    // These are NOT trackEnv - they are pure multipliers in the gain chain and
+    // survive track switches, seeks and gates untouched. The preview player's
+    // chain uses both (preview follows main multiplies both).
+    private final Envelope userGainEnv = new Envelope(1.0f);
+    private final Envelope previewGainEnv = new Envelope(1.0f);
     // AUD-49 #5/#8: fade-in duration for the next track start, set by a gated
     // switch whose action only stops the old source; consumed by play() and
     // expired after 2000ms if unconsumed. 0 = the default fadeTime applies.
@@ -915,7 +921,8 @@ public class StreamMusicPlayer {
     /**
      * AUD-45: the single gain computation of the process, called from the
      * playback thread main loop only with ITS OWN generation and line -
-     * finalGain = master × music × trackEnv × muteEnv × seekEnv (AUD-44).
+     * finalGain = master × music × trackEnv × muteEnv × seekEnv × userGain ×
+     * previewGain (AUD-44/K9-3).
      * K8-B: the operation targets the caller's local line only and aborts
      * when the generation is no longer current, so a stale thread can never
      * touch a newer generation's line.
@@ -928,7 +935,8 @@ public class StreamMusicPlayer {
             float masterVolume = mc.options.getSoundSourceVolume(SoundSource.MASTER);
             float musicVolume = mc.options.getSoundSourceVolume(SoundSource.RECORDS);
             float finalGain = masterVolume * musicVolume
-                    * this.trackEnv.current() * MUTE_ENV.current() * this.seekEnv.current();
+                    * this.trackEnv.current() * MUTE_ENV.current() * this.seekEnv.current()
+                    * this.userGainEnv.current() * this.previewGainEnv.current();
             if (playbackLine.isControlSupported(FloatControl.Type.MASTER_GAIN)) {
                 FloatControl gainControl = (FloatControl) playbackLine.getControl(FloatControl.Type.MASTER_GAIN);
                 float dB = (float) (Math.log(Math.max(0.0001f, finalGain)) / Math.log(10.0) * 20.0);
@@ -938,6 +946,26 @@ public class StreamMusicPlayer {
         } catch (Exception e) {
             // Ignore volume control errors
         }
+    }
+
+    // K9-3: persistent user/preview gain - immediate effect via the envelope
+    // (no fade; the slider is a user action, not a music transition)
+    public void setUserGain(float value) {
+        float clamped = Math.max(0.0f, Math.min(1.0f, value));
+        this.userGainEnv.forceFade(clamped, 0L);
+    }
+
+    public float getUserGain() {
+        return this.userGainEnv.current();
+    }
+
+    public void setPreviewGain(float value) {
+        float clamped = Math.max(0.0f, Math.min(1.0f, value));
+        this.previewGainEnv.forceFade(clamped, 0L);
+    }
+
+    public float getPreviewGain() {
+        return this.previewGainEnv.current();
     }
 
     // K8-B: live diagnostics for the probe ring - open SourceDataLine count

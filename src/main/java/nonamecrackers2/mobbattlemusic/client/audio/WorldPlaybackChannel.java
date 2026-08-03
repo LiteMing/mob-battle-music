@@ -267,7 +267,10 @@ public final class WorldPlaybackChannel
 				StreamMusicPlayer.getPlaybackThreads(),
 				handler.getPlaybackRequestCount(),
 				handler.getStopRequestCount(),
-				WorldPlaybackChannel.currentIntentUrl()));
+				WorldPlaybackChannel.currentIntentUrl(),
+				// K9-3: persistent gains
+				player.getUserGain(),
+				handler.getPreviewGainNow()));
 	}
 	
 	private static int gateOwnerOrdinal()

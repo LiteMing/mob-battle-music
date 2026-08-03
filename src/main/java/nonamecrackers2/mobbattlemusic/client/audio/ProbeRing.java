@@ -41,7 +41,9 @@ public final class ProbeRing
 			// K8-B: lifecycle generations and line/thread diagnostics
 			long levelGen, long sessionGen, long playerGen,
 			int openLines, int playbackThreads, long playRequests, long stopRequests,
-			String currentIntent) {}
+			String currentIntent,
+			// K9-3: persistent gains
+			float userGain, float previewGain) {}
 
 	public static synchronized void sample(ProbeSample sample)
 	{
@@ -145,7 +147,9 @@ public final class ProbeRing
 				.append(" openLines=").append(s.openLines())
 				.append(" playRequests=").append(s.playRequests())
 				.append(" stopRequests=").append(s.stopRequests())
-				.append(" intent=").append(s.currentIntent() == null ? "-" : s.currentIntent());
+				.append(" intent=").append(s.currentIntent() == null ? "-" : s.currentIntent())
+				.append(" userGain=").append(String.format(Locale.ROOT, "%.2f", s.userGain()))
+				.append(" previewGain=").append(String.format(Locale.ROOT, "%.2f", s.previewGain()));
 		if (s.openLines() > 1)
 			builder.append(" ERROR openLines>1 single-line invariant violated");
 		builder.append('\n');
