@@ -66,9 +66,11 @@ public class StreamMusicPlayer {
     // AUD-48: output watermark (target fill in bytes, default 150ms); the
     // line capacity (500ms) is separate and acts as the underrun reserve
     private volatile long lineWatermarkBytes;
-    // AUD-30 v1.5: count of writes where the line buffer was fully drained
-    // (available() == getBufferSize()); reset at each playback start
+    // AUD-30 v1.5: cumulative underrun count since the last playback start
     private volatile long underruns;
+    // AUD-52 修订: first time the line fill reached the watermark in the
+    // current generation (seek cost measurement)
+    private volatile long lastWatermarkReachedAtMillis;
     
     /**
      * AUD-44/45: a single gain envelope, shape
@@ -305,6 +307,7 @@ public class StreamMusicPlayer {
                         lineWatermarkBytes = Math.max(1L, Math.round(
                                 decodedFormat.getFrameRate() * decodedFormat.getFrameSize() * 0.15D));
                         underruns = 0L;
+                        lastWatermarkReachedAtMillis = 0L;
                         // AUD-47: a freshly opened line starts its frame counter at
                         // zero; record the frame rate for position derivation
                         lineFrameRate = decodedFormat.getFrameRate();
@@ -349,8 +352,14 @@ public class StreamMusicPlayer {
                             while (generation == playbackGeneration.get() && playing && !paused && !gamePaused) {
                                 int capacity = playbackLine.getBufferSize();
                                 int filled = capacity - playbackLine.available();
-                                if (filled <= this.lineWatermarkBytes || filled < BUFFER_SIZE)
+                                if (filled <= this.lineWatermarkBytes || filled < BUFFER_SIZE) {
+                                    // AUD-52 修订: first time this generation's
+                                    // fill reaches the watermark (seek cost)
+                                    if (this.lastWatermarkReachedAtMillis == 0L
+                                            && filled >= this.lineWatermarkBytes)
+                                        this.lastWatermarkReachedAtMillis = System.currentTimeMillis();
                                     break;
+                                }
                                 Thread.sleep(2);
                             }
                             if (generation != playbackGeneration.get() || !playing)
@@ -483,6 +492,11 @@ public class StreamMusicPlayer {
     // AUD-54: play() invocation count (probe ring forensics)
     public long getPlayCallCount() {
         return this.playCalls.get();
+    }
+
+    // AUD-52 修订: first watermark fill of the current generation (seek cost)
+    public long getLastWatermarkReachedAtMillis() {
+        return this.lastWatermarkReachedAtMillis;
     }
 
     public long getDurationMillis() {

@@ -147,7 +147,9 @@ public final class MobBattleMusicClientCommands
 				.append(" state=").append(MarkerClock.state().name())
 				.append(" seeks=").append(WorldPlaybackChannel.seekCount())
 				.append(" sinceSeek=").append(WorldPlaybackChannel.millisSinceSeek())
-				.append(" injectedTtl=").append(MarkerClock.injectedTtlMillis()).append('\n');
+				.append(" injectedTtl=").append(MarkerClock.injectedTtlMillis())
+				// AUD-52 修订: measured seek cost (queue -> watermark fill)
+				.append(" seekCost=").append(WorldPlaybackChannel.seekCostMillis()).append('\n');
 
 		PlaybackHandle worldHandle = WorldPlaybackChannel.handle();
 		String playlistRef = "n/a";

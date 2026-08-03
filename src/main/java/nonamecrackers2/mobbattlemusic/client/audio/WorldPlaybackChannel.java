@@ -59,6 +59,9 @@ public final class WorldPlaybackChannel
 	private static long lastSeekAtMillis;
 	private static int consecutiveSeeks;
 	private static long seekSettleUntilMillis;
+	// AUD-52 修订: seek cost measurement (queue time -> first watermark fill)
+	private static long seekQueuedAtMillis;
+	private static long seekQueuedTargetMillis;
 	// AUD-46/AUD-49: unified gated transition (fade out -> gain-zero poll ->
 	// action -> fade in). Single slot; new requests fail explicitly (AUD-49 #4).
 	private static @Nullable PendingGate pendingGate;
@@ -483,6 +486,19 @@ public final class WorldPlaybackChannel
 		return last <= 0L ? -1L : System.currentTimeMillis() - last;
 	}
 	
+	// AUD-52 修订: measured position cost of the last seek (queue time -> first
+	// watermark fill of the new line); -1 when not measurable
+	public static long seekCostMillis()
+	{
+		long queued = WorldPlaybackChannel.seekQueuedAtMillis;
+		if (queued <= 0L)
+			return -1L;
+		long reached = ExternalMusicHandler.getInstance().getPlayer().getLastWatermarkReachedAtMillis();
+		if (reached <= 0L || reached < queued)
+			return -1L;
+		return reached - queued;
+	}
+	
 	private static void reportPlaybackStart()
 	{
 		PlaybackHandle active = WorldPlaybackChannel.handle;
@@ -574,21 +590,31 @@ public final class WorldPlaybackChannel
 			}
 			long targetMillis = Math.round(serverPositionSeconds * 1000.0D);
 			ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
+			String trackId = handler.getCurrentlyPlayingUrl();
+			// AUD-52 修订: record the queue time and target for seekCost
+			WorldPlaybackChannel.seekQueuedAtMillis = System.currentTimeMillis();
+			WorldPlaybackChannel.seekQueuedTargetMillis = targetMillis;
 			// AUD-49 #4: an explicit failure here just means the drift is
 			// re-evaluated on the next tick; no state to roll back
 			WorldPlaybackChannel.gatedTransition(handler.getPlayer().seekEnv(), 120L, "clock-seek", () -> {
 				// AUD-51: the action only accounts state; the audio seek is
 				// offloaded to the audio-I/O executor (no blocking work here)
-				handler.seekMusicAsync(targetMillis);
+				handler.seekMusicAsync(targetMillis, () -> {
+					// AUD-52 修订: once the seek has actually completed,
+					// re-anchor the clock on the seek target and start the
+					// settle window - never measure drift during it
+					long completedAt = System.currentTimeMillis();
+					if (trackId != null)
+						MarkerClock.realign(trackId, completedAt - targetMillis, completedAt);
+					WorldPlaybackChannel.lastSeekAtMillis = completedAt;
+					WorldPlaybackChannel.seekSettleUntilMillis = completedAt + SEEK_SETTLE_MILLIS;
+					WorldPlaybackChannel.consecutiveSeeks++;
+					LOGGER.debug("[MBM] AUD-24 seek to {}ms completed (re-anchored, settle until +{}ms)",
+							targetMillis, SEEK_SETTLE_MILLIS);
+				});
 				MarkerClock.clearInjectedDrift();
 				WorldPlaybackChannel.lastMarkerPosition = -1L;
 				WorldPlaybackChannel.firedThisTrack = 0L;
-				// AUD-52: seek accounting
-				WorldPlaybackChannel.lastSeekAtMillis = System.currentTimeMillis();
-				WorldPlaybackChannel.seekSettleUntilMillis =
-						WorldPlaybackChannel.lastSeekAtMillis + SEEK_SETTLE_MILLIS;
-				WorldPlaybackChannel.consecutiveSeeks++;
-				LOGGER.debug("[MBM] AUD-24 seek to {}ms queued to audio IO (gain confirmed 0.00)", targetMillis);
 			}, 120L);
 		}
 	};

@@ -265,13 +265,17 @@ public class ExternalMusicHandler {
     /**
      * AUD-51: queue a main-playback seek on the audio-I/O executor. Stale
      * requests (superseded by a newer seek) are dropped at execution time.
+     * AUD-52 修订: onComplete runs on the executor thread once the seek has
+     * actually completed (re-anchor + settle window).
      */
-    public void seekMusicAsync(long positionMillis) {
+    public void seekMusicAsync(long positionMillis, Runnable onComplete) {
         long request = this.seekRequest.incrementAndGet();
         this.audioIo.execute(() -> {
             if (request != this.seekRequest.get())
                 return;
             this.seekMusic(positionMillis);
+            if (onComplete != null)
+                onComplete.run();
         });
     }
 
