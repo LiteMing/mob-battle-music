@@ -53,11 +53,11 @@ public final class WorldPlaybackChannel
 	private static long lastClockReportMillis;
 	private static long lastMarkerPosition = -1L;
 	private static long firedThisTrack;
-	// AUD-24 v1.2: fade-out/fade-in duration around a correction seek (100-150ms)
-	private static final long SEEK_FADE_MILLIS = 120L;
-	private static @Nullable PendingSeek pendingSeek;
+	// AUD-46: unified gated transition (fade out -> gain-zero poll -> action ->
+	// fade in). Single slot: seek and track switches are mutually exclusive.
+	private static @Nullable PendingGate pendingGate;
 	
-	private static record PendingSeek(long targetMillis) {}
+	private static record PendingGate(StreamMusicPlayer.Envelope env, Runnable action, long fadeInMillis) {}
 	
 	private WorldPlaybackChannel() {}
 	
@@ -186,14 +186,13 @@ public final class WorldPlaybackChannel
 		// it; never rely on post-stop guards (the setters are unconditional)
 		handler.getPlayer().resumeFromGame();
 		handler.getPlayer().setMutedForGame(false);
-		handler.getPlayer().setTargetVolume(1.0F);
 		MobBattleTrack.setMainPlaybackMuted(false);
 		handler.stopMusic();
 		clearHandle();
 		MarkerClock.invalidate();
 		WorldPlaybackChannel.firedThisTrack = 0L;
 		WorldPlaybackChannel.lastMarkerPosition = -1L;
-		WorldPlaybackChannel.pendingSeek = null;
+		WorldPlaybackChannel.pendingGate = null;
 		LOGGER.debug("[MBM] world channel -> STOPPED (audio stopped)");
 	}
 	
@@ -206,10 +205,45 @@ public final class WorldPlaybackChannel
 	}
 	
 	/**
-	 * AUD-11: with the engine paused (tick(true) does nothing in 1.20.1), channel
-	 * volumes are no longer refreshed by the mixin, so mute() must reach the
-	 * built-in sound leg directly. Scope: this channel's own track collection
-	 * (AUD-35); the preview channel's tracks are never members.
+	 * AUD-46: unified gated transition - fade out to gain zero (polled, not
+	 * fixed-tick waited), run the action, fade in. Used by correction seeks
+	 * (AUD-24) and track switches (AUD-46 durations). Not used by AUD-19
+	 * invalidation stops.
+	 */
+	public static void gatedTransition(StreamMusicPlayer.Envelope env, long fadeOutMillis,
+			Runnable action, long fadeInMillis)
+	{
+		if (WorldPlaybackChannel.pendingGate != null)
+			return;
+		env.setTarget(0.0f, fadeOutMillis);
+		WorldPlaybackChannel.pendingGate = new PendingGate(env, action, fadeInMillis);
+		LOGGER.debug("[MBM] gated transition queued (fadeOut={}ms)", fadeOutMillis);
+	}
+	
+	public static boolean isGatedTransitionActive()
+	{
+		return WorldPlaybackChannel.pendingGate != null;
+	}
+	
+	// AUD-46: poll the envelope gain; the action runs only after it is at zero
+	private static void advancePendingGate()
+	{
+		PendingGate gate = WorldPlaybackChannel.pendingGate;
+		if (gate == null)
+			return;
+		if (gate.env().current() > 0.001f)
+			return;
+		WorldPlaybackChannel.pendingGate = null;
+		gate.action().run();
+		gate.env().setTarget(1.0f, gate.fadeInMillis());
+	}
+	
+	/**
+	 * AUD-11/AUD-44: with the engine paused (tick(true) does nothing in
+	 * 1.20.1), channel volumes are no longer refreshed by the mixin, so mute()
+	 * must reach the built-in sound leg directly. The applied volume is the
+	 * shared mute envelope's current value (never a constant). Scope: this
+	 * channel's own track collection (AUD-35).
 	 */
 	private static void applyMuteToSoundEngineTracks()
 	{
@@ -220,10 +254,11 @@ public final class WorldPlaybackChannel
 		SoundEngine engine = ((MixinSoundManagerAccessor) manager).mobbattlemusic$getSoundEngine();
 		Map<SoundInstance, ChannelAccess.ChannelHandle> instanceToChannel =
 				((MixinSoundEngineAccessor) engine).mobbattlemusic$getInstanceToChannel();
+		float muteGain = StreamMusicPlayer.MUTE_ENV.current();
 		for (MobBattleTrack track : WorldPlaybackChannel.ENGINE_TRACKS) {
 			ChannelAccess.ChannelHandle channelHandle = instanceToChannel.get(track);
 			if (channelHandle != null)
-				channelHandle.execute(channel -> channel.setVolume(0.0F));
+				channelHandle.execute(channel -> channel.setVolume(muteGain));
 		}
 	}
 	
@@ -337,40 +372,16 @@ public final class WorldPlaybackChannel
 		if (MarkerClock.isActive())
 			MarkerClock.tick(url, positionMillis, CORRECTION_SINK);
 		
-		// AUD-24 v1.1: execute a pending fade-out/seek/fade-in sequence
-		advancePendingSeek(handler);
+		// AUD-46: execute a pending gated transition (seek or track switch)
+		advancePendingGate();
 		
 		// Marker counting for the probe (AUD-27: the actual firing stays in the
 		// main-playback selection engine; this is observation only)
 		countFiredMarkers(ref, url, positionMillis);
 	}
 	
-	// AUD-24 v1.2: a correction seek only runs after the fade-out has driven
-	// the gain to zero (verified, not assumed) - see advancePendingSeek().
-	private static void advancePendingSeek(ExternalMusicHandler handler)
-	{
-		PendingSeek pending = WorldPlaybackChannel.pendingSeek;
-		if (pending == null)
-			return;
-		StreamMusicPlayer player = handler.getPlayer();
-		// AUD-24 v1.2: no fixed-tick waiting; the seek is gated on the gain
-		// having reached zero (playback thread writes currentVolume = 0.0F
-		// when the fade completes)
-		if (player.getCurrentVolume() > 0.001F)
-			return;
-		WorldPlaybackChannel.pendingSeek = null;
-		if (handler.seekMusic(pending.targetMillis())) {
-			MarkerClock.clearInjectedDrift();
-			WorldPlaybackChannel.lastMarkerPosition = -1L;
-			WorldPlaybackChannel.firedThisTrack = 0L;
-			LOGGER.debug("[MBM] AUD-24 seek to {}ms (gain confirmed 0.00)", pending.targetMillis());
-		}
-		// AUD-24 v1.2: fade back in from silence
-		player.fadeTo(1.0F, WorldPlaybackChannel.SEEK_FADE_MILLIS);
-	}
-	
-	// AUD-24 v1.2: |drift| > 1s seeks, wrapped in a 120ms fade-out (completed
-	// before the seek) and fade-in afterwards. Rate correction is forbidden.
+	// AUD-24 v1.2/AUD-46: the correction seek is a gatedTransition using the
+	// seek envelope (120ms fade out, gain-zero poll, seek, 120ms fade in).
 	private static final MarkerClock.CorrectionSink CORRECTION_SINK = new MarkerClock.CorrectionSink()
 	{
 		@Override
@@ -383,14 +394,18 @@ public final class WorldPlaybackChannel
 		public void seek(double serverPositionSeconds, double drift)
 		{
 			long targetMillis = Math.round(serverPositionSeconds * 1000.0D);
-			if (WorldPlaybackChannel.pendingSeek != null)
-				return;
-			// AUD-24 v1.2: start the fade-out; the seek itself is deferred until
-			// the gain reaches zero
-			ExternalMusicHandler.getInstance().getPlayer().fadeTo(0.0F, WorldPlaybackChannel.SEEK_FADE_MILLIS);
-			WorldPlaybackChannel.pendingSeek = new PendingSeek(targetMillis);
-			LOGGER.debug("[MBM] AUD-24 correction seek to {}ms queued (fade out, drift={}s)", targetMillis,
-					String.format(java.util.Locale.ROOT, "%+.2f", drift));
+			ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
+			WorldPlaybackChannel.gatedTransition(handler.getPlayer().seekEnv(), 120L, () -> {
+				if (handler.seekMusic(targetMillis)) {
+					MarkerClock.clearInjectedDrift();
+					WorldPlaybackChannel.lastMarkerPosition = -1L;
+					WorldPlaybackChannel.firedThisTrack = 0L;
+					LOGGER.debug("[MBM] AUD-24 seek to {}ms (gain confirmed 0.00)", targetMillis);
+				}
+			}, 120L);
+			if (WorldPlaybackChannel.pendingGate != null)
+				LOGGER.debug("[MBM] AUD-24 correction seek to {}ms queued (fade out, drift={}s)", targetMillis,
+						String.format(java.util.Locale.ROOT, "%+.2f", drift));
 		}
 	};
 	

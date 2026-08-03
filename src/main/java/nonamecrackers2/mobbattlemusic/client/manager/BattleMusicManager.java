@@ -301,6 +301,11 @@ public class BattleMusicManager {
 		MusicTracksManager tracksManager = MusicTracksManager.getInstance();
 
 		if (tracksManager.isExternalUrl(trackLocation)) {
+			// AUD-46: while a gated switch (fade-out in progress) is active,
+			// hold the whole external leg; the new track starts only after the
+			// old one has reached zero gain
+			if (WorldPlaybackChannel.isGatedTransitionActive())
+				return;
 			// Handle external URL track
 			long synchronizedPosition = allowNewTracks
 					? synchronizeCombatPlayback(type, trackLocation, tracksManager) : 0L;
@@ -323,12 +328,24 @@ public class BattleMusicManager {
 					externalTrack = null;
 				}
 				if (externalTrack != null && !externalTrack.getUrl().equals(url)) {
-					cacheExternalResume(trackLocation, externalTrack);
-					externalTrack.stop();
-					this.externalTracks.remove(type);
-					tracksManager.clearExternalSessionSelection(trackLocation);
+					// AUD-46: gated fade-out before switching (same-type switch
+					// durations)
+					ExternalUrlMusicTrack oldTrack = externalTrack;
+					String newUrl = url;
+					long fadeOut = switchFadeOutMillis(type.isIdlePlayback(), type.isIdlePlayback());
+					long fadeIn = switchFadeInMillis(type.isIdlePlayback(), type.isIdlePlayback());
+					WorldPlaybackChannel.gatedTransition(
+							ExternalMusicHandler.getInstance().getPlayer().trackEnv(),
+							fadeOut,
+							() -> {
+								cacheExternalResume(trackLocation, oldTrack);
+								oldTrack.stop();
+								this.externalTracks.remove(type);
+								tracksManager.clearExternalSessionSelection(trackLocation);
+								LOGGER.info("Switched external URL track to selected playlist entry: {}", newUrl);
+							},
+							fadeIn);
 					externalTrack = null;
-					LOGGER.info("Switching external URL track to selected playlist entry: {}", url);
 				}
 
 				if (allowNewTracks
@@ -532,13 +549,49 @@ public class BattleMusicManager {
 		for (Map.Entry<TrackType, ExternalUrlMusicTrack> entry : List.copyOf(this.externalTracks.entrySet())) {
 			if (entry.getKey() == keep)
 				continue;
-			boolean resumable = cacheExternalResume(entry.getKey().getTrack(), entry.getValue());
-			entry.getValue().stop();
-			this.externalTracks.remove(entry.getKey());
-			if (!resumable)
-				tracksManager.clearExternalSessionSelection(entry.getKey().getTrack());
-			scheduleIdleNextStart(entry.getKey());
+			ExternalUrlMusicTrack externalTrack = entry.getValue();
+			// AUD-46: asymmetric gated fade-out per switch direction; the stop
+			// happens only after the gain has reached zero
+			long fadeOut = switchFadeOutMillis(entry.getKey().isIdlePlayback(), keep.isIdlePlayback());
+			long fadeIn = switchFadeInMillis(entry.getKey().isIdlePlayback(), keep.isIdlePlayback());
+			WorldPlaybackChannel.gatedTransition(
+					ExternalMusicHandler.getInstance().getPlayer().trackEnv(),
+					fadeOut,
+					() -> {
+						boolean resumable = cacheExternalResume(entry.getKey().getTrack(), externalTrack);
+						externalTrack.stop();
+						this.externalTracks.remove(entry.getKey());
+						if (!resumable)
+							tracksManager.clearExternalSessionSelection(entry.getKey().getTrack());
+						scheduleIdleNextStart(entry.getKey());
+					},
+					fadeIn);
 		}
+	}
+
+	// AUD-46: asymmetric switch durations (idle->aggressive 200/150,
+	// aggressive->idle 1200/800, aggressive->aggressive 300/300; idle->idle
+	// is not defined in the table - symmetric default 200/200)
+	private static long switchFadeOutMillis(boolean oldIdle, boolean newIdle)
+	{
+		if (oldIdle && !newIdle)
+			return 200L;
+		if (!oldIdle && newIdle)
+			return 1200L;
+		if (!oldIdle)
+			return 300L;
+		return 200L;
+	}
+
+	private static long switchFadeInMillis(boolean oldIdle, boolean newIdle)
+	{
+		if (oldIdle && !newIdle)
+			return 150L;
+		if (!oldIdle && newIdle)
+			return 800L;
+		if (!oldIdle)
+			return 300L;
+		return 200L;
 	}
 
 	private boolean cacheExternalResume(ResourceLocation track, ExternalUrlMusicTrack externalTrack)

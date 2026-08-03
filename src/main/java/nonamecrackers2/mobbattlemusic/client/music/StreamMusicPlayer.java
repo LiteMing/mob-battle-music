@@ -38,24 +38,85 @@ public class StreamMusicPlayer {
     private volatile boolean paused = false;
     private volatile boolean gamePaused = false; // Track game pause state
     private volatile boolean gameMuted = false;
-    private volatile float targetVolume = 1.0f;
-    private volatile float currentVolume = 0.0f;
     private volatile int fadeTime = 0; // Fade time in ticks (20 ticks = 1 second)
-    // AUD-24 v1.2: per-call fade (fadeTo), independent of the default fadeTime
-    private volatile float fadeFromVolume;
-    private volatile float fadeToVolume;
-    private volatile long fadeStartMillis;
-    private volatile long fadeDurationMillis; // 0 = not active, use default fadeTime
+    // AUD-44: independent gain envelopes; current is advanced only by the
+    // playback thread (AUD-45). MUTE_ENV is shared with the built-in leg.
+    private final Envelope trackEnv = new Envelope(0.0f);
+    private final Envelope seekEnv = new Envelope(1.0f);
+    public static final Envelope MUTE_ENV = new Envelope(1.0f);
     private volatile SourceDataLine line;
     private final AtomicLong playbackGeneration = new AtomicLong();
     private volatile long playedPcmBytes;
     private volatile long totalDurationMillis;
     private volatile double decodedBytesPerSecond;
-    private long lastVolumeUpdate = 0;
     // AUD-47: audible-position base (start/seek offset) and frame rate of the
     // current line; getLongFramePosition() counts frames already played
     private volatile long positionOffsetMillis;
     private volatile float lineFrameRate;
+    
+    /**
+     * AUD-44/45: a single gain envelope, shape
+     * (current, target, startValue, startMillis, durationMillis), advanced by
+     * linear interpolation. current may only be written by the playback
+     * thread; target may be written by any thread. A new fade starts only
+     * when the target actually changes (judged inside the envelope).
+     */
+    public static final class Envelope {
+        private volatile float current;
+        private volatile float target;
+        private volatile float startValue;
+        private volatile long startMillis;
+        private volatile long durationMillis;
+        
+        public Envelope(float initial) {
+            this.current = initial;
+            this.target = initial;
+            this.startValue = initial;
+        }
+        
+        public void setTarget(float newTarget, long fadeMillis) {
+            float clamped = Math.max(0.0f, Math.min(1.0f, newTarget));
+            // AUD-45: judgment stays inside the envelope
+            if (clamped == this.target)
+                return;
+            this.startValue = this.current;
+            this.startMillis = System.currentTimeMillis();
+            this.durationMillis = Math.max(0L, fadeMillis);
+            this.target = clamped;
+        }
+        
+        public void advance() {
+            float t = this.target;
+            if (this.current == t)
+                return;
+            long d = this.durationMillis;
+            if (d <= 0L) {
+                this.current = t;
+                return;
+            }
+            float progress = (float)((System.currentTimeMillis() - this.startMillis) / (double)d);
+            if (progress >= 1.0f)
+                this.current = t;
+            else
+                this.current = this.startValue + (t - this.startValue) * progress;
+        }
+        
+        public float current() {
+            return this.current;
+        }
+        
+        public float target() {
+            return this.target;
+        }
+    }
+    
+    public Envelope trackEnv() {
+        return this.trackEnv;
+    }
+    
+    public Envelope seekEnv() {
+        return this.seekEnv;
+    }
     
     /**
      * Play an MP3 stream with fade-in
@@ -68,8 +129,8 @@ public class StreamMusicPlayer {
 
     public void play(Path file, int fadeTimeInTicks, long startPositionMillis, long durationHintMillis) {
         this.fadeTime = fadeTimeInTicks;
-        this.currentVolume = 0.0f; // Start from 0 for fade-in
-        this.targetVolume = 1.0f;
+        // AUD-44: the fade-in is driven by the track envelope
+        this.trackEnv.setTarget(1.0f, Math.max(0L, fadeTimeInTicks) * 50L);
         startPlayback(file, startPositionMillis, durationHintMillis);
     }
     
@@ -94,7 +155,6 @@ public class StreamMusicPlayer {
         playedPcmBytes = 0L;
         totalDurationMillis = Math.max(0L, durationHintMillis);
         decodedBytesPerSecond = 0.0D;
-        lastVolumeUpdate = System.currentTimeMillis();
         
         playbackThread = new Thread(() -> {
             SourceDataLine playbackLine = null;
@@ -169,10 +229,8 @@ public class StreamMusicPlayer {
                         // AUD-47: a freshly opened line starts its frame counter at
                         // zero; record the frame rate for position derivation
                         lineFrameRate = decodedFormat.getFrameRate();
-                
-                        // Set initial volume
-                        updateVolume();
-                
+                        // Gain is applied by the playback loop (AUD-45 single entry)
+
                         LOGGER.info("Starting audio line...");
                         playbackLine.start();
                         LOGGER.info("Audio line started");
@@ -200,14 +258,22 @@ public class StreamMusicPlayer {
                             if (generation != playbackGeneration.get() || !playing)
                                 break;
 
-                            updateVolumeWithFade();
+                            // AUD-45: the single gain computation entry of the
+                            // whole process, on the playback thread only
+                            this.trackEnv.advance();
+                            this.seekEnv.advance();
+                            MUTE_ENV.advance();
+                            applyGain();
                             long currentFilterRevision = AudioFilterManager.revision();
                             if (currentFilterRevision != filterRevision) {
                                 filterChain = PcmFilterChain.create(AudioFilterManager.activeMbmFilters(), decodedFormat);
                                 filterRevision = currentFilterRevision;
                             }
                             filterChain.process(buffer, bytesRead);
-                            if (gameMuted)
+                            // AUD-44: sample-zeroing is allowed only once the
+                            // mute envelope has reached zero (no hard cut while
+                            // fading)
+                            if (MUTE_ENV.current() <= 0.001f)
                                 Arrays.fill(buffer, 0, bytesRead, (byte)0);
                             playbackLine.write(buffer, 0, bytesRead);
                             totalBytesWritten += bytesRead;
@@ -415,10 +481,10 @@ public class StreamMusicPlayer {
     }
 
     public void setMutedForGame(boolean muted) {
-        // AUD-42: unconditional intent projection; the gain is applied via
-        // updateVolumeOutput() regardless of playback state
+        // AUD-42/45: pure target projection; no gain computation on this
+        // thread. The mute envelope fades in/out over 200ms (AUD-46).
         this.gameMuted = muted;
-        updateVolumeOutput();
+        MUTE_ENV.setTarget(muted ? 0.0f : 1.0f, 200L);
     }
 
     public boolean isMutedForGame() {
@@ -426,132 +492,44 @@ public class StreamMusicPlayer {
     }
     
     /**
-     * Set target volume for fade effect (0.0 to 1.0)
-     * @param volume Target volume
+     * Set target volume of the track envelope (track fade in/out, AUD-44).
+     * The fade duration follows the playback fadeTime; a new fade starts only
+     * when the target actually changes (judged inside the envelope).
      */
     public void setTargetVolume(float volume) {
-        this.targetVolume = Math.max(0.0f, Math.min(1.0f, volume));
+        float clamped = Math.max(0.0f, Math.min(1.0f, volume));
+        this.trackEnv.setTarget(clamped, Math.max(0L, this.fadeTime) * 50L);
     }
     
     /**
-     * AUD-24 v1.2: fade the gain to the given target over the given duration,
-     * independent of the default fadeTime used at playback start/stop. The
-     * default fadeTime behaviour is unchanged. Completion is observable via
-     * {@link #getCurrentVolume()} (exactly 0.0F for a zero target) or
-     * {@link #isFadeToActive()}.
-     */
-    public void fadeTo(float target, long durationMillis) {
-        float clamped = Math.max(0.0f, Math.min(1.0f, target));
-        this.fadeFromVolume = this.currentVolume;
-        this.fadeToVolume = clamped;
-        this.fadeStartMillis = System.currentTimeMillis();
-        this.fadeDurationMillis = Math.max(1L, durationMillis);
-        this.targetVolume = clamped;
-    }
-    
-    /**
-     * True while a fadeTo() fade is still in progress.
-     */
-    public boolean isFadeToActive() {
-        return this.fadeDurationMillis != 0L;
-    }
-    
-    /**
-     * Get current volume
-     * @return Current volume (0.0 to 1.0)
+     * Current track-envelope gain (0.0 to 1.0)
      */
     public float getCurrentVolume() {
-        return currentVolume;
+        return this.trackEnv.current();
     }
     
     /**
-     * Update volume with fade effect based on Minecraft's sound settings
+     * AUD-45: the single gain computation of the process, called from the
+     * playback thread main loop only. finalGain = master × music ×
+     * trackEnv × muteEnv × seekEnv (AUD-44).
      */
-    private void updateVolumeWithFade() {
-        if (line == null || !line.isOpen()) return;
-        
-        long currentTime = System.currentTimeMillis();
-        long deltaTime = currentTime - lastVolumeUpdate;
-        lastVolumeUpdate = currentTime;
-        
-        // AUD-24 v1.2: per-call fade takes precedence over the default fadeTime
-        long activeFade = this.fadeDurationMillis;
-        if (activeFade > 0L) {
-            float progress = (float)((currentTime - this.fadeStartMillis) / (double)activeFade);
-            if (progress >= 1.0F) {
-                this.currentVolume = this.fadeToVolume;
-                this.fadeDurationMillis = 0L;
-            } else {
-                this.currentVolume = this.fadeFromVolume
-                        + (this.fadeToVolume - this.fadeFromVolume) * progress;
-            }
-        } else if (fadeTime > 0 && currentVolume != targetVolume) {
-            // Convert ticks to milliseconds (1 tick = 50ms)
-            float fadeTimeMs = fadeTime * 50.0f;
-            float fadeStep = (deltaTime / fadeTimeMs);
-            
-            if (currentVolume < targetVolume) {
-                // Fade in
-                currentVolume = Math.min(currentVolume + fadeStep, targetVolume);
-            } else {
-                // Fade out
-                currentVolume = Math.max(currentVolume - fadeStep, targetVolume);
-            }
-        } else {
-            currentVolume = targetVolume;
-        }
-        
+    private void applyGain() {
+        if (line == null || !line.isOpen())
+            return;
         try {
-            // Get Minecraft's master and music volume
             Minecraft mc = Minecraft.getInstance();
             float masterVolume = mc.options.getSoundSourceVolume(SoundSource.MASTER);
             float musicVolume = mc.options.getSoundSourceVolume(SoundSource.RECORDS);
-            
-            // Apply fade volume
-            float finalVolume = this.gameMuted ? 0.0F : masterVolume * musicVolume * currentVolume;
-            
-            // Apply volume to the line
+            float finalGain = masterVolume * musicVolume
+                    * this.trackEnv.current() * MUTE_ENV.current() * this.seekEnv.current();
             if (line.isControlSupported(FloatControl.Type.MASTER_GAIN)) {
                 FloatControl gainControl = (FloatControl) line.getControl(FloatControl.Type.MASTER_GAIN);
-                float dB = (float) (Math.log(Math.max(0.0001f, finalVolume)) / Math.log(10.0) * 20.0);
+                float dB = (float) (Math.log(Math.max(0.0001f, finalGain)) / Math.log(10.0) * 20.0);
                 dB = Math.max(gainControl.getMinimum(), Math.min(gainControl.getMaximum(), dB));
                 gainControl.setValue(dB);
             }
         } catch (Exception e) {
             // Ignore volume control errors
         }
-    }
-    
-    /**
-     * Update volume based on Minecraft's sound settings (without fade)
-     */
-    private void updateVolume() {
-        if (line == null || !line.isOpen()) return;
-        
-        try {
-            // Get Minecraft's master and record volume
-            Minecraft mc = Minecraft.getInstance();
-            float masterVolume = mc.options.getSoundSourceVolume(SoundSource.MASTER);
-            float musicVolume = mc.options.getSoundSourceVolume(SoundSource.RECORDS);
-            
-            float targetVolume = this.gameMuted ? 0.0F : masterVolume * musicVolume;
-            
-            // Apply volume to the line
-            if (line.isControlSupported(FloatControl.Type.MASTER_GAIN)) {
-                FloatControl gainControl = (FloatControl) line.getControl(FloatControl.Type.MASTER_GAIN);
-                float dB = (float) (Math.log(Math.max(0.0001f, targetVolume)) / Math.log(10.0) * 20.0);
-                dB = Math.max(gainControl.getMinimum(), Math.min(gainControl.getMaximum(), dB));
-                gainControl.setValue(dB);
-            }
-        } catch (Exception e) {
-            // Ignore volume control errors
-        }
-    }
-
-    private void updateVolumeOutput() {
-        if (this.fadeTime > 0)
-            updateVolumeWithFade();
-        else
-            updateVolume();
     }
 }

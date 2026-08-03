@@ -253,13 +253,20 @@ public class MobBattleMusicCommands
 				.append(" published=").append(MbmSessionState.isPublishedNow()).append('\n');
 
 		WorldPlaybackChannel.ChannelState worldChannelState = WorldPlaybackChannel.state();
+		// AUD-44: gain envelope currents; final = track x mute x seek
+		float trackGain = main.trackEnv().current();
+		float muteGain = StreamMusicPlayer.MUTE_ENV.current();
+		float seekGain = main.seekEnv().current();
+		float finalGain = trackGain * muteGain * seekGain;
 		output.append("world.state=").append(worldChannelState.name())
-				.append(" gain=").append(String.format(Locale.ROOT, "%.2f",
-						worldChannelState == WorldPlaybackChannel.ChannelState.MUTED
-								|| main.isMutedForGame() ? 0.0F : main.getCurrentVolume()))
+				.append(" gain=").append(String.format(Locale.ROOT, "%.2f", finalGain))
 				.append(" track=").append(handler.getCurrentlyPlayingUrl() == null
 						? "none" : handler.getCurrentlyPlayingUrl())
 				.append(" pos=").append(formatSeconds(handler.getPositionMillis())).append('\n');
+		output.append("world.gain final=").append(String.format(Locale.ROOT, "%.2f", finalGain))
+				.append(" track=").append(String.format(Locale.ROOT, "%.2f", trackGain))
+				.append(" mute=").append(String.format(Locale.ROOT, "%.2f", muteGain))
+				.append(" seek=").append(String.format(Locale.ROOT, "%.2f", seekGain)).append('\n');
 
 		// AUD-30 v1.3/AUD-47: audible vs decoded position and their latency gap
 		long audiblePos = handler.getPositionMillis();

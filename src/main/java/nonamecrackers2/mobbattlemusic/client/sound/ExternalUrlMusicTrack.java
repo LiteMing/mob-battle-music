@@ -19,7 +19,6 @@ public class ExternalUrlMusicTrack {
     private final StreamMusicPlayer player;
     private boolean started = false;
     private boolean stopped = false;
-    private float targetVolume = 1.0f;
     private final long startPositionMillis;
     
     public ExternalUrlMusicTrack(String url, int fadeTime) {
@@ -55,7 +54,7 @@ public class ExternalUrlMusicTrack {
      * @param volume Target volume
      */
     public void setTargetVolume(float volume) {
-        this.targetVolume = volume;
+        // AUD-44: the track envelope owns the gain; this is a pure projection
         player.setTargetVolume(volume);
     }
     

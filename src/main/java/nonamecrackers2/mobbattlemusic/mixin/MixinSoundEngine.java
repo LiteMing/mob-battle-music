@@ -24,6 +24,7 @@ import net.minecraft.sounds.SoundSource;
 import nonamecrackers2.mobbattlemusic.client.init.MobBattleMusicClientCapabilities;
 import nonamecrackers2.mobbattlemusic.client.audio.GlobalAudioFilterManager;
 import nonamecrackers2.mobbattlemusic.client.audio.WorldPlaybackChannel;
+import nonamecrackers2.mobbattlemusic.client.music.StreamMusicPlayer;
 import nonamecrackers2.mobbattlemusic.client.sound.MobBattleTrack;
 import nonamecrackers2.mobbattlemusic.mixin.MixinChannelAccessor;
 
@@ -90,7 +91,9 @@ public abstract class MixinSoundEngine
 						}
 					});
 				}
-				float volume = MobBattleTrack.isMainPlaybackMuted() ? 0.0F : this.calculateVolume(entry.getKey());
+				// AUD-44: no boolean directly decides gain; the shared mute
+				// envelope (same instance as the external-URL leg) scales it
+				float volume = this.calculateVolume(entry.getKey()) * StreamMusicPlayer.MUTE_ENV.current();
 				entry.getValue().execute(channel -> channel.setVolume(volume));
 			}
 		}
