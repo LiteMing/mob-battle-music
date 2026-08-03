@@ -10,12 +10,16 @@ import nonamecrackers2.mobbattlemusic.client.sound.MobBattleTrack;
 /**
  * Preview (audition) channel, bound to the client GUI (AUD-1/AUD-3).
  * This class must never reference ClientLevel, Minecraft#level,
- * Minecraft#isPaused, MinecraftServer, MbmSessionState or any network packet.
+ * Minecraft#isPaused, MinecraftServer, MbmSessionState, MusicTracksManager,
+ * playlist data structures or any network packet (AUD-3, AUD-20 v1.1).
+ * Invalidation is driven from the outside: data/GUI layers compare
+ * {@link #currentPreviewKey()} and call {@link #stop()} (AUD-20 v1.1).
  */
 public final class PreviewChannel
 {
 	private static volatile @Nullable MobBattleTrack soundTrack;
 	private static volatile @Nullable PlaybackHandle handle;
+	private static volatile @Nullable String previewKey;
 	
 	private PreviewChannel() {}
 	
@@ -24,15 +28,17 @@ public final class PreviewChannel
 		stop();
 		ExternalMusicHandler.getInstance().playPreviewMusic(url, fadeTime, durationHintMillis);
 		PreviewChannel.handle = PlaybackHandle.create(url);
+		PreviewChannel.previewKey = url;
 	}
 	
-	public static void playSound(ResourceLocation sound, int fadeTime)
+	public static void playSound(ResourceLocation sound, int fadeTime, String key)
 	{
 		stop();
 		MobBattleTrack track = new MobBattleTrack(sound, fadeTime, true, 0L);
 		PreviewChannel.soundTrack = track;
 		Minecraft.getInstance().getSoundManager().play(track);
 		PreviewChannel.handle = PlaybackHandle.create(sound.toString());
+		PreviewChannel.previewKey = key;
 	}
 	
 	public static void stop()
@@ -46,6 +52,19 @@ public final class PreviewChannel
 		if (active != null)
 			active.markStopped();
 		PreviewChannel.handle = null;
+		PreviewChannel.previewKey = null;
+	}
+	
+	// AUD-20 v1.1: read-only key for outside invalidation comparison;
+	// null while nothing is being previewed
+	public static @Nullable String currentPreviewKey()
+	{
+		return PreviewChannel.previewKey;
+	}
+	
+	public static boolean isPlaying()
+	{
+		return PreviewChannel.isActive();
 	}
 	
 	public static boolean isActive()

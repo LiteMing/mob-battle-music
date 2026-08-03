@@ -61,6 +61,7 @@ import nonamecrackers2.mobbattlemusic.client.util.MobSelection;
 import nonamecrackers2.mobbattlemusic.network.ExternalPlaylistCatalogPacket;
 import nonamecrackers2.mobbattlemusic.network.MobBattleMusicNetwork;
 import nonamecrackers2.mobbattlemusic.network.ServerExternalPlaylistSyncPacket;
+import nonamecrackers2.mobbattlemusic.client.audio.PreviewChannel;
 import nonamecrackers2.mobbattlemusic.playlist.IdleCondition;
 import nonamecrackers2.mobbattlemusic.playlist.IdleConditionRegistry;
 
@@ -288,6 +289,8 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		this.syncExternalPlaylistCatalogToServer();
 		// AUD-18 #5: whole reload invalidates every playlist
 		MusicTracksManager.bumpAllPlaylistRevisions();
+		// AUD-20 v1.1: entries may have vanished with the reload
+		this.stopPreviewIfInvalid();
 	}
 
 	private static void insert(List<TrackType> list, TrackType track, int index) {
@@ -501,6 +504,8 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		this.saveMusicState();
 		// AUD-18 #2: entry enable/disable
 		MusicTracksManager.bumpPlaylistRevision(playlist);
+		// AUD-20 v1.1: a disabled entry's preview must stop
+		this.stopPreviewIfInvalid();
 		return PlaylistControlResult.success((enabled ? "Enabled " : "Disabled ") + playlist + " " + entry.name());
 	}
 
@@ -604,6 +609,8 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 			}
 		}
 		this.rebuildTracksWithDynamic();
+		// AUD-20 v1.1: entries may have been removed by the server override
+		this.stopPreviewIfInvalid();
 	}
 	
 	public PlaylistControlResult addLocalSceneUrl(String scene, String url) {
@@ -721,6 +728,8 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		this.syncExternalPlaylistCatalogToServer();
 		// AUD-18 #1: entry delete
 		MusicTracksManager.bumpPlaylistRevision(dynamicConfigLocation(DynamicSource.LOCAL, binding));
+		// AUD-20 v1.1: the deleted entry's preview must stop
+		this.stopPreviewIfInvalid();
 		return PlaylistControlResult.success("Deleted local " + binding.displayName() + " URL #" + (index + 1) + ": " + removed);
 	}
 
@@ -922,6 +931,8 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 			this.syncExternalPlaylistCatalogToServer();
 			// AUD-18 #1: entity-binding playlist removal
 			MusicTracksManager.bumpAllPlaylistRevisions();
+			// AUD-20 v1.1: the removed playlist's entries are gone
+			this.stopPreviewIfInvalid();
 		}
 		return removed;
 	}
@@ -981,7 +992,7 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 	}
 
 	/**
-	 * AUD-19: is the entry referenced by (playlistId, entryKey) still present
+	 * AUD-19/AUD-20: is the entry referenced by (playlistId, entryKey) still present
 	 * and enabled?
 	 */
 	public boolean isPlaybackTargetActive(ResourceLocation playlistId, String entryKey)
@@ -1000,6 +1011,38 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		if (playlist != null) {
 			for (ExternalPlaylistEntry entry : playlist.entries()) {
 				if (entry.id().equals(entryKey) && isMusicEntryEnabled(playlistId, entry))
+					return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * AUD-20 v1.1: stop the preview when its key no longer refers to an
+	 * enabled playlist entry. Called from entry delete / disable / URL change /
+	 * server override / reload paths. The dependency direction is outside-in:
+	 * the data layer compares and stops; PreviewChannel never queries data.
+	 */
+	private void stopPreviewIfInvalid()
+	{
+		String key = PreviewChannel.currentPreviewKey();
+		if (key == null || this.isUrlPlayable(key))
+			return;
+		PreviewChannel.stop();
+		LOGGER.debug("Stopped preview: its entry '{}' is no longer playable", key);
+	}
+	
+	private boolean isUrlPlayable(String url)
+	{
+		for (DynamicExternalTrack track : this.dynamicExternalTracks.values()) {
+			for (ExternalPlaylistEntry entry : track.entries()) {
+				if (entry.url().equals(url) && isMusicEntryEnabled(track.configLocation(), entry))
+					return true;
+			}
+		}
+		for (ExternalPlaylist playlist : this.externalPlaylistsByTrack.values()) {
+			for (ExternalPlaylistEntry entry : playlist.entries()) {
+				if (entry.url().equals(url) && isMusicEntryEnabled(playlist.configLocation(), entry))
 					return true;
 			}
 		}

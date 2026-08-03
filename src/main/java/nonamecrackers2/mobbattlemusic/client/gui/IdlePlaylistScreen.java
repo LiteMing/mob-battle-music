@@ -760,7 +760,7 @@ final class IdlePlaylistScreen extends Screen
 		stopPreview();
 		ResourceLocation sound = soundLocation(entry.url());
 		if (sound != null)
-			PreviewChannel.playSound(sound, 20);
+			PreviewChannel.playSound(sound, 20, entry.url());
 		else
 			PreviewChannel.playUrl(entry.url(), 20, 0L);
 	}

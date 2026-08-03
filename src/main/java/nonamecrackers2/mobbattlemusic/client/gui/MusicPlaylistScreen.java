@@ -832,7 +832,7 @@ public class MusicPlaylistScreen extends Screen
 		stopPreview();
 		ResourceLocation sound = soundLocation(row.entry().url());
 		if (sound != null)
-			PreviewChannel.playSound(sound, 20);
+			PreviewChannel.playSound(sound, 20, row.entry().url());
 		else
 			PreviewChannel.playUrl(row.entry().url(), 20, 0L);
 	}
