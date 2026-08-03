@@ -387,9 +387,12 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 			if (!element.isJsonObject())
 				continue;
 			JsonObject condition = element.getAsJsonObject();
+			IdleCondition.Join join = "or".equalsIgnoreCase(
+					GsonHelper.getAsString(condition, "join", "and"))
+							? IdleCondition.Join.OR : IdleCondition.Join.AND;
 			conditions.add(new IdleCondition(GsonHelper.getAsString(condition, "type"),
 					GsonHelper.getAsString(condition, "argument", ""),
-					GsonHelper.getAsBoolean(condition, "inverted", false)));
+					GsonHelper.getAsBoolean(condition, "inverted", false), join));
 		}
 		return List.copyOf(conditions);
 	}
@@ -938,6 +941,26 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		// AUD-18: entry condition change
 		MusicTracksManager.bumpPlaylistRevision(dynamicConfigLocation(DynamicSource.LOCAL, binding));
 		return PlaylistControlResult.success("Deleted track condition #" + (conditionIndex + 1));
+	}
+
+	/**
+	 * K9-2: replace the full condition list of one entry in one write - used
+	 * by the Conditions inspector (which edits joins and inversion in place).
+	 */
+	public PlaylistControlResult replaceLocalEntryConditions(DynamicBinding binding, int entryIndex,
+			List<IdleCondition> conditions)
+	{
+		if (!hasLocalPlaylist(binding))
+			return PlaylistControlResult.failure("No local playlist exists for " +
+					(binding == null ? "unknown binding" : binding.displayName()));
+		List<List<IdleCondition>> entries = entryConditions(binding, true);
+		if (entryIndex < 0 || entryIndex >= entries.size())
+			return PlaylistControlResult.failure("Music entry index out of range");
+		entries.set(entryIndex, List.copyOf(conditions));
+		saveAndRefreshLocalTracks();
+		MusicTracksManager.bumpPlaylistRevision(dynamicConfigLocation(DynamicSource.LOCAL, binding));
+		return PlaylistControlResult.success("Updated conditions of " + binding.displayName() + " track #" +
+				(entryIndex + 1));
 	}
 
 	private List<List<IdleCondition>> entryConditions(DynamicBinding binding, boolean create)
@@ -1752,6 +1775,8 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 					object.addProperty("type", condition.type());
 					object.addProperty("argument", condition.argument());
 					object.addProperty("inverted", condition.inverted());
+					if (condition.join() == IdleCondition.Join.OR)
+						object.addProperty("join", "or");
 					array.add(object);
 				}
 				idleConditions.add(binding, array);
@@ -1787,6 +1812,10 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		object.addProperty("type", condition.type());
 		object.addProperty("argument", condition.argument());
 		object.addProperty("inverted", condition.inverted());
+		// K9-2: the join is written only when it differs from the default AND
+		// (old files stay byte-compatible; OR round-trips)
+		if (condition.join() == IdleCondition.Join.OR)
+			object.addProperty("join", "or");
 		return object;
 	}
 	

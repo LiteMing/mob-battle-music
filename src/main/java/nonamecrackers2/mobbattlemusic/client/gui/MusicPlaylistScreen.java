@@ -96,6 +96,7 @@ public class MusicPlaylistScreen extends Screen
 	private Button conditionInvertButton;
 	private Button conditionAddButton;
 	private Button conditionDeleteButton;
+	private Button conditionsInspectorButton;
 	private Button timelineEditorButton;
 	private Button inspectorDetailsButton;
 	private Button inspectorBindingButton;
@@ -307,6 +308,11 @@ public class MusicPlaylistScreen extends Screen
 		this.conditionDeleteButton = this.addRenderableWidget(Button.builder(text("button.condition_delete"), button -> deleteCondition())
 				.bounds(ix + (conditionActionWidth + 4) * 2, conditionActionY,
 						Math.max(20, iw - (conditionActionWidth + 4) * 2), 20).build());
+		// K9-2: open the standalone Conditions inspector (AND/OR groups, live
+		// per-condition diagnostics)
+		this.conditionsInspectorButton = this.addRenderableWidget(Button.builder(
+				text("button.conditions_inspector"), button -> openConditionsInspector())
+				.bounds(ix, conditionActionY + 24, iw, 20).build());
 		this.timelineEditorButton = this.addRenderableWidget(Button.builder(text("button.timeline_editor"),
 				button -> openTimelineEditor()).bounds(ix + half + PlaylistScreenLayout.GAP, detailActionY,
 						Math.max(24, iw - half - PlaylistScreenLayout.GAP), 20).build());
@@ -1397,6 +1403,21 @@ public class MusicPlaylistScreen extends Screen
 			message(MusicTracksManager.getInstance().setLocalIdleInterval(row.binding(), seconds).message());
 			refreshAfterEdit();
 		}
+	}
+
+	// K9-2: open the standalone Conditions inspector for the selected entry
+	private void openConditionsInspector()
+	{
+		Row row = selectedRow();
+		if (row == null)
+			return;
+		MusicTracksManager.DynamicBinding binding = selectedBinding();
+		if (binding == null)
+			return;
+		boolean serverMode = this.editMode == EditMode.SERVER;
+		String label = (row.title() == null ? row.entry().url() : row.title()) + " @" + binding.storageKey();
+		this.minecraft.setScreen(new ConditionInspectorScreen(this, binding, row.index(), label,
+				row.entry().conditions(), serverMode));
 	}
 
 	private void toggleConditionInverted()
