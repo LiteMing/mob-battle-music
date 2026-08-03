@@ -41,6 +41,11 @@ public class StreamMusicPlayer {
     private volatile float targetVolume = 1.0f;
     private volatile float currentVolume = 0.0f;
     private volatile int fadeTime = 0; // Fade time in ticks (20 ticks = 1 second)
+    // AUD-24 v1.2: per-call fade (fadeTo), independent of the default fadeTime
+    private volatile float fadeFromVolume;
+    private volatile float fadeToVolume;
+    private volatile long fadeStartMillis;
+    private volatile long fadeDurationMillis; // 0 = not active, use default fadeTime
     private volatile SourceDataLine line;
     private final AtomicLong playbackGeneration = new AtomicLong();
     private volatile long playedPcmBytes;
@@ -382,6 +387,29 @@ public class StreamMusicPlayer {
     }
     
     /**
+     * AUD-24 v1.2: fade the gain to the given target over the given duration,
+     * independent of the default fadeTime used at playback start/stop. The
+     * default fadeTime behaviour is unchanged. Completion is observable via
+     * {@link #getCurrentVolume()} (exactly 0.0F for a zero target) or
+     * {@link #isFadeToActive()}.
+     */
+    public void fadeTo(float target, long durationMillis) {
+        float clamped = Math.max(0.0f, Math.min(1.0f, target));
+        this.fadeFromVolume = this.currentVolume;
+        this.fadeToVolume = clamped;
+        this.fadeStartMillis = System.currentTimeMillis();
+        this.fadeDurationMillis = Math.max(1L, durationMillis);
+        this.targetVolume = clamped;
+    }
+    
+    /**
+     * True while a fadeTo() fade is still in progress.
+     */
+    public boolean isFadeToActive() {
+        return this.fadeDurationMillis != 0L;
+    }
+    
+    /**
      * Get current volume
      * @return Current volume (0.0 to 1.0)
      */
@@ -399,8 +427,18 @@ public class StreamMusicPlayer {
         long deltaTime = currentTime - lastVolumeUpdate;
         lastVolumeUpdate = currentTime;
         
-        // Calculate fade step based on fade time
-        if (fadeTime > 0 && currentVolume != targetVolume) {
+        // AUD-24 v1.2: per-call fade takes precedence over the default fadeTime
+        long activeFade = this.fadeDurationMillis;
+        if (activeFade > 0L) {
+            float progress = (float)((currentTime - this.fadeStartMillis) / (double)activeFade);
+            if (progress >= 1.0F) {
+                this.currentVolume = this.fadeToVolume;
+                this.fadeDurationMillis = 0L;
+            } else {
+                this.currentVolume = this.fadeFromVolume
+                        + (this.fadeToVolume - this.fadeFromVolume) * progress;
+            }
+        } else if (fadeTime > 0 && currentVolume != targetVolume) {
             // Convert ticks to milliseconds (1 tick = 50ms)
             float fadeTimeMs = fadeTime * 50.0f;
             float fadeStep = (deltaTime / fadeTimeMs);
