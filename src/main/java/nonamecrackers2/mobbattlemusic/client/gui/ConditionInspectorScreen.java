@@ -39,6 +39,9 @@ public class ConditionInspectorScreen extends Screen
 	// (integrated server thread); missing entries render as "checking..."
 	private final java.util.Map<Integer, IdleConditionRegistry.MatchResult> diagnostics =
 			new java.util.HashMap<>();
+	// K12-A: bump on every runDiagnostics(); stale futures from an earlier
+	// list must not write results back after the list changed
+	private long diagnosticGeneration;
 	private int scrollOffset;
 	private int listLeft;
 	private int listWidth;
@@ -206,6 +209,7 @@ public class ConditionInspectorScreen extends Screen
 
 	private void runDiagnostics()
 	{
+		final long generation = ++this.diagnosticGeneration;
 		this.diagnostics.clear();
 		Minecraft mc = Minecraft.getInstance();
 		if (mc.player == null) {
@@ -219,7 +223,12 @@ public class ConditionInspectorScreen extends Screen
 			// come back on the main thread; everything else resolves inline
 			final int index = i;
 			ClientConditionDiagnostics.diagnoseAsync(mc.player, condition)
-					.thenAcceptAsync(result -> this.diagnostics.put(index, result), mc);
+					// K12-A: a stale future (list edited/deleted since this run
+					// started) is dropped; it must not overwrite a newer result
+					.thenAcceptAsync(result -> {
+						if (generation == this.diagnosticGeneration)
+							this.diagnostics.put(index, result);
+					}, mc);
 		}
 	}
 
@@ -260,10 +269,18 @@ public class ConditionInspectorScreen extends Screen
 			graphics.drawString(this.font, text, this.listLeft + 4, y + 4, 0xFFD6D9DE);
 			IdleConditionRegistry.MatchResult diagnostic = this.diagnostics.get(rowIndex);
 			if (diagnostic != null) {
-				boolean matched = condition.inverted() ? !diagnostic.matched() : diagnostic.matched();
-				String state = matched ? "\u2713 " : "\u2717 ";
-				graphics.drawString(this.font, state + (diagnostic.reason() == null ? "" : diagnostic.reason()),
-						this.listLeft + 220, y + 4, matched ? 0xFF73D98A : 0xFFE06C75);
+				// K12-A: UNKNOWN is not a match verdict - it is NOT inverted by
+				// a NOT condition and is rendered neutral (no green/red glyph)
+				if (diagnostic.state() == IdleConditionRegistry.MatchResult.State.UNKNOWN) {
+					graphics.drawString(this.font,
+							"? " + (diagnostic.reason() == null ? "" : diagnostic.reason()),
+							this.listLeft + 220, y + 4, 0xFFE6C07A);
+				} else {
+					boolean matched = condition.inverted() ? !diagnostic.matched() : diagnostic.matched();
+					String state = matched ? "\u2713 " : "\u2717 ";
+					graphics.drawString(this.font, state + (diagnostic.reason() == null ? "" : diagnostic.reason()),
+							this.listLeft + 220, y + 4, matched ? 0xFF73D98A : 0xFFE06C75);
+				}
 			} else {
 				// K11-A: async structure check still in flight
 				graphics.drawString(this.font, "checking...", this.listLeft + 220, y + 4, 0xFF8B929C);

@@ -211,8 +211,20 @@ public final class IdleConditionRegistry
 
 	/**
 	 * K9-2: one condition's diagnostic outcome for the Conditions inspector.
+	 * K12-A: carries an explicit state. UNKNOWN means "could not be evaluated"
+	 * (e.g. structure checks on a dedicated server) and MUST NOT be inverted by
+	 * a NOT condition nor rendered as a green/red glyph - a misleading result
+	 * is worse than none.
 	 */
-	public record MatchResult(boolean matched, String reason) {}
+	public record MatchResult(boolean matched, String reason, State state)
+	{
+		public enum State { MATCH, NO_MATCH, UNKNOWN }
+
+		public MatchResult(boolean matched, String reason)
+		{
+			this(matched, reason, matched ? State.MATCH : State.NO_MATCH);
+		}
+	}
 
 	private static record Definition(ResourceLocation id, String displayName,
 			BiPredicate<Player, String> predicate) {}

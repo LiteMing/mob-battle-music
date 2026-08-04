@@ -31,6 +31,13 @@ public class ExternalPlaylistControlClient
 		if (packet.action() == ExternalPlaylistControlPacket.Action.PLAY_SELECTION
 				|| packet.action() == ExternalPlaylistControlPacket.Action.PLAY_URL)
 			WorldPlaybackChannel.setPlaybackOwner(WorldPlaybackChannel.PlaybackOwner.CUE);
+		// K12-A: STOP must release the CUE owner, otherwise the manager keeps
+		// its auto-hold (owner != AUTO) and AUTO can never resume -> the GUI
+		// cannot demote CUE, so a server STOP would deadlock into permanent
+		// silence. Server protocol: PLAY acquires CUE, STOP returns AUTO.
+		if (packet.action() == ExternalPlaylistControlPacket.Action.STOP
+				&& WorldPlaybackChannel.playbackOwner() == WorldPlaybackChannel.PlaybackOwner.CUE)
+			WorldPlaybackChannel.setPlaybackOwner(WorldPlaybackChannel.PlaybackOwner.AUTO);
 		message(result.message());
 	}
 	

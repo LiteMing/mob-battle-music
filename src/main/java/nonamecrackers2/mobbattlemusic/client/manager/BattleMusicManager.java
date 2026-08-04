@@ -74,6 +74,10 @@ public class BattleMusicManager {
 	private final Map<TrackType, ExternalUrlMusicTrack> externalTracks = Maps.newHashMap(); // For external URL tracks
 	private final Map<ResourceLocation, Long> idleNextStartMillis = Maps.newHashMap();
 	private final Map<ResourceLocation, ResumeState> externalResumeStates = Maps.newHashMap();
+	// K12-A: last owner seen while holding the deck; the per-tick hold log is
+	// only emitted on an owner edge (the probe Ring takes over continuous
+	// observation), so a long MAN/CUE session does not spam DEBUG lines
+	private WorldPlaybackChannel.PlaybackOwner lastHoldOwner;
 	private long idleSuppressedUntilMillis;
 	private boolean initialIdleCooldownApplied;
 	private java.util.UUID reportedPlayerOpponent;
@@ -243,10 +247,19 @@ public class BattleMusicManager {
 			// K11-B: keep the external wrapper collection in sync with the
 			// session player so marker ticking follows manual selections
 			syncExternalTrackWrappersToSession();
-			LOGGER.debug("[MBM] {} hold active - AUTO selection suspended",
-					WorldPlaybackChannel.playbackOwner());
+			// K12-A: log only on an owner edge (probe Ring does continuous
+			// observation); long MAN/CUE sessions must not spam DEBUG lines
+			if (WorldPlaybackChannel.playbackOwner() != this.lastHoldOwner) {
+				LOGGER.debug("[MBM] {} hold active - AUTO selection suspended",
+						WorldPlaybackChannel.playbackOwner());
+				this.lastHoldOwner = WorldPlaybackChannel.playbackOwner();
+			}
 			tickTimelineMarkers();
 			return;
+		}
+		if (this.lastHoldOwner != null) {
+			LOGGER.debug("[MBM] deck released - AUTO selection resumed");
+			this.lastHoldOwner = null;
 		}
 
 		// 更新音轨
