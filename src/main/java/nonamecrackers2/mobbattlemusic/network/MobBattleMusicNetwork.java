@@ -102,6 +102,26 @@ public class MobBattleMusicNetwork
 				.decoder(ClockOffsetProbeResponsePacket::decode)
 				.consumerNetworkThread(MobBattleMusicNetwork::handleClockOffsetProbeResponse)
 				.add();
+		// K14-B: server-authoritative Cue session sync (start/snapshot/pause/
+		// resume/stop) - the server broadcasts the logical timeline, clients
+		// follow with their own audio
+		CHANNEL.messageBuilder(CueSessionSyncPacket.class, nextId++, NetworkDirection.PLAY_TO_CLIENT)
+				.encoder(CueSessionSyncPacket::encode)
+				.decoder(CueSessionSyncPacket::decode)
+				.consumerMainThread(MobBattleMusicNetwork::handleCueSessionSync)
+				.add();
+	}
+
+	public static void sendCueSessionSync(ServerPlayer player, CueSessionSyncPacket packet)
+	{
+		if (!remoteHasChannel(player))
+			return;
+		CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), packet);
+	}
+
+	private static void handleCueSessionSync(CueSessionSyncPacket packet, Supplier<NetworkEvent.Context> context)
+	{
+		packet.handle(context);
 	}
 	
 	// K14-A: does the remote end of this player's connection have the MBM

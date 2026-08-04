@@ -515,6 +515,30 @@ public class MobBattleMusicCommands
 	private static int send(CommandSourceStack source, Collection<ServerPlayer> players, ResourceLocation playlistId,
 			ExternalPlaylistControlPacket.Action action, String selection)
 	{
+		// K14-B: PLAY_SELECTION/PLAY_URL create the authoritative server Cue
+		// session - the server advances the logical timeline and fires markers
+		// once per session; clients receive CueSessionSyncPacket. SET/RANDOM/
+		// CLEAR/STOP keep their legacy behavior.
+		if (action == ExternalPlaylistControlPacket.Action.PLAY_SELECTION) {
+			String url = ExternalPlaylistCatalogServer.resolveEntryUrl(source.getServer(), playlistId, selection);
+			if (url != null) {
+				ServerCueSessionManager.start(source.getServer(), playlistId, selection, url, 0L);
+				MobBattleMusicCommandFeedback.success(source, Component.literal(
+						"Started authoritative Cue session for " + playlistId + " / " + selection));
+				return players.size();
+			}
+		}
+		if (action == ExternalPlaylistControlPacket.Action.PLAY_URL) {
+			long revision = 0L;
+			ServerCueSessionManager.start(source.getServer(), MobBattleMusicMod.id("direct"), selection, selection,
+					revision);
+			MobBattleMusicCommandFeedback.success(source, Component.literal(
+					"Started authoritative Cue session for URL"));
+			return players.size();
+		}
+		if (action == ExternalPlaylistControlPacket.Action.STOP) {
+			ServerCueSessionManager.stop(source.getServer(), playlistId);
+		}
 		ExternalPlaylistControlPacket packet = new ExternalPlaylistControlPacket(playlistId, action, selection);
 		for (ServerPlayer player : players)
 			MobBattleMusicNetwork.sendExternalPlaylistControl(player, packet);

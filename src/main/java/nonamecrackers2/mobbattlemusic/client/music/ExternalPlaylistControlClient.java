@@ -55,6 +55,53 @@ public class ExternalPlaylistControlClient
 		MusicPlaylistScreen.refreshOpenScreen();
 		message("Synced " + packet.tracks().size() + " server playlist binding(s)");
 	}
+
+	// K14-B: the server-authoritative Cue timeline drives this client's audio.
+	// START/SNAPSHOT carry the logical position for mid-session joins (seek
+	// instead of starting from zero). Marker firing is server-side; the client
+	// only mirrors the timeline. A CUE session may continue while this client
+	// has opted out (acceptServerCues=false) - the server timeline is
+	// unaffected, we just do not play.
+	public static void handleCueSessionSync(nonamecrackers2.mobbattlemusic.network.CueSessionSyncPacket packet)
+	{
+		boolean optOut = MobBattleMusicConfig.CLIENT.ignoreServerPlaylistRequests.get()
+				|| !MobBattleMusicConfig.CLIENT.acceptServerCues.get();
+		switch (packet.action()) {
+			case START, SNAPSHOT -> {
+				if (optOut)
+					return;
+				long startPosition = packet.logicalPositionMillis();
+				if (packet.action() == nonamecrackers2.mobbattlemusic.network.CueSessionSyncPacket.Action.SNAPSHOT
+						|| startPosition > 0L) {
+					// mid-session join / continuing session - seek to the
+					// logical position instead of replaying from zero
+					ExternalMusicHandler.getInstance().playMusicFrom(packet.url(), 0, startPosition);
+				} else {
+					ExternalMusicHandler.getInstance().playMusic(packet.url(), 0);
+				}
+				WorldPlaybackChannel.setPlaybackOwner(WorldPlaybackChannel.PlaybackOwner.CUE);
+			}
+			case PAUSE -> {
+				if (optOut)
+					return;
+				ExternalMusicHandler.getInstance().pauseMusic();
+			}
+			case RESUME -> {
+				if (optOut)
+					return;
+				ExternalMusicHandler.getInstance().resumeMusic();
+			}
+			case STOP -> {
+				// K12-A: STOP returns the CUE owner to AUTO (client-side
+				// arbitration); the server timeline keeps running for other
+				// players regardless
+				if (WorldPlaybackChannel.playbackOwner() == WorldPlaybackChannel.PlaybackOwner.CUE)
+					WorldPlaybackChannel.setPlaybackOwner(WorldPlaybackChannel.PlaybackOwner.AUTO);
+				if (!optOut)
+					ExternalMusicHandler.getInstance().stopMusic();
+			}
+		}
+	}
 	
 	private static MusicTracksManager.PlaylistControlResult playSelection(net.minecraft.resources.ResourceLocation playlistId,
 			String selection)

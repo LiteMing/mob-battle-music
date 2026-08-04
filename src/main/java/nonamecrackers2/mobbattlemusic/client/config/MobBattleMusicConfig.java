@@ -48,6 +48,8 @@ public class MobBattleMusicConfig
 		public final ForgeConfigSpec.BooleanValue useCacheOnError;
 		public final ForgeConfigSpec.BooleanValue showErrorNotifications;
 		public final ForgeConfigSpec.BooleanValue ignoreServerPlaylistRequests;
+		// K14-B: opt out of CUE audio only (server marker timeline unaffected)
+		public final ForgeConfigSpec.BooleanValue acceptServerCues;
 		public final ForgeConfigSpec.BooleanValue showTrackActionbar;
 		// AUD-48 v1.4: filter mix ramp durations (0 = instant, default); the
 		// chain crossfade is NOT configurable (AUD-48)
@@ -136,6 +138,14 @@ public class MobBattleMusicConfig
 			this.ignoreServerPlaylistRequests = builder
 				.comment("Ignore server-sent external playlist updates and direct playback requests")
 				.define("ignoreServerPlaylistRequests", false);
+
+			// K14-B: opt out of server CUE audio only - the server's
+			// authoritative marker timeline keeps running regardless; this
+			// never gates server-side Boss/marker logic
+			this.acceptServerCues = builder
+				.comment("Play server CUE (synchronized) music. Disabling only silences the CUE audio on "
+						+ "this client; the server's authoritative marker/Boss timeline is unaffected")
+				.define("acceptServerCues", true);
 
 			this.showTrackActionbar = builder
 				.comment("Show an actionbar message when Mob Battle Music switches tracks")

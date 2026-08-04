@@ -366,12 +366,13 @@ public class BattleMusicManager {
 			int selectedIndex = MusicTracksManager.getInstance().getExternalPlaylistSelectedIndex(track);
 			for (TimelineMarker marker : TimelineMarkerStore.markers(track, externalTrack.getUrl(), selectedIndex)) {
 				if (marker.timeMillis() > this.timelineLastPosition && marker.timeMillis() <= position) {
+					// K14-B: marker firing is now SERVER-authoritative (the
+					// server Cue timeline fires each marker once per session).
+					// The client keeps the local fire for visual/audio feedback
+					// and diagnosis only - it is never the authority for Boss
+					// logic. No marker C2S packet is sent anymore.
 					MobBattleMusicTimeline.fireClient(this.minecraft.player, this.panickingFrom, track,
 							externalTrack.getUrl(), marker);
-					int targetId = this.panickingFrom == null ? -1 : this.panickingFrom.getId();
-					if (serverTrack)
-						MobBattleMusicNetwork.sendTimelineMarkerHit(new TimelineMarkerHitPacket(track, selectedIndex,
-								externalTrack.getUrl(), marker, targetId));
 				}
 			}
 			this.timelineLastPosition = position;

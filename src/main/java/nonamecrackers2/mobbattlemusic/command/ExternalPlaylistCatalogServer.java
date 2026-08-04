@@ -90,6 +90,38 @@ public class ExternalPlaylistCatalogServer
 		}
 		return null;
 	}
+
+	/**
+	 * K14-B: resolve a playlist entry selection (id or 1-based index) to its
+	 * URL from the authoritative server-side playlist store. The client
+	 * catalog carries only ids (URLs stay client-local), so a Cue session can
+	 * only be authoritative for server-store playlists. Returns null when
+	 * unresolvable.
+	 */
+	@javax.annotation.Nullable
+	public static String resolveEntryUrl(MinecraftServer server, ResourceLocation playlistId, String selection)
+	{
+		return ServerExternalPlaylistStore.playlistEntryUrl(server, playlistId, resolveIndex(selection));
+	}
+
+	private static int resolveIndex(String selection)
+	{
+		Integer index = parseIndex(selection);
+		return index == null ? -1 : index;
+	}
+
+	@javax.annotation.Nullable
+	private static Integer parseIndex(String selection)
+	{
+		if (selection == null || selection.isBlank())
+			return null;
+		try {
+			int index = Integer.parseInt(selection) - 1;
+			return index >= 0 ? index : null;
+		} catch (NumberFormatException e) {
+			return null;
+		}
+	}
 	
 	public static int list(CommandSourceStack source, Collection<ServerPlayer> players)
 	{

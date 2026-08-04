@@ -15,8 +15,9 @@ import nonamecrackers2.mobbattlemusic.client.config.MobBattleMusicConfig;
 import nonamecrackers2.mobbattlemusic.client.MobBattleMusicClientBootstrap;
 import nonamecrackers2.mobbattlemusic.command.AggressiveEntityStateServer;
 import nonamecrackers2.mobbattlemusic.command.ExternalPlaylistCatalogServer;
-import nonamecrackers2.mobbattlemusic.command.MobBattleMusicCommands;
 import nonamecrackers2.mobbattlemusic.command.IdleConditionStateServer;
+import nonamecrackers2.mobbattlemusic.command.MobBattleMusicCommands;
+import nonamecrackers2.mobbattlemusic.command.ServerCueSessionManager;
 import nonamecrackers2.mobbattlemusic.command.ServerExternalPlaylistStore;
 import nonamecrackers2.mobbattlemusic.network.MobBattleMusicNetwork;
 
@@ -40,6 +41,12 @@ public class MobBattleMusicMod
 		MinecraftForge.EVENT_BUS.addListener(IdleConditionStateServer::onPlayerTick);
 		MinecraftForge.EVENT_BUS.addListener(IdleConditionStateServer::onPlayerLoggedIn);
 		MinecraftForge.EVENT_BUS.addListener(IdleConditionStateServer::onPlayerLoggedOut);
+		// K14-B: the authoritative server Cue timeline advances on the server
+		// tick; a player joining mid-session receives the current snapshot
+		MinecraftForge.EVENT_BUS.addListener(ServerCueSessionManager::onServerTick);
+		MinecraftForge.EVENT_BUS.addListener(ServerCueSessionManager::onPlayerLoggedOut);
+		MinecraftForge.EVENT_BUS.addListener(ServerExternalPlaylistStore::onPlayerLoggedIn);
+		MinecraftForge.EVENT_BUS.addListener(ServerCueSessionManager::onPlayerLoggedIn);
 		MobBattleMusicNetwork.register();
 		ModLoadingContext.get().registerConfig(ModConfig.Type.CLIENT, MobBattleMusicConfig.CLIENT_SPEC);
 	}
