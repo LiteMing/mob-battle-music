@@ -743,12 +743,15 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		this.loadLocalSceneUrls();
 		java.util.Map<DynamicBinding, List<String>> committedByBinding = new java.util.LinkedHashMap<>();
 		int invalid = 0;
+		// K12-B: validation phase MUST NOT mutate anything - read the existing
+		// list with getOrDefault so a later abort leaves "any binding zero
+		// modification" literally true (computeIfAbsent only at commit below)
 		for (var entry : plan.entrySet()) {
 			DynamicBinding binding = entry.getKey();
 			if (binding == null)
 				continue;
 			Map<String, List<String>> urlsByTarget = this.localUrls(binding.kind());
-			List<String> existing = urlsByTarget.computeIfAbsent(binding.storageKey(), key -> Lists.newArrayList());
+			List<String> existing = urlsByTarget.getOrDefault(binding.storageKey(), List.of());
 			List<String> committed = new java.util.ArrayList<>();
 			for (String raw : entry.getValue()) {
 				String reference = normalizeLocalMusicReference(raw);
@@ -771,7 +774,9 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		int total = 0;
 		for (var entry : committedByBinding.entrySet()) {
 			Map<String, List<String>> urlsByTarget = this.localUrls(entry.getKey().kind());
-			List<String> existing = urlsByTarget.get(entry.getKey().storageKey());
+			// K12-B: commit phase may now create the empty list
+			List<String> existing = urlsByTarget.computeIfAbsent(entry.getKey().storageKey(),
+					key -> Lists.newArrayList());
 			existing.addAll(entry.getValue());
 			List<List<IdleCondition>> conditions = entryConditions(entry.getKey(), true);
 			while (conditions.size() < existing.size())

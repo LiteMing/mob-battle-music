@@ -31,6 +31,8 @@ import net.minecraft.world.entity.ai.targeting.TargetingConditions;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.item.TieredItem;
+import nonamecrackers2.mobbattlemusic.client.audio.PlaybackHandle;
+import nonamecrackers2.mobbattlemusic.client.audio.SourceRef;
 import nonamecrackers2.mobbattlemusic.client.audio.WorldPlaybackChannel;
 import nonamecrackers2.mobbattlemusic.client.config.MobBattleMusicConfig;
 import nonamecrackers2.mobbattlemusic.client.music.ExternalMusicHandler;
@@ -298,6 +300,11 @@ public class BattleMusicManager {
 	 * not rebuild wrappers - this mirrors the session player into the
 	 * external wrapper collection so timeline markers keep ticking on manual
 	 * selections. Wrappers are adopted (never played).
+	 * K12-B: the wrapper is derived from the SESSION handle's SourceRef
+	 * (playlistId/entryKey/revision), never reverse-derived from the AUTO
+	 * manager's current selection - a manual Prev/Next does not move the AUTO
+	 * selected index, so a URL lookup against it could miss and drop the
+	 * wrapper (marker chain break).
 	 */
 	private void syncExternalTrackWrappersToSession()
 	{
@@ -305,12 +312,17 @@ public class BattleMusicManager {
 		String url = handler.getCurrentlyPlayingUrl();
 		if (url == null || handler.isPreparingCurrentMusic())
 			return;
+		PlaybackHandle handle = WorldPlaybackChannel.handle();
+		if (handle == null || handle.sourceRef() == null)
+			return;
+		SourceRef ref = handle.sourceRef();
 		MusicTracksManager manager = MusicTracksManager.getInstance();
 		for (TrackType type : manager.getTracks()) {
 			ResourceLocation location = type.getTrack();
 			if (!manager.isExternalUrl(location))
 				continue;
-			if (url.equals(manager.getExternalUrl(location))) {
+			// K12-B: match by the SourceRef playlist id, not the AUTO URL
+			if (location.toString().equals(ref.playlistId())) {
 				ExternalUrlMusicTrack existing = this.externalTracks.get(type);
 				if (existing == null || !existing.getUrl().equals(url))
 					this.externalTracks.put(type, ExternalUrlMusicTrack.adopt(url, type.getFadeTime()));

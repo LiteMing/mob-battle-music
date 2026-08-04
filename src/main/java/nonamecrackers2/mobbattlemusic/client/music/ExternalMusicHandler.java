@@ -9,6 +9,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import nonamecrackers2.mobbattlemusic.client.audio.WorldPlaybackChannel;
 import nonamecrackers2.mobbattlemusic.client.config.MobBattleMusicConfig;
 
 /**
@@ -205,6 +206,9 @@ public class ExternalMusicHandler {
                     return;
                 if (cachedPath == null) {
                     clearPlaybackState();
+                    // K12-B: the handle must not claim a track whose source
+                    // never downloaded - mark it FAILED explicitly
+                    WorldPlaybackChannel.markCurrentHandleFailed(url);
                     LOGGER.error("Failed to prepare music file for playback: {}", url);
                     return;
                 }
@@ -216,11 +220,35 @@ public class ExternalMusicHandler {
                     if (request != this.playbackRequest.get())
                         return;
                     try {
-                        this.player.play(cachedPath, fadeTime, startPositionMillis, durationHintMillis);
+                        // K12-B: the async generation handoff refuses (old
+                        // thread alive) - the refusal must reach the handle
+                        // instead of the dock pretending playback is active
+                        this.player.setStartResultListener((generation, result, failure) -> {
+                            synchronized (this.playbackLock) {
+                                if (request != this.playbackRequest.get())
+                                    return;
+                                if (result == StreamMusicPlayer.PlayResult.STARTED)
+                                    WorldPlaybackChannel.markCurrentHandleActive(url);
+                                else {
+                                    WorldPlaybackChannel.markCurrentHandleFailed(url);
+                                    LOGGER.error("[MBM] playback of {} failed during start: {}", url,
+                                            failure == null ? result : failure.toString());
+                                }
+                            }
+                        });
+                        StreamMusicPlayer.PlayResult playResult = this.player.play(cachedPath, fadeTime,
+                                startPositionMillis, durationHintMillis);
+                        if (playResult == StreamMusicPlayer.PlayResult.REFUSED_OLD_THREAD_ALIVE) {
+                            clearPlaybackState();
+                            WorldPlaybackChannel.markCurrentHandleFailed(url);
+                            LOGGER.error("[MBM] playback of {} refused: previous playback generation still alive", url);
+                            return;
+                        }
                         this.currentlyPlayingPath = cachedPath;
                         LOGGER.debug("Started playing music from: {}", url);
                     } catch (Exception e) {
                         clearPlaybackState();
+                        WorldPlaybackChannel.markCurrentHandleFailed(url);
                         LOGGER.error("Failed to play music from: {}", url, e);
                     }
                 }
@@ -270,8 +298,10 @@ public class ExternalMusicHandler {
             long duration = getDurationMillis();
             long clamped = clampPosition(positionMillis, duration);
             this.playbackRequest.incrementAndGet();
-            this.player.play(path, 0, clamped, this.currentDurationHintMillis);
-            return true;
+            // K12-B: a refused generation makes the seek fail (not silently
+            // leave the old position) - the caller can retry
+            StreamMusicPlayer.PlayResult result = this.player.play(path, 0, clamped, this.currentDurationHintMillis);
+            return result == StreamMusicPlayer.PlayResult.STARTED;
         }
     }
 
@@ -283,8 +313,8 @@ public class ExternalMusicHandler {
             long duration = getPreviewDurationMillis();
             long clamped = clampPosition(positionMillis, duration);
             this.previewPlaybackRequest.incrementAndGet();
-            this.previewPlayer.play(path, 0, clamped, this.previewDurationHintMillis);
-            return true;
+            return this.previewPlayer.play(path, 0, clamped, this.previewDurationHintMillis)
+                    == StreamMusicPlayer.PlayResult.STARTED;
         }
     }
 
@@ -442,18 +472,21 @@ public class ExternalMusicHandler {
         return cache.getCachedFile(url);
     }
     
-    // K9-3/K10-C/K11-C: apply the persisted gains from config to both
-    // players. previewGain is the INDEPENDENT preview value and is never
-    // overwritten by follows-main (the switch only changes the runtime
-    // effective gain through the user-gain factor); toggling follows-main
-    // therefore preserves the user's independent preview volume.
+    // K9-3/K10-C/K11-C/K12-B: apply the persisted gains from config to both
+    // players. The final preview chain is userGain x previewGain, so the two
+    // runtime factors must never BOTH carry a volume when follows-main is on:
+    // following mirrors mainGain into userGain and pins previewGain to 1.0;
+    // independent mode pins userGain to 1.0 and uses the stored previewGain.
+    // The persisted previewGain config value is NEVER overwritten here - it is
+    // only restored when follows-main is off (same rule as the GUI toggle, so
+    // every entry point reaches the same effective gain).
     public void applyGainConfig() {
         double mainGain = MobBattleMusicConfig.CLIENT.mbmUserGain.get();
         double previewGain = MobBattleMusicConfig.CLIENT.previewGain.get();
         boolean follows = MobBattleMusicConfig.CLIENT.previewFollowsMain.get();
         this.player.setUserGain((float) mainGain);
-        this.previewPlayer.setPreviewGain((float) previewGain);
-        this.previewPlayer.setUserGain((float) (follows ? mainGain : 1.0));
+        this.previewPlayer.setUserGain(follows ? (float) mainGain : 1.0F);
+        this.previewPlayer.setPreviewGain(follows ? 1.0F : (float) previewGain);
     }
 
     public float getMainUserGain() {

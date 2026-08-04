@@ -45,6 +45,10 @@ public class PlaylistImportScreen extends Screen
 	// touching the rows (a closed/reopened/cleared screen must not receive
 	// stale results)
 	private int importGeneration;
+	// K11-D/K12-B: in-flight async parse tasks (directory traversal and file
+	// parsing); Confirm stays disabled while any parse is still running so a
+	// dropped batch commits atomically as a whole
+	private int pendingParseCount;
 	private Button confirmButton;
 	private Button cancelButton;
 	private Button clipboardButton;
@@ -59,7 +63,13 @@ public class PlaylistImportScreen extends Screen
 	{
 		NEW,
 		DUPLICATE,
-		INVALID
+		// K12-B: an input error (malformed URL / malformed JSON entry) that
+		// must abort the WHOLE transaction - the manager's importLocalPlan
+		// sees it and refuses to commit anything
+		BLOCKING_INVALID,
+		// K12-B: an informational row (local audio files cannot be streamed)
+		// that is excluded from the transaction instead of blocking it
+		INFORMATIONAL_UNSUPPORTED
 	}
 
 	// K11-D: rows know their origin so local-audio errors are never
@@ -167,9 +177,12 @@ public class PlaylistImportScreen extends Screen
 		// K10-D/K11-D: directory traversal AND file parsing both run on a
 		// background thread; the results are applied on the main thread
 		// guarded by the import generation (a cleared or closed screen never
-		// receives stale results)
+		// receives stale results). K12-B: every async task increments
+		// pendingParseCount so Confirm stays disabled until the whole dropped
+		// batch is parsed - the batch commits atomically.
 		if (java.nio.file.Files.isDirectory(file)) {
 			final int generation = this.importGeneration;
+			this.pendingParseCount++;
 			java.util.concurrent.CompletableFuture.supplyAsync(() -> {
 				java.util.List<Path> collected = new java.util.ArrayList<>();
 				try (java.util.stream.Stream<Path> walk = java.nio.file.Files.walk(file)) {
@@ -181,6 +194,7 @@ public class PlaylistImportScreen extends Screen
 				}
 				return collected;
 			}).thenAcceptAsync(collected -> {
+				this.pendingParseCount--;
 				if (generation != this.importGeneration)
 					return;
 				for (Path child : collected) {
@@ -191,15 +205,23 @@ public class PlaylistImportScreen extends Screen
 					this.addFile(child);
 				}
 				this.statusMessage = "Parsed folder " + file.getFileName();
+				this.refreshStatuses();
+				this.updateConfirmState();
 			}, Minecraft.getInstance());
 			return;
 		}
 		String name = file.getFileName() == null ? file.toString() : file.getFileName().toString();
 		String lower = name.toLowerCase(Locale.ROOT);
-		if (lower.endsWith(".m3u") || lower.endsWith(".m3u8") || lower.endsWith(".json")) {
+		if (lower.endsWith(".m3u") || lower.endsWith(".m3u8") || lower.endsWith(".json")
+				|| lower.endsWith(".txt")) {
+			// K12-B: .txt is parsed through the shared text parser (the
+			// fallback in parseFile) so isImportableFile's accepted set and
+			// the actual parse routing agree
 			final int generation = this.importGeneration;
+			this.pendingParseCount++;
 			java.util.concurrent.CompletableFuture.supplyAsync(() -> parseFile(file, name))
 					.thenAcceptAsync(lines -> {
+						this.pendingParseCount--;
 						if (generation != this.importGeneration)
 							return;
 						this.addLines(lines, name);
@@ -208,10 +230,12 @@ public class PlaylistImportScreen extends Screen
 						this.statusMessage = "Parsed " + name;
 					}, Minecraft.getInstance());
 		} else if (PlaylistImportParser.isAudioFile(lower)) {
-			// K10-D/K11-D: local audio files are visible as rows but cannot
-			// be streamed - marked INVALID with a dedicated reason that the
-			// URL validator never overwrites (SourceKind.LOCAL_AUDIO)
-			this.rows.add(new Row(file.toString(), name, null, SourceKind.LOCAL_AUDIO, RowStatus.INVALID,
+			// K10-D/K11-D/K12-B: local audio files are visible as rows but
+			// cannot be streamed - marked INFORMATIONAL_UNSUPPORTED with a
+			// dedicated reason (SourceKind.LOCAL_AUDIO), so they are excluded
+			// from the transaction instead of aborting it
+			this.rows.add(new Row(file.toString(), name, null, SourceKind.LOCAL_AUDIO,
+					RowStatus.INFORMATIONAL_UNSUPPORTED,
 					"local audio files cannot be streamed; use http(s) URLs"));
 			this.refreshStatuses();
 			this.updateConfirmState();
@@ -321,9 +345,13 @@ public class PlaylistImportScreen extends Screen
 				new java.util.LinkedHashMap<>();
 		for (Row row : this.rows) {
 			// K11-D: local-audio rows keep their dedicated error and are
-			// never re-validated as URLs
-			if (row.sourceKind == SourceKind.LOCAL_AUDIO)
+			// never re-validated as URLs (they are informational, not
+			// blocking, in K12-B)
+			if (row.sourceKind == SourceKind.LOCAL_AUDIO) {
+				row.status = RowStatus.INFORMATIONAL_UNSUPPORTED;
+				row.error = "local audio files cannot be streamed; use http(s) URLs";
 				continue;
+			}
 			MusicTracksManager.DynamicBinding target = row.binding != null ? row.binding : uiBinding;
 			List<String> existing = snapshots.get(target);
 			if (existing == null) {
@@ -333,7 +361,8 @@ public class PlaylistImportScreen extends Screen
 			java.util.Set<String> batch = batchSeen.computeIfAbsent(target, key -> new java.util.HashSet<>());
 			String reference = manager.normalizeReferenceForValidation(row.raw);
 			if (reference == null) {
-				row.status = RowStatus.INVALID;
+				// K12-B: input errors block the whole transaction
+				row.status = RowStatus.BLOCKING_INVALID;
 				row.error = "invalid music reference";
 			} else if (existing.contains(reference) || batch.contains(reference)) {
 				row.status = RowStatus.DUPLICATE;
@@ -383,28 +412,51 @@ public class PlaylistImportScreen extends Screen
 	private void updateConfirmState()
 	{
 		int newCount = 0;
-		for (Row row : this.rows)
+		int blockingInvalid = 0;
+		for (Row row : this.rows) {
 			if (row.status == RowStatus.NEW)
 				newCount++;
-		this.confirmButton.active = !this.rows.isEmpty() && newCount > 0;
+			else if (row.status == RowStatus.BLOCKING_INVALID)
+				blockingInvalid++;
+		}
+		// K12-B: Confirm needs at least one new row, NO blocking input errors,
+		// and no parse still in flight - a batch never commits half-parsed
+		this.confirmButton.active = !this.rows.isEmpty() && newCount > 0
+				&& blockingInvalid == 0 && this.pendingParseCount == 0;
 	}
 
 	private void commit()
 	{
 		MusicTracksManager.DynamicBinding uiBinding = currentBinding();
 		// K11-D: one transaction across all bindings - the manager validates
-		// the whole plan first and commits everything (or nothing)
+		// the whole plan first and commits everything (or nothing).
+		// K12-B: BLOCKING_INVALID rows are handed to the plan ON PURPOSE so
+		// the manager's atomic abort fires (any invalid reference -> nothing
+		// written across any binding). Only DUPLICATE and
+		// INFORMATIONAL_UNSUPPORTED rows are excluded from the plan.
 		java.util.Map<MusicTracksManager.DynamicBinding, List<String>> byBinding = new java.util.LinkedHashMap<>();
 		int skipped = 0;
+		int blockingInvalid = 0;
 		for (Row row : this.rows) {
-			if (row.status != RowStatus.NEW)
+			if (row.status == RowStatus.DUPLICATE || row.status == RowStatus.INFORMATIONAL_UNSUPPORTED) {
+				skipped++;
 				continue;
+			}
+			if (row.status == RowStatus.BLOCKING_INVALID)
+				blockingInvalid++;
 			MusicTracksManager.DynamicBinding target = row.binding != null ? row.binding : uiBinding;
 			if (target == null) {
 				skipped++;
 				continue;
 			}
 			byBinding.computeIfAbsent(target, key -> new java.util.ArrayList<>()).add(row.raw);
+		}
+		if (blockingInvalid > 0) {
+			this.statusMessage = "Import aborted: " + blockingInvalid
+					+ " invalid reference(s); nothing was changed";
+			this.refreshStatuses();
+			this.updateConfirmState();
+			return;
 		}
 		if (byBinding.isEmpty()) {
 			this.statusMessage = "Nothing to import" + (skipped > 0 ? " (" + skipped + " rows had no valid target)" : "");
@@ -432,7 +484,8 @@ public class PlaylistImportScreen extends Screen
 			int y = this.listTop + i * ROW_HEIGHT;
 			int color = switch (row.status) {
 				case DUPLICATE -> 0xFF8B929C;
-				case INVALID -> 0xFFE06C75;
+				case BLOCKING_INVALID -> 0xFFE06C75;
+				case INFORMATIONAL_UNSUPPORTED -> 0xFFE6C07A;
 				default -> 0xFF73D98A;
 			};
 			graphics.drawString(this.font, row.status.name().charAt(0) + " ", this.listLeft + 6, y + 4, color);
@@ -445,14 +498,16 @@ public class PlaylistImportScreen extends Screen
 			graphics.drawString(this.font, row.raw, this.listLeft + 24, y + 14, 0x8B929C);
 		}
 		int summaryY = this.listTop + this.listHeight + 58;
-		int newCount = 0, dupCount = 0, invalidCount = 0;
+		int newCount = 0, dupCount = 0, invalidCount = 0, infoCount = 0;
 		for (Row row : this.rows) {
 			if (row.status == RowStatus.NEW) newCount++;
 			else if (row.status == RowStatus.DUPLICATE) dupCount++;
-			else invalidCount++;
+			else if (row.status == RowStatus.BLOCKING_INVALID) invalidCount++;
+			else infoCount++;
 		}
-		graphics.drawString(this.font, String.format(Locale.ROOT, "%d new / %d duplicate / %d invalid",
-				newCount, dupCount, invalidCount), this.listLeft + 4, summaryY, 0xFFFFFF);
+		graphics.drawString(this.font, String.format(Locale.ROOT,
+				"%d new / %d duplicate / %d blocking / %d informational",
+				newCount, dupCount, invalidCount, infoCount), this.listLeft + 4, summaryY, 0xFFFFFF);
 		if (!this.filesInfo.isEmpty())
 			graphics.drawString(this.font, this.filesInfo.get(0), this.listLeft + 4, summaryY + 10, 0x8B929C);
 		if (!this.statusMessage.isEmpty())
@@ -478,6 +533,11 @@ public class PlaylistImportScreen extends Screen
 	@Override
 	public void onClose()
 	{
+		// K11-D/K12-B: closing invalidates every in-flight async parse so a
+		// stale future can never write into this (now detached) screen or
+		// hold its rows/widgets after close
+		this.importGeneration++;
+		this.pendingParseCount = 0;
 		Minecraft.getInstance().setScreen(this.parent);
 	}
 }

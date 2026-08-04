@@ -4,10 +4,23 @@ import javax.annotation.Nullable;
 
 public final class PlaybackHandle
 {
+	// K12-B: lifecycle state of the handle. PREPARING is created by
+	// adoptManualSelection BEFORE the async play request resolves; ACTIVE is
+	// set only once the line actually produces audio; FAILED when the request
+	// was refused (generation handoff) or the line/decode aborted. A handle
+	// must never claim ACTIVE playback it cannot back with a real source.
+	public enum State
+	{
+		PREPARING,
+		ACTIVE,
+		FAILED
+	}
+
 	private final String track;
 	private final long startedEpochMillis;
 	private volatile @Nullable SourceRef sourceRef;
 	private volatile boolean stopped;
+	private volatile State state = State.PREPARING;
 	
 	private PlaybackHandle(String track)
 	{
@@ -39,6 +52,21 @@ public final class PlaybackHandle
 	public void markStopped()
 	{
 		this.stopped = true;
+	}
+
+	public State state()
+	{
+		return this.state;
+	}
+
+	public void markActive()
+	{
+		this.state = State.ACTIVE;
+	}
+
+	public void markFailed()
+	{
+		this.state = State.FAILED;
 	}
 	
 	// AUD-17: source reference with stable entryKey + owning playlist revision

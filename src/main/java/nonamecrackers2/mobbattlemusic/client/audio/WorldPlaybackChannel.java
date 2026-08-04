@@ -732,6 +732,10 @@ public final class WorldPlaybackChannel
 	{
 		String url = handler.getCurrentlyPlayingUrl();
 		PlaybackHandle created = PlaybackHandle.create(url);
+		// K12-B: beginPlayback is only reached while the track is alive
+		// (hasActiveTrack / preparing) - the handle reflects real playback,
+		// not a hopeful request, so it is ACTIVE immediately
+		created.markActive();
 		MusicTracksManager manager = MusicTracksManager.getInstance();
 		MusicTracksManager.PlaybackTarget target = manager.resolvePlaybackTarget(url);
 		created.setSourceRef(target == null ? SourceRef.direct(url == null ? "" : url)
@@ -1071,5 +1075,24 @@ public final class WorldPlaybackChannel
 	public static @Nullable PlaybackHandle handle()
 	{
 		return WorldPlaybackChannel.handle;
+	}
+
+	// K12-B: mark the current handle ACTIVE only when its track matches the
+	// reported URL - a superseded request's result must not touch a newer
+	// handle. Called from the audio-I/O thread when the line produces audio.
+	public static void markCurrentHandleActive(String url)
+	{
+		PlaybackHandle active = WorldPlaybackChannel.handle;
+		if (active != null && active.track().equals(url))
+			active.markActive();
+	}
+
+	// K12-B: mark the current handle FAILED (generation refused / line or
+	// decode abort) so it never masquerades as active playback.
+	public static void markCurrentHandleFailed(String url)
+	{
+		PlaybackHandle active = WorldPlaybackChannel.handle;
+		if (active != null && active.track().equals(url))
+			active.markFailed();
 	}
 }

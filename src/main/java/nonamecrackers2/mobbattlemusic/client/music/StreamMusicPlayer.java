@@ -247,15 +247,47 @@ public class StreamMusicPlayer {
     }
 
     /**
+     * K12-B: synchronous outcome of a play request, plus the outcomes an
+     * actual generation reports back through the start-result listener.
+     * play() itself returns only STARTED / REFUSED_OLD_THREAD_ALIVE (the
+     * outcomes known at request time); FAILED_LINE / FAILED_DECODE are
+     * delivered asynchronously by the playback thread.
+     */
+    public enum PlayResult {
+        STARTED,
+        REFUSED_OLD_THREAD_ALIVE,
+        FAILED_LINE,
+        FAILED_DECODE
+    }
+
+    /**
+     * K12-B: one-shot notification of how a generation actually started.
+     * STARTED is published on the playback thread once the line has opened and
+     * audio is flowing; FAILED_LINE / FAILED_DECODE carry the throwable that
+     * aborted the start. The listener is cleared after the first delivery.
+     */
+    public interface StartResultListener {
+        void onStartResult(long generation, PlayResult result, Throwable failure);
+    }
+
+    // K12-B: registered by the caller (handler) before play(); delivered on
+    // the playback thread, cleared after one delivery so it never leaks
+    private volatile StartResultListener startResultListener;
+
+    public void setStartResultListener(StartResultListener listener) {
+        this.startResultListener = listener;
+    }
+
+    /**
      * Play an MP3 stream with fade-in
      * @param inputStream The MP3 input stream
      * @param fadeTimeInTicks Fade-in time in ticks (20 ticks = 1 second)
      */
-    public void play(Path file, int fadeTimeInTicks) {
-        play(file, fadeTimeInTicks, 0L, 0L);
+    public PlayResult play(Path file, int fadeTimeInTicks) {
+        return play(file, fadeTimeInTicks, 0L, 0L);
     }
 
-    public void play(Path file, int fadeTimeInTicks, long startPositionMillis, long durationHintMillis) {
+    public PlayResult play(Path file, int fadeTimeInTicks, long startPositionMillis, long durationHintMillis) {
         this.fadeTime = fadeTimeInTicks;
         // AUD-54: count play() invocations (probe ring)
         this.playCalls.incrementAndGet();
@@ -268,25 +300,25 @@ public class StreamMusicPlayer {
         StreamMusicPlayer.pendingTrackFadeInSetAtMillis = 0L;
         this.trackEnv.setTarget(0.0f, 0L);
         this.trackEnv.setTarget(1.0f, fadeInMillis);
-        startPlayback(file, startPositionMillis, durationHintMillis);
+        return startPlayback(file, startPositionMillis, durationHintMillis);
     }
     
     /**
      * Play an MP3 stream without fade-in
      * @param inputStream The MP3 input stream
      */
-    public void play(Path file) {
-        play(file, 0);
+    public PlayResult play(Path file) {
+        return play(file, 0);
     }
 
-    private void startPlayback(Path file, long startPositionMillis, long durationHintMillis) {
+    private PlayResult startPlayback(Path file, long startPositionMillis, long durationHintMillis) {
         // K8-B: the new generation must not open a line while the old one is
         // still alive - cancel the old generation, close its line (close-once)
         // and wait for the old playback thread to exit. K11-C: a thread that
         // does not exit within the bound REFUSES the new generation - the
         // single-line/single-thread invariant is strict.
         if (!stopAndAwaitThreadExit())
-            return;
+            return PlayResult.REFUSED_OLD_THREAD_ALIVE;
         long generationId = playbackGeneration.incrementAndGet();
         PlaybackGeneration generation = new PlaybackGeneration(generationId);
         this.currentGeneration = generation;
@@ -408,6 +440,9 @@ public class StreamMusicPlayer {
                         LOGGER.debug("Starting audio line...");
                         playbackLine.start();
                         LOGGER.debug("Audio line started");
+                        // K12-B: the line is open and producing audio - the
+                        // start succeeded (published exactly once)
+                        publishStartResult(generation, PlayResult.STARTED, null);
                 
                         // Play the audio
                         byte[] buffer = new byte[BUFFER_SIZE];
@@ -553,6 +588,13 @@ public class StreamMusicPlayer {
             } catch (Throwable e) {
                 if (generation == this.currentGeneration) {
                     LOGGER.error("Error playing MP3 stream: {}", e.getMessage(), e);
+                    // K12-B: the current generation aborted before (or during)
+                    // audible output - classify line vs decode and publish the
+                    // failure exactly once so the handler can mark the handle
+                    // FAILED instead of pretending playback is active
+                    PlayResult failure = generation.line == null
+                            ? PlayResult.FAILED_LINE : PlayResult.FAILED_DECODE;
+                    publishStartResult(generation, failure, e);
                 } else if (isExpectedCancel(e)) {
                     // K8-B: an expected line-closed exception from a
                     // generation cancelled by stop()/switch is debug-level
@@ -587,6 +629,24 @@ public class StreamMusicPlayer {
         playbackThread.setDaemon(true);
         playbackThread.start();
         LOGGER.debug("Playback thread started");
+        return PlayResult.STARTED;
+    }
+
+    /**
+     * K12-B: deliver the start result to the registered listener, exactly
+     * once per generation. The listener field is cleared on delivery so a
+     * stale one-shot never fires for a later generation.
+     */
+    private void publishStartResult(PlaybackGeneration generation, PlayResult result, Throwable failure) {
+        StartResultListener listener = this.startResultListener;
+        if (listener == null)
+            return;
+        this.startResultListener = null;
+        try {
+            listener.onStartResult(generation.id, result, failure);
+        } catch (Throwable t) {
+            LOGGER.error("[MBM] start-result listener threw", t);
+        }
     }
     
     /**
