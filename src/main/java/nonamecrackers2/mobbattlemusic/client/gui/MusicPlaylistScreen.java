@@ -63,6 +63,9 @@ public class MusicPlaylistScreen extends Screen
 	private final Screen parent;
 	private final EditMode editMode;
 	private final List<Row> rows = new ArrayList<>();
+	// K15-A: the full unfiltered/unmerged row list (music-first navigation
+	// resolves uses from here even when the visible list is grouped)
+	private final List<Row> allRowsCached = new ArrayList<>();
 	private final List<NeteaseMusicSearch.Song> searchRows = new ArrayList<>();
 	private PlaylistScreenLayout layout;
 	private PlaylistSelectionList<ResourceLocation> playlistList;
@@ -120,6 +123,8 @@ public class MusicPlaylistScreen extends Screen
 	// K13-C: manual song selection - plays the selected row through the
 	// preview player while covering the main channel
 	private Button coverPlayButton;
+	// K15-A: music-first grouping toggle
+	private Button groupByTrackButton;
 	// K9-3: volume popup state - two sliders + preview-follows-main toggle
 	private boolean volumePanelOpen;
 	private float mainGainValue = 1.0F;
@@ -273,6 +278,9 @@ public class MusicPlaylistScreen extends Screen
 			loadSelectedSettings(true);
 			updateButtonState();
 		});
+		// K15-A: music-first grouping toggle (merge same-track rows)
+		this.groupByTrackButton = this.addRenderableWidget(Button.builder(groupByTrackLabel(), b -> toggleGroupByTrack())
+				.bounds(sidebar.innerX(), sidebar.innerY() + 34, sidebar.innerWidth(), 18).build());
 		int ix = inspector.innerX();
 		int iy = inspector.innerY();
 		int iw = inspector.innerWidth();
@@ -448,7 +456,12 @@ public class MusicPlaylistScreen extends Screen
 	private void rebuildRows()
 	{
 		this.rows.clear();
+		this.allRowsCached.clear();
 		MusicTracksManager manager = MusicTracksManager.getInstance();
+		// K15-A: group-by-track view merges every use of the same song into
+		// one row (music-first); the details inspector then shows the uses
+		boolean groupByTrack = state().groupByTrack;
+		java.util.Map<String, Row> byTrack = new java.util.LinkedHashMap<>();
 		for (MusicTracksManager.ExternalPlaylist playlist : manager.getSelectablePlaylists()) {
 			String context = manager.describeTrackContext(playlist.configLocation());
 			MusicTracksManager.DynamicBinding binding = manager.editableBinding(playlist.configLocation());
@@ -459,9 +472,17 @@ public class MusicPlaylistScreen extends Screen
 				MusicMetadata metadata = MusicMetadataCache.getInstance().get(entry.url()).orElse(null);
 				String title = metadata == null ? entry.name() : metadata.displayTitle(entry.name());
 				String artist = metadata == null ? "" : metadata.displayArtist();
-				this.rows.add(new Row(playlist.configLocation(), context, binding, source, i, entry, title, artist));
+				Row row = new Row(playlist.configLocation(), context, binding, source, i, entry, title, artist);
+				this.allRowsCached.add(row);
+				if (groupByTrack) {
+					byTrack.putIfAbsent(row.trackId(), row);
+				} else {
+					this.rows.add(row);
+				}
 			}
 		}
+		if (groupByTrack)
+			this.rows.addAll(byTrack.values());
 		String filter = state().libraryFilter.trim().toLowerCase(Locale.ROOT);
 		if (!filter.isBlank()) {
 			List<String> terms = List.of(filter.split("\\s+"));
@@ -521,8 +542,7 @@ public class MusicPlaylistScreen extends Screen
 			String uses = nonamecrackers2.mobbattlemusic.client.resource.TrackAssetRegistry
 					.usesDisplay(row.entry().id());
 			String subtitle = row.context() + "  #" + (row.index() + 1) +
-					(uses.isBlank() ? "" : "  [" + uses + "]");
-			trackModels.add(new PlaylistSelectionList.Model<>(row.playlist() + "#" + row.index(), row,
+					(uses.isBlank() ? "" : "  [" + uses + "]");			trackModels.add(new PlaylistSelectionList.Model<>(row.playlist() + "#" + row.index(), row,
 					Component.literal(row.title()), Component.literal(subtitle),
 					trackStatus(row), selectedRowEditable(row), selectedRowEditable(row),
 					this.selectedRowSet.contains(row.playlist() + "#" + row.entry().url())));
@@ -613,6 +633,23 @@ public class MusicPlaylistScreen extends Screen
 			this.multiSelectButton.setMessage(Component.literal(this.multiSelectActive ? "Batch: on" : "Batch: off"));
 		this.refreshSelectionLists();
 		this.updateButtonState();
+	}
+
+	// K15-A: switch between binding-entry view and music-first (grouped) view
+	private void toggleGroupByTrack()
+	{
+		state().groupByTrack = !state().groupByTrack;
+		if (this.groupByTrackButton != null)
+			this.groupByTrackButton.setMessage(groupByTrackLabel());
+		this.rebuildRows();
+		this.selected = this.rows.isEmpty() ? -1 : clamp(this.selected, 0, this.rows.size() - 1);
+		this.loadSelectedSettings(true);
+		this.updateButtonState();
+	}
+
+	private Component groupByTrackLabel()
+	{
+		return text(state().groupByTrack ? "group.by_track" : "group.by_use");
 	}
 
 	private void selectSearchSong(NeteaseMusicSearch.Song song)
@@ -808,6 +845,21 @@ public class MusicPlaylistScreen extends Screen
 					x, y + 51, 0xFF9AA2AD, false);
 			graphics.drawString(this.font, trimPixels(text("detail.source_value", editableLabel(row)).getString(), width), x, y + 64,
 					0xFF9AA2AD, false);
+			// K15-A: music-first - show every OTHER use of this track; each
+			// entry jumps to that binding's row
+			java.util.List<Row> uses = rowsUsingSameTrack(row.trackId(), row);
+			if (!uses.isEmpty()) {
+				graphics.drawString(this.font, text("detail.uses"), x, y + 80, 0xFF9AA2AD, false);
+				int useY = y + 92;
+				for (Row use : uses) {
+					boolean hovered = mouseX >= x && mouseX < x + width && mouseY >= useY && mouseY < useY + 14;
+					graphics.drawString(this.font, trimPixels(use.context() + "  #" + (use.index() + 1), width - 4),
+							x + 3, useY, hovered ? 0xFFE5C07B : 0xFFD6D9DE, false);
+					if (hovered)
+						graphics.fill(x, useY - 1, x + width, useY + 13, 0x44253847);
+					useY += 14;
+				}
+			}
 			graphics.drawString(this.font, text("field.priority"), x, detailFieldsY() - 12, 0xFF9AA2AD, false);
 			if (this.intervalBox.visible)
 				graphics.drawString(this.font, text("field.interval"), x + (width / 2) + 2,
@@ -1183,11 +1235,39 @@ public class MusicPlaylistScreen extends Screen
 		}
 		if (seekPreview(mouseX, mouseY))
 			return true;
+		// K15-A: click a "also used in" entry in the details inspector
+		if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT && clickUseNav(mouseX, mouseY))
+			return true;
 		if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT && clickConditionRow(mouseX, mouseY))
 			return true;
 		if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT && clickDock(mouseX, mouseY))
 			return true;
 		return super.mouseClicked(mouseX, mouseY, button);
+	}
+
+	// K15-A: the details inspector lists every other use of the selected
+	// track; clicking one jumps the selection to that binding's row
+	private boolean clickUseNav(double mouseX, double mouseY)
+	{
+		if (this.viewMode != ViewMode.LIBRARY || this.inspectorPage != InspectorPage.DETAILS)
+			return false;
+		Row row = selectedRow();
+		if (row == null)
+			return false;
+		int x = this.layout.inspector().innerX();
+		int width = this.layout.inspector().innerWidth();
+		java.util.List<Row> uses = rowsUsingSameTrack(row.trackId(), row);
+		if (uses.isEmpty())
+			return false;
+		int y = this.layout.inspector().innerY() + 92;
+		for (Row use : uses) {
+			if (mouseX >= x && mouseX < x + width && mouseY >= y && mouseY < y + 14) {
+				jumpToUse(use);
+				return true;
+			}
+			y += 14;
+		}
+		return false;
 	}
 
 	@Override
@@ -1720,6 +1800,10 @@ public class MusicPlaylistScreen extends Screen
 			this.refreshButton.visible = true;
 		if (this.copyUrlButton != null)
 			this.copyUrlButton.visible = !library && this.inspectorPage == InspectorPage.DETAILS;
+		if (this.groupByTrackButton != null) {
+			this.groupByTrackButton.visible = library;
+			this.groupByTrackButton.active = library;
+		}
 		if (this.previousPageButton != null)
 			this.previousPageButton.visible = !library;
 		if (this.nextPageButton != null)
@@ -1841,6 +1925,60 @@ public class MusicPlaylistScreen extends Screen
 	private Row selectedRow()
 	{
 		return this.selected < 0 || this.selected >= this.rows.size() ? null : this.rows.get(this.selected);
+	}
+
+	// K15-A: rows for every use of this track (music-first navigation).
+	// Non-grouped view: other rows with the same trackId. Grouped view: the
+	// merged row represents the track, so the navigation lists the track's
+	// uses from the registry (each jumps to that binding's row, which exists
+	// in the underlying data even when not shown as separate rows).
+	private java.util.List<Row> rowsUsingSameTrack(String trackId, Row self)
+	{
+		if (trackId == null || trackId.isBlank())
+			return List.of();
+		if (!state().groupByTrack) {
+			java.util.List<Row> result = new java.util.ArrayList<>();
+			for (Row row : this.rows) {
+				if (row == self)
+					continue;
+				if (trackId.equals(row.trackId()))
+					result.add(row);
+			}
+			return result;
+		}
+		// grouped view: collect rows by URL from the full row list is
+		// impossible (they are merged), so resolve through the registry
+		java.util.List<Row> result = new java.util.ArrayList<>();
+		for (var binding : nonamecrackers2.mobbattlemusic.client.resource.TrackAssetRegistry.bindingsFor(trackId)) {
+			for (Row row : this.allRowsCached) {
+				if (row.binding() != null && row.binding().equals(binding))
+					result.add(row);
+			}
+		}
+		return result;
+	}
+
+	// K15-A: jump the selection to the row of another use of the same track.
+	// In grouped view the target row may not be visible - switch to the
+	// by-use view first so the binding row exists.
+	private void jumpToUse(Row target)
+	{
+		if (state().groupByTrack) {
+			state().groupByTrack = false;
+			if (this.groupByTrackButton != null)
+				this.groupByTrackButton.setMessage(groupByTrackLabel());
+			this.rebuildRows();
+		}
+		int index = this.rows.indexOf(target);
+		if (index < 0)
+			return;
+		this.selected = index;
+		this.selectedPlaylist = target.playlist();
+		state().selected = index;
+		state().selectedPlaylist = target.playlist().toString();
+		this.loadSelectedSettings(true);
+		this.refreshSelectionLists();
+		this.updateButtonState();
 	}
 
 	// K9-1: called by PlaylistImportScreen after an atomic commit
@@ -2727,6 +2865,8 @@ public class MusicPlaylistScreen extends Screen
 		private int searchPage;
 		private boolean searchHasNext;
 		private List<NeteaseMusicSearch.Song> searchRows = List.of();
+		// K15-A: music-first grouping - merge same-track rows into one
+		private boolean groupByTrack;
 	}
 
 	private record CompletionPopup(EditBox box, List<String> matches, int x, int y, int width, int height)
@@ -2746,5 +2886,18 @@ public class MusicPlaylistScreen extends Screen
 	
 	private static record Row(ResourceLocation playlist, String context, MusicTracksManager.DynamicBinding binding,
 			MusicTracksManager.DynamicSource source, int index,
-			MusicTracksManager.ExternalPlaylistEntry entry, String title, String artist) {}
+			MusicTracksManager.ExternalPlaylistEntry entry, String title, String artist)
+	{
+		// K15-A: the stable song identity (same URL -> same trackId across
+		// every binding) - the music-first key
+		String trackId()
+		{
+			return this.entry.id();
+		}
+
+		String key()
+		{
+			return this.playlist + "#" + this.index;
+		}
+	}
 }
