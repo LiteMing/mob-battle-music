@@ -18,8 +18,12 @@ public class MobBattleMusicNetwork
 	private static final SimpleChannel CHANNEL = NetworkRegistry.ChannelBuilder
 			.named(MobBattleMusicMod.id("main"))
 			.networkProtocolVersion(() -> PROTOCOL_VERSION)
-			.clientAcceptedVersions(PROTOCOL_VERSION::equals)
-			.serverAcceptedVersions(PROTOCOL_VERSION::equals)
+			// K14-A: optional channel - a peer WITHOUT MBM connects fine
+			// (mods.toml displayTest already ignores mod version presence);
+			// a peer WITH MBM must match protocol 16 exactly, otherwise the
+			// handshake rejects (never fall back to version -> true)
+			.clientAcceptedVersions(NetworkRegistry.acceptMissingOr(PROTOCOL_VERSION::equals))
+			.serverAcceptedVersions(NetworkRegistry.acceptMissingOr(PROTOCOL_VERSION::equals))
 			.simpleChannel();
 	
 	public static void register()
@@ -100,69 +104,120 @@ public class MobBattleMusicNetwork
 				.add();
 	}
 	
+	// K14-A: does the remote end of this player's connection have the MBM
+	// channel? False for vanilla/no-MBM peers - ALL S2C sends must be
+	// guarded by this, otherwise an unmodded client logs "Unknown custom
+	// packet identifier" for every MBM payload.
+	public static boolean remoteHasChannel(ServerPlayer player)
+	{
+		if (player == null || player.connection == null)
+			return false;
+		// Forge dev mapping: ServerGamePacketListenerImpl.connection is the
+		// net.minecraft.network.Connection (public field, SRG-mapped)
+		net.minecraft.network.Connection connection = player.connection.connection;
+		return connection != null && CHANNEL.isRemotePresent(connection);
+	}
+
+	// K14-A: does the server we are connected to have the MBM channel?
+	// False for vanilla/no-MBM servers - ALL C2S sends must be guarded by
+	// this (catalog, sync request, clock probes, marker hits, start reports).
+	public static boolean localServerHasChannel()
+	{
+		net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+		if (mc.getConnection() == null || mc.getConnection().getConnection() == null)
+			return false;
+		return CHANNEL.isRemotePresent(mc.getConnection().getConnection());
+	}
+
 	public static void sendExternalPlaylistControl(ServerPlayer player, ExternalPlaylistControlPacket packet)
 	{
+		if (!remoteHasChannel(player))
+			return;
 		CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), packet);
 	}
 	
 	public static void sendServerExternalPlaylistSync(ServerPlayer player, ServerExternalPlaylistSyncPacket packet)
 	{
+		if (!remoteHasChannel(player))
+			return;
 		CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), packet);
 	}
 	
 	public static void sendExternalPlaylistCatalogToServer(ExternalPlaylistCatalogPacket packet)
 	{
+		if (!localServerHasChannel())
+			return;
 		CHANNEL.sendToServer(packet);
 	}
 	
 	public static void requestServerExternalPlaylistSync()
 	{
+		if (!localServerHasChannel())
+			return;
 		CHANNEL.sendToServer(new ServerExternalPlaylistSyncRequestPacket());
 	}
 	
 	public static void sendAggressiveEntityState(ServerPlayer player, AggressiveEntityStatePacket packet)
 	{
+		if (!remoteHasChannel(player))
+			return;
 		CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), packet);
 	}
 
 	public static void openPlaylistGui(ServerPlayer player)
 	{
+		if (!remoteHasChannel(player))
+			return;
 		CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new OpenPlaylistGuiPacket());
 	}
 
 	public static void sendIdleConditionState(ServerPlayer player, IdleConditionStatePacket packet)
 	{
+		if (!remoteHasChannel(player))
+			return;
 		CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), packet);
 	}
 
 	public static void sendTimelineMarkerHit(TimelineMarkerHitPacket packet)
 	{
+		if (!localServerHasChannel())
+			return;
 		CHANNEL.sendToServer(packet);
 	}
 
 	public static void reportPlayerCombatSession(java.util.UUID opponent)
 	{
+		if (!localServerHasChannel())
+			return;
 		CHANNEL.sendToServer(new PlayerCombatSessionReportPacket(opponent));
 	}
 
 	public static void sendPlayerCombatSessionState(ServerPlayer player, PlayerCombatSessionStatePacket packet)
 	{
+		if (!remoteHasChannel(player))
+			return;
 		CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), packet);
 	}
 
 	public static void sendPlaybackStartReport(String trackId, long clientStartEpochMillis, long sessionGeneration)
 	{
+		if (!localServerHasChannel())
+			return;
 		CHANNEL.sendToServer(new PlaybackStartReportPacket(trackId, clientStartEpochMillis, sessionGeneration));
 	}
 
 	// K7-B: the bounded probe burst - called by ClockOffsetProbeScheduler
 	public static void sendClockProbeRequest(ClockOffsetProbeRequestPacket packet)
 	{
+		if (!localServerHasChannel())
+			return;
 		CHANNEL.sendToServer(packet);
 	}
 
 	public static void sendPlaybackClockSync(ServerPlayer player, PlaybackClockSyncPacket packet)
 	{
+		if (!remoteHasChannel(player))
+			return;
 		CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), packet);
 	}
 
@@ -199,6 +254,8 @@ public class MobBattleMusicNetwork
 
 	private static void sendClockProbeResponse(ServerPlayer player, ClockOffsetProbeResponsePacket packet)
 	{
+		if (!remoteHasChannel(player))
+			return;
 		CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), packet);
 	}
 	
