@@ -307,6 +307,26 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		MusicTracksManager.bumpAllPlaylistRevisions();
 		// AUD-20 v1.1: entries may have vanished with the reload
 		this.stopPreviewIfInvalid();
+		// K15-A: rebuild the music-first TrackAsset registry from every source
+		this.registerAllAssets();
+	}
+
+	/**
+	 * K15-A: register every known source URL as a TrackAsset (one asset per
+	 * URL, shared across all bindings). This is the identity layer for the
+	 * music-first authoring model - the runtime selection keeps its
+	 * condition-first index; this registry answers "which bindings use this
+	 * song?".
+	 */
+	private void registerAllAssets()
+	{
+		TrackAssetRegistry.clear();
+		for (ExternalPlaylist playlist : this.externalPlaylistsByTrack.values()) {
+			MusicTracksManager.DynamicBinding binding = this.editableBinding(playlist.configLocation());
+			for (ExternalPlaylistEntry entry : playlist.entries()) {
+				TrackAssetRegistry.register(entry.url(), entry.name());
+			}
+		}
 	}
 
 	private static void insert(List<TrackType> list, TrackType track, int index) {

@@ -516,9 +516,14 @@ public class MusicPlaylistScreen extends Screen
 		for (Row row : this.rows) {
 			if (this.selectedPlaylist != null && !this.selectedPlaylist.equals(row.playlist()))
 				continue;
-			// K13-A: batch-mode check marks (last arg)
+			// K13-A/K15-A: batch-mode check marks (last arg); subtitle shows
+			// the music-first uses ("where else is this song used?")
+			String uses = nonamecrackers2.mobbattlemusic.client.resource.TrackAssetRegistry
+					.usesDisplay(row.entry().id());
+			String subtitle = row.context() + "  #" + (row.index() + 1) +
+					(uses.isBlank() ? "" : "  [" + uses + "]");
 			trackModels.add(new PlaylistSelectionList.Model<>(row.playlist() + "#" + row.index(), row,
-					Component.literal(row.title()), Component.literal(row.context() + "  #" + (row.index() + 1)),
+					Component.literal(row.title()), Component.literal(subtitle),
 					trackStatus(row), selectedRowEditable(row), selectedRowEditable(row),
 					this.selectedRowSet.contains(row.playlist() + "#" + row.entry().url())));
 		}
