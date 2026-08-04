@@ -199,6 +199,7 @@
 	"gui.mobbattlemusic.playlist.group.tracks": "%s 首曲目",
 	"gui.mobbattlemusic.playlist.group.by_track": "分组：按曲目",
 	"gui.mobbattlemusic.playlist.group.by_use": "分组：按用途",
+	"gui.mobbattlemusic.playlist.group.select_use_hint": "曲目视图 - 点击下方具体用途进行编辑",
 	"gui.mobbattlemusic.playlist.inspector.details": "详情",
 	"gui.mobbattlemusic.playlist.inspector.binding": "绑定",
 	"gui.mobbattlemusic.playlist.inspector.conditions": "条件",

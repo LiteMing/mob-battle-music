@@ -199,6 +199,7 @@
 	"gui.mobbattlemusic.playlist.group.tracks": "%s tracks",
 	"gui.mobbattlemusic.playlist.group.by_track": "Group: by track",
 	"gui.mobbattlemusic.playlist.group.by_use": "Group: by use",
+	"gui.mobbattlemusic.playlist.group.select_use_hint": "Asset view - pick a use below to edit it",
 	"gui.mobbattlemusic.playlist.inspector.details": "Details",
 	"gui.mobbattlemusic.playlist.inspector.binding": "Binding",
 	"gui.mobbattlemusic.playlist.inspector.conditions": "Conditions",

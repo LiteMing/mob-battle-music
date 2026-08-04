@@ -59,7 +59,8 @@ public final class TrackAssetRegistry
 					ASSETS.put(trackId, asset.withTitle(entry.name()));
 				}
 				TrackUse use = new TrackUse(trackId, playlist.configLocation(), entry.id(), binding,
-						i, entry.conditions(), entry.url());
+						i, List.copyOf(entry.conditions()), entry.url(),
+						occurrenceIn(playlist.configLocation(), entry.id(), i));
 				USES_BY_TRACK.computeIfAbsent(trackId, key -> new ArrayList<>()).add(use);
 			}
 		}
@@ -114,19 +115,27 @@ public final class TrackAssetRegistry
 	/**
 	 * K15-A: human-readable uses of a track ("aggressive/remilia",
 	 * "scene idle", "idle rule foo") - O(1) via the reverse index.
+	 * K15-E: duplicate uses of the same song in the same binding are shown
+	 * once with a count (aggressive/remilia x2), not repeated.
 	 */
 	public static String usesDisplay(String trackId)
 	{
 		List<TrackUse> uses = usesFor(trackId);
 		if (uses.isEmpty())
 			return "";
-		StringBuilder builder = new StringBuilder();
+		Map<String, Integer> counts = new LinkedHashMap<>();
 		for (TrackUse use : uses) {
 			if (use.binding() == null)
 				continue;
+			counts.merge(use.binding().displayName(), 1, Integer::sum);
+		}
+		StringBuilder builder = new StringBuilder();
+		for (Map.Entry<String, Integer> entry : counts.entrySet()) {
 			if (!builder.isEmpty())
 				builder.append(" | ");
-			builder.append(use.binding().displayName());
+			builder.append(entry.getKey());
+			if (entry.getValue() > 1)
+				builder.append(" x").append(entry.getValue());
 		}
 		return builder.toString();
 	}
@@ -159,14 +168,34 @@ public final class TrackAssetRegistry
 	 * K15-C: ONE concrete use of a track in one playlist entry. useId is
 	 * stable across reorders (playlist + entryId); entryIndex is the current
 	 * display position only.
+	 * K15-E: occurrenceOrdinal distinguishes the SAME url appearing twice in
+	 * one playlist - playlist+entryId alone cannot (both have the same SHA-1).
+	 * It is a compatibility fallback until a persisted assignmentId exists.
 	 */
 	public record TrackUse(String trackId, ResourceLocation playlistId, String entryId,
 			@Nullable MusicTracksManager.DynamicBinding binding, int entryIndex,
-			List<IdleCondition> entryConditions, String url)
+			List<IdleCondition> entryConditions, String url, int occurrenceOrdinal)
 	{
 		public String useId()
 		{
-			return this.playlistId + "#" + this.entryId;
+			return this.playlistId + "#" + this.entryId + "#" + this.occurrenceOrdinal;
 		}
+	}
+
+	// K15-E: the occurrence number of (playlist, entryId) among entries 0..i
+	// (inclusive) - duplicate URLs in one playlist get distinct ordinals
+	private static int occurrenceIn(ResourceLocation playlistId, String entryId, int upToIndex)
+	{
+		MusicTracksManager manager = MusicTracksManager.getInstance();
+		int count = 0;
+		for (MusicTracksManager.ExternalPlaylist playlist : manager.getExternalPlaylists()) {
+			if (!playlist.configLocation().equals(playlistId))
+				continue;
+			for (int i = 0; i <= upToIndex && i < playlist.entries().size(); i++) {
+				if (playlist.entries().get(i).id().equals(entryId))
+					count++;
+			}
+		}
+		return count - 1;
 	}
 }

@@ -660,15 +660,27 @@ public class MusicPlaylistScreen extends Screen
 	// K15-A: switch between binding-entry view and music-first (grouped) view
 	private void toggleGroupByTrack()
 	{
-		// K15-C: keep the selection across the switch by track identity
+		// K15-E: keep the selection across the switch by use identity
 		Row current = selectedRow();
+		String keepUseKey = current == null ? null : current.playlist() + "#" + current.entry().id() + "#" + current.index();
 		String keepTrackId = current == null ? null : current.trackId();
+		ResourceLocation keepPlaylist = current == null ? null : current.playlist();
 		state().groupByTrack = !state().groupByTrack;
 		if (this.groupByTrackButton != null)
 			this.groupByTrackButton.setMessage(groupByTrackLabel());
 		this.rebuildRows();
 		this.selected = -1;
-		if (keepTrackId != null) {
+		if (keepUseKey != null) {
+			for (int i = 0; i < this.rows.size(); i++) {
+				Row row = this.rows.get(i);
+				String key = row.playlist() + "#" + row.entry().id() + "#" + row.index();
+				if (key.equals(keepUseKey)) {
+					this.selected = i;
+					break;
+				}
+			}
+		}
+		if (this.selected < 0 && keepTrackId != null) {
 			for (int i = 0; i < this.rows.size(); i++) {
 				if (keepTrackId.equals(this.rows.get(i).trackId())) {
 					this.selected = i;
@@ -676,8 +688,22 @@ public class MusicPlaylistScreen extends Screen
 				}
 			}
 		}
+		if (this.selected < 0 && keepPlaylist != null && !state().groupByTrack) {
+			for (int i = 0; i < this.rows.size(); i++) {
+				if (keepPlaylist.equals(this.rows.get(i).playlist())) {
+					this.selected = i;
+					break;
+				}
+			}
+		}
 		if (this.selected < 0 && !this.rows.isEmpty())
 			this.selected = 0;
+		Row restored = this.selected >= 0 && this.selected < this.rows.size() ? this.rows.get(this.selected) : null;
+		if (restored != null) {
+			this.selectedPlaylist = restored.playlist();
+			state().selected = this.selected;
+			state().selectedPlaylist = restored.playlist().toString();
+		}
 		this.loadSelectedSettings(true);
 		this.updateButtonState();
 	}
@@ -872,10 +898,18 @@ public class MusicPlaylistScreen extends Screen
 			graphics.drawString(this.font, text("select_track"), x, y + 28, 0xFF9AA2AD, false);
 			return;
 		}
+		// K15-E: grouped (by-track) view is asset-level - editing requires a
+		// concrete use; show the hint in every inspector page
+		boolean grouped = this.viewMode == ViewMode.LIBRARY && state().groupByTrack;
 		if (this.inspectorPage == InspectorPage.DETAILS) {
 			graphics.drawString(this.font, trimPixels(row.title(), width), x, y + 24, 0xFFF0F1F2, false);
-			graphics.drawString(this.font, trimPixels(row.artist().isBlank() ? row.context() : row.artist(), width),
-					x, y + 37, 0xFFB8C0CA, false);
+			// K15-E: asset-level hint - grouped rows cannot be edited directly
+			if (grouped) {
+				graphics.drawString(this.font, text("group.select_use_hint"), x, y + 37, 0xFFE6C07A, false);
+			} else {
+				graphics.drawString(this.font, trimPixels(row.artist().isBlank() ? row.context() : row.artist(), width),
+						x, y + 37, 0xFFB8C0CA, false);
+			}
 			graphics.drawString(this.font, trimPixels(text("detail.playlist", row.playlist()).getString(), width),
 					x, y + 51, 0xFF9AA2AD, false);
 			graphics.drawString(this.font, trimPixels(text("detail.source_value", editableLabel(row)).getString(), width), x, y + 64,
@@ -1864,7 +1898,13 @@ public class MusicPlaylistScreen extends Screen
 	{
 		Row selected = selectedRow();
 		boolean hasTrack = this.viewMode == ViewMode.LIBRARY && selected != null;
-		boolean editable = hasTrack && selectedRowEditable();
+		// K15-E: in grouped (by-track) view the row is an ASSET, not a use -
+		// use-level editing (binding/conditions/priority/delete/timeline) is
+		// forbidden here so it can never silently mutate the representative
+		// use. Only asset-level actions (preview / cover / use navigation)
+		// remain; pick a concrete use in by-use view to edit it.
+		boolean grouped = this.viewMode == ViewMode.LIBRARY && state().groupByTrack;
+		boolean editable = hasTrack && selectedRowEditable() && !grouped;
 		boolean idle = editable && selected.binding() != null && "idle".equals(selected.binding().scene());
 		boolean details = this.inspectorPage == InspectorPage.DETAILS;
 		boolean binding = this.inspectorPage == InspectorPage.BINDING;
@@ -1981,22 +2021,30 @@ public class MusicPlaylistScreen extends Screen
 		for (var use : nonamecrackers2.mobbattlemusic.client.resource.TrackAssetRegistry.usesFor(trackId)) {
 			Row match = null;
 			if (!state().groupByTrack) {
-				// by-use view: all rows for this track except the selected one
+				// by-use view: all rows for this track except the selected one;
+				// the occurrence ordinal disambiguates duplicate urls in one
+				// playlist (both have the same entryId) - count over the FULL
+				// row order (self included) so the ordinal stays correct
+				int ordinal = 0;
 				for (Row row : this.rows) {
-					if (row == self)
-						continue;
-					if (trackId.equals(row.trackId()) && use.playlistId().equals(row.playlist())
-							&& use.entryId().equals(row.entry().id())) {
-						match = row;
-						break;
+					if (use.playlistId().equals(row.playlist()) && use.entryId().equals(row.entry().id())) {
+						if (ordinal == use.occurrenceOrdinal() && row != self) {
+							match = row;
+							break;
+						}
+						ordinal++;
 					}
 				}
 			} else {
 				// grouped view: find the underlying use row in the cached list
+				int ordinal = 0;
 				for (Row row : this.allRowsCached) {
 					if (use.playlistId().equals(row.playlist()) && use.entryId().equals(row.entry().id())) {
-						match = row;
-						break;
+						if (ordinal == use.occurrenceOrdinal()) {
+							match = row;
+							break;
+						}
+						ordinal++;
 					}
 				}
 			}
