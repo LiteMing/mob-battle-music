@@ -56,51 +56,111 @@ public class ExternalPlaylistControlClient
 		message("Synced " + packet.tracks().size() + " server playlist binding(s)");
 	}
 
-	// K14-B: the server-authoritative Cue timeline drives this client's audio.
-	// START/SNAPSHOT carry the logical position for mid-session joins (seek
-	// instead of starting from zero). Marker firing is server-side; the client
-	// only mirrors the timeline. A CUE session may continue while this client
-	// has opted out (acceptServerCues=false) - the server timeline is
-	// unaffected, we just do not play.
+	// K14-B/K14-C: the server-authoritative Cue timeline drives this client's
+	// audio. START/SNAPSHOT carry the logical position and state; control
+	// packets (PAUSE/RESUME/STOP/POSITION) are applied ONLY when their
+	// sessionId matches the active session - a late packet from a replaced
+	// session is dropped (CUE_STALE_DROP). Marker firing is server-side; the
+	// client only mirrors the timeline.
+	private static volatile java.util.UUID activeCueSessionId;
+	private static volatile long activeCueRevision;
+	private static volatile long lastCuePositionMillis;
+	private static volatile long lastCuePositionAtMillis;
+
 	public static void handleCueSessionSync(nonamecrackers2.mobbattlemusic.network.CueSessionSyncPacket packet)
 	{
 		boolean optOut = MobBattleMusicConfig.CLIENT.ignoreServerPlaylistRequests.get()
 				|| !MobBattleMusicConfig.CLIENT.acceptServerCues.get();
 		switch (packet.action()) {
-			case START, SNAPSHOT -> {
-				if (optOut)
+			case START -> {
+				// K14-C: a START (fresh or mid-session snapshot) establishes
+				// or replaces the active session; a stale control packet for
+				// the OLD session can no longer affect the new one
+				activeCueSessionId = packet.sessionId();
+				activeCueRevision = packet.revision();
+				lastCuePositionMillis = packet.logicalPositionMillis();
+				lastCuePositionAtMillis = System.currentTimeMillis();
+				if (optOut) {
+					// K14-C: opt-out means we do not play CUE audio - but the
+					// session is still tracked so its STOP can clean up
+					LOGGER().info("[MBM] CUE_START ignored (opt-out) session={}", packet.sessionId());
 					return;
-				long startPosition = packet.logicalPositionMillis();
-				if (packet.action() == nonamecrackers2.mobbattlemusic.network.CueSessionSyncPacket.Action.SNAPSHOT
-						|| startPosition > 0L) {
+				}
+				if (packet.state() == nonamecrackers2.mobbattlemusic.network.CueSessionSyncPacket.State.PAUSED) {
+					// K14-C: restore a PAUSED session as paused - prepare/seek
+					// to the position but do not start
+					ExternalMusicHandler.getInstance().playMusicFrom(packet.url(), 0, packet.logicalPositionMillis());
+					ExternalMusicHandler.getInstance().pauseMusic();
+				} else if (packet.logicalPositionMillis() > 0L) {
 					// mid-session join / continuing session - seek to the
 					// logical position instead of replaying from zero
-					ExternalMusicHandler.getInstance().playMusicFrom(packet.url(), 0, startPosition);
+					ExternalMusicHandler.getInstance().playMusicFrom(packet.url(), 0, packet.logicalPositionMillis());
 				} else {
 					ExternalMusicHandler.getInstance().playMusic(packet.url(), 0);
 				}
 				WorldPlaybackChannel.setPlaybackOwner(WorldPlaybackChannel.PlaybackOwner.CUE);
 			}
-			case PAUSE -> {
-				if (optOut)
+			case POSITION -> {
+				// K14-C: periodic server-tick position - apply only to the
+				// active session, bounded drift correction
+				if (!isActive(packet)) {
+					logStale(packet);
 					return;
+				}
+				long serverPos = packet.logicalPositionMillis();
+				long clientPos = ExternalMusicHandler.getInstance().getPositionMillis();
+				if (clientPos < 0L)
+					return;
+				long drift = serverPos - clientPos;
+				if (Math.abs(drift) <= 250L)
+					return; // small drift: keep
+				if (Math.abs(drift) <= 1500L) {
+					// medium drift: smooth by a single bounded seek
+					ExternalMusicHandler.getInstance().seekMusic(serverPos);
+				} else {
+					// large drift: re-seek to the authoritative position
+					ExternalMusicHandler.getInstance().seekMusic(serverPos);
+				}
+				lastCuePositionMillis = serverPos;
+				lastCuePositionAtMillis = System.currentTimeMillis();
+			}
+			case PAUSE -> {
+				if (!isActive(packet)) { logStale(packet); return; }
 				ExternalMusicHandler.getInstance().pauseMusic();
 			}
 			case RESUME -> {
-				if (optOut)
-					return;
+				if (!isActive(packet)) { logStale(packet); return; }
 				ExternalMusicHandler.getInstance().resumeMusic();
 			}
 			case STOP -> {
-				// K12-A: STOP returns the CUE owner to AUTO (client-side
-				// arbitration); the server timeline keeps running for other
-				// players regardless
+				// K14-C: STOP always cleans up the matching active session's
+				// audio (opt-out does not skip cleanup - only new STARTS are
+				// opt-out-gated); a stale STOP for a replaced session is dropped
+				if (!isActive(packet)) { logStale(packet); return; }
+				activeCueSessionId = null;
+				activeCueRevision = 0L;
 				if (WorldPlaybackChannel.playbackOwner() == WorldPlaybackChannel.PlaybackOwner.CUE)
 					WorldPlaybackChannel.setPlaybackOwner(WorldPlaybackChannel.PlaybackOwner.AUTO);
-				if (!optOut)
-					ExternalMusicHandler.getInstance().stopMusic();
+				ExternalMusicHandler.getInstance().stopMusic();
 			}
 		}
+	}
+
+	// K14-C: control packets apply only to the active session
+	private static boolean isActive(nonamecrackers2.mobbattlemusic.network.CueSessionSyncPacket packet)
+	{
+		return packet.sessionId() != null && packet.sessionId().equals(activeCueSessionId);
+	}
+
+	private static void logStale(nonamecrackers2.mobbattlemusic.network.CueSessionSyncPacket packet)
+	{
+		LOGGER().debug("[MBM] CUE_STALE_DROP action={} session={} active={}", packet.action(),
+				packet.sessionId(), activeCueSessionId);
+	}
+
+	private static org.apache.logging.log4j.Logger LOGGER()
+	{
+		return org.apache.logging.log4j.LogManager.getLogger("mobbattlemusic/ExternalPlaylistControlClient");
 	}
 	
 	private static MusicTracksManager.PlaylistControlResult playSelection(net.minecraft.resources.ResourceLocation playlistId,

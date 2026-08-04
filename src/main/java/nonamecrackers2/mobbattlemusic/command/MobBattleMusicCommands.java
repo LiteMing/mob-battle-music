@@ -515,29 +515,39 @@ public class MobBattleMusicCommands
 	private static int send(CommandSourceStack source, Collection<ServerPlayer> players, ResourceLocation playlistId,
 			ExternalPlaylistControlPacket.Action action, String selection)
 	{
-		// K14-B: PLAY_SELECTION/PLAY_URL create the authoritative server Cue
-		// session - the server advances the logical timeline and fires markers
-		// once per session; clients receive CueSessionSyncPacket. SET/RANDOM/
-		// CLEAR/STOP keep their legacy behavior.
+		// K14-B/K14-C: PLAY_SELECTION/PLAY_URL create the authoritative server
+		// Cue session scoped by (playlist, entry) - a new START atomically
+		// replaces the same-scope session. The session audience is the command
+		// target; markers fire with the source dimension as encounter context.
+		// SET/RANDOM/CLEAR/STOP keep their legacy behavior.
 		if (action == ExternalPlaylistControlPacket.Action.PLAY_SELECTION) {
 			String url = ExternalPlaylistCatalogServer.resolveEntryUrl(source.getServer(), playlistId, selection);
 			if (url != null) {
-				ServerCueSessionManager.start(source.getServer(), playlistId, selection, url, 0L);
+				net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dimension =
+						source.getLevel() == null ? null : source.getLevel().dimension();
+				ServerCueSessionManager.start(source.getServer(), playlistId, selection, url, 0L,
+						dimension, null, 0L, players);
 				MobBattleMusicCommandFeedback.success(source, Component.literal(
 						"Started authoritative Cue session for " + playlistId + " / " + selection));
 				return players.size();
 			}
 		}
 		if (action == ExternalPlaylistControlPacket.Action.PLAY_URL) {
-			long revision = 0L;
+			net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dimension =
+					source.getLevel() == null ? null : source.getLevel().dimension();
 			ServerCueSessionManager.start(source.getServer(), MobBattleMusicMod.id("direct"), selection, selection,
-					revision);
+					0L, dimension, null, 0L, players);
 			MobBattleMusicCommandFeedback.success(source, Component.literal(
 					"Started authoritative Cue session for URL"));
 			return players.size();
 		}
 		if (action == ExternalPlaylistControlPacket.Action.STOP) {
-			ServerCueSessionManager.stop(source.getServer(), playlistId);
+			// K14-C: STOP is fully handled by the authoritative session -
+			// the legacy control STOP would double-stop on clients
+			ServerCueSessionManager.stop(source.getServer(), playlistId, "");
+			MobBattleMusicCommandFeedback.success(source, Component.literal(
+					"Stopped authoritative Cue sessions for " + playlistId));
+			return players.size();
 		}
 		ExternalPlaylistControlPacket packet = new ExternalPlaylistControlPacket(playlistId, action, selection);
 		for (ServerPlayer player : players)

@@ -9,14 +9,20 @@ import net.minecraftforge.network.NetworkEvent;
 import nonamecrackers2.mobbattlemusic.client.music.ExternalPlaylistControlClient;
 
 /**
- * K14-B: server-authoritative Cue session sync. The server broadcasts the
- * logical playback session; clients with MBM start/seek/pause/resume/stop
- * their own audio to follow it. Clients WITHOUT MBM never receive this
- * packet (guarded by remoteHasChannel). The marker timeline is advanced on
- * the server regardless of client presence.
+ * K14-B/K14-C: server-authoritative Cue session sync. The server broadcasts
+ * the logical playback session; clients with MBM start/seek/pause/resume/stop
+ * their own audio to follow it. Clients WITHOUT MBM never receive this packet
+ * (guarded by remoteHasChannel). The marker timeline is advanced on the
+ * server regardless of client presence.
+ *
+ * K14-C: every packet carries the sessionId and the current state; the
+ * client keeps an activeCueSessionId and DROPS any control packet whose
+ * sessionId does not match (a late STOP for a replaced session must not stop
+ * the new one). SNAPSHOT/START carry PLAYING/PAUSED so mid-session and
+ * mid-pause joins restore exactly.
  */
 public record CueSessionSyncPacket(UUID sessionId, Action action, ResourceLocation playlistId, String trackKey,
-		String url, long revision, long startServerTick, long logicalPositionMillis)
+		String url, long revision, State state, long startServerTick, long logicalPositionMillis)
 {
 	public enum Action
 	{
@@ -24,35 +30,51 @@ public record CueSessionSyncPacket(UUID sessionId, Action action, ResourceLocati
 		PAUSE,
 		RESUME,
 		STOP,
-		SNAPSHOT
+		POSITION
+	}
+
+	// K14-C: the session state travels with every packet (the client restores
+	// PAUSED as paused, not as playing)
+	public enum State
+	{
+		PLAYING,
+		PAUSED,
+		STOPPED
 	}
 
 	public static CueSessionSyncPacket start(UUID sessionId, ResourceLocation playlistId, String trackKey,
-			String url, long revision, long startServerTick, long logicalPositionMillis)
+			String url, long revision, State state, long startServerTick, long logicalPositionMillis)
 	{
-		return new CueSessionSyncPacket(sessionId, Action.START, playlistId, trackKey, url, revision,
+		return new CueSessionSyncPacket(sessionId, Action.START, playlistId, trackKey, url, revision, state,
 				startServerTick, logicalPositionMillis);
+	}
+
+	public static CueSessionSyncPacket position(UUID sessionId, State state, long logicalPositionMillis)
+	{
+		return new CueSessionSyncPacket(sessionId, Action.POSITION, null, "", "", 0L, state, 0L,
+				logicalPositionMillis);
 	}
 
 	public static CueSessionSyncPacket pause(UUID sessionId)
 	{
-		return new CueSessionSyncPacket(sessionId, Action.PAUSE, null, "", "", 0L, 0L, 0L);
+		return new CueSessionSyncPacket(sessionId, Action.PAUSE, null, "", "", 0L, State.PAUSED, 0L, 0L);
 	}
 
 	public static CueSessionSyncPacket resume(UUID sessionId)
 	{
-		return new CueSessionSyncPacket(sessionId, Action.RESUME, null, "", "", 0L, 0L, 0L);
+		return new CueSessionSyncPacket(sessionId, Action.RESUME, null, "", "", 0L, State.PLAYING, 0L, 0L);
 	}
 
 	public static CueSessionSyncPacket stop(UUID sessionId)
 	{
-		return new CueSessionSyncPacket(sessionId, Action.STOP, null, "", "", 0L, 0L, 0L);
+		return new CueSessionSyncPacket(sessionId, Action.STOP, null, "", "", 0L, State.STOPPED, 0L, 0L);
 	}
 
 	public void encode(FriendlyByteBuf buffer)
 	{
 		buffer.writeUUID(this.sessionId);
 		buffer.writeEnum(this.action);
+		buffer.writeEnum(this.state);
 		boolean hasTarget = this.playlistId != null;
 		buffer.writeBoolean(hasTarget);
 		if (hasTarget) {
@@ -69,6 +91,7 @@ public record CueSessionSyncPacket(UUID sessionId, Action action, ResourceLocati
 	{
 		UUID sessionId = buffer.readUUID();
 		Action action = buffer.readEnum(Action.class);
+		State state = buffer.readEnum(State.class);
 		boolean hasTarget = buffer.readBoolean();
 		ResourceLocation playlistId = null;
 		String trackKey = "";
@@ -83,8 +106,8 @@ public record CueSessionSyncPacket(UUID sessionId, Action action, ResourceLocati
 			startServerTick = buffer.readVarLong();
 		}
 		long logicalPositionMillis = buffer.readVarLong();
-		return new CueSessionSyncPacket(sessionId, action, playlistId, trackKey, url, revision, startServerTick,
-				logicalPositionMillis);
+		return new CueSessionSyncPacket(sessionId, action, playlistId, trackKey, url, revision, state,
+				startServerTick, logicalPositionMillis);
 	}
 
 	public void handle(Supplier<NetworkEvent.Context> context)

@@ -45,7 +45,6 @@ public class MobBattleMusicMod
 		// tick; a player joining mid-session receives the current snapshot
 		MinecraftForge.EVENT_BUS.addListener(ServerCueSessionManager::onServerTick);
 		MinecraftForge.EVENT_BUS.addListener(ServerCueSessionManager::onPlayerLoggedOut);
-		MinecraftForge.EVENT_BUS.addListener(ServerExternalPlaylistStore::onPlayerLoggedIn);
 		MinecraftForge.EVENT_BUS.addListener(ServerCueSessionManager::onPlayerLoggedIn);
 		MobBattleMusicNetwork.register();
 		ModLoadingContext.get().registerConfig(ModConfig.Type.CLIENT, MobBattleMusicConfig.CLIENT_SPEC);

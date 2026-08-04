@@ -124,6 +124,14 @@ public class MobBattleMusicNetwork
 		packet.handle(context);
 	}
 	
+	// K14-C: expose the channel-presence check so the client-only presence
+	// class (ClientNetworkPresence) can use it without the network class
+	// referencing Minecraft
+	public static boolean channelIsRemotePresent(net.minecraft.network.Connection connection)
+	{
+		return connection != null && CHANNEL.isRemotePresent(connection);
+	}
+
 	// K14-A: does the remote end of this player's connection have the MBM
 	// channel? False for vanilla/no-MBM peers - ALL S2C sends must be
 	// guarded by this, otherwise an unmodded client logs "Unknown custom
@@ -135,18 +143,17 @@ public class MobBattleMusicNetwork
 		// Forge dev mapping: ServerGamePacketListenerImpl.connection is the
 		// net.minecraft.network.Connection (public field, SRG-mapped)
 		net.minecraft.network.Connection connection = player.connection.connection;
-		return connection != null && CHANNEL.isRemotePresent(connection);
+		return channelIsRemotePresent(connection);
 	}
 
 	// K14-A: does the server we are connected to have the MBM channel?
 	// False for vanilla/no-MBM servers - ALL C2S sends must be guarded by
 	// this (catalog, sync request, clock probes, marker hits, start reports).
+	// K14-C: delegated to the client-only presence class (this class loads on
+	// dedicated servers and must not reference Minecraft).
 	public static boolean localServerHasChannel()
 	{
-		net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
-		if (mc.getConnection() == null || mc.getConnection().getConnection() == null)
-			return false;
-		return CHANNEL.isRemotePresent(mc.getConnection().getConnection());
+		return nonamecrackers2.mobbattlemusic.client.network.ClientNetworkPresence.localServerHasChannel();
 	}
 
 	public static void sendExternalPlaylistControl(ServerPlayer player, ExternalPlaylistControlPacket packet)
