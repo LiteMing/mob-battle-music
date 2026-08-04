@@ -548,6 +548,12 @@ public class BattleMusicManager {
 			return false;
 		if (!type.isIdlePlayback())
 			return true;
+		// K12-F: an adopted (already playing) idle track must not be
+		// rejected by the start cooldown - the cooldown only delays NEW
+		// starts. Rejecting it here makes the first post-adoption tick fade
+		// out and stop the cross-dimension session playback.
+		if (hasActiveExternalWrapper(type))
+			return true;
 		return now >= this.idleSuppressedUntilMillis &&
 				now >= this.idleNextStartMillis.getOrDefault(type.getTrack(), 0L);
 	}
@@ -567,12 +573,28 @@ public class BattleMusicManager {
 		for (TrackType type : tracks) {
 			if (!type.isIdlePlayback())
 				continue;
+			// K12-F: an idle track that was already adopted from the previous
+			// level (cross-dimension session playback) must NOT get a start
+			// cooldown - it is already playing, the cooldown only gates NEW
+			// starts. Without this, the first tick after adoption would fade
+			// out and stop the session track, then replay it from zero.
+			if (hasActiveExternalWrapper(type))
+				continue;
 			int interval = type.getPlaybackIntervalSeconds();
 			if (interval <= 0)
 				interval = Math.max(5, MobBattleMusicConfig.CLIENT.idleResumeDelay.get());
 			double jitter = 0.9D + this.level.random.nextDouble() * 0.2D;
 			this.idleNextStartMillis.put(type.getTrack(), now + Math.round(interval * 1000.0D * jitter));
 		}
+	}
+
+	// K12-F: does this level manager hold a live (not stopped) external wrapper
+	// for the track? Used to exempt an in-flight session track from the idle
+	// start cooldown and from the "not allowed to start" fade-out path.
+	private boolean hasActiveExternalWrapper(TrackType type)
+	{
+		ExternalUrlMusicTrack track = this.externalTracks.get(type);
+		return track != null && !track.isStopped();
 	}
 
 	private long synchronizeCombatPlayback(TrackType type, ResourceLocation trackLocation,
