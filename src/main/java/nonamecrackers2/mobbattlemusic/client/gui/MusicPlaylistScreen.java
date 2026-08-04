@@ -542,10 +542,28 @@ public class MusicPlaylistScreen extends Screen
 			String uses = nonamecrackers2.mobbattlemusic.client.resource.TrackAssetRegistry
 					.usesDisplay(row.entry().id());
 			String subtitle = row.context() + "  #" + (row.index() + 1) +
-					(uses.isBlank() ? "" : "  [" + uses + "]");			trackModels.add(new PlaylistSelectionList.Model<>(row.playlist() + "#" + row.index(), row,
+					(uses.isBlank() ? "" : "  [" + uses + "]");
+			// K15-C: the row always shows WHERE it lives (source badge) and
+			// WHY it is locked when the current edit mode cannot touch it -
+			// singleplayer has both LOCAL and SERVER data, so a SERVER page
+			// showing LOCAL entries without explanation was confusing
+			String badge = switch (row.source() == null ? null : row.source()) {
+				case LOCAL -> "LOCAL";
+				case SERVER -> "SERVER";
+				default -> "RP";
+			};
+			Component lockedHint = null;
+			if (row.binding() != null && row.source() != null
+					&& this.editMode == EditMode.SERVER && row.source() != MusicTracksManager.DynamicSource.SERVER)
+				lockedHint = text("source.locked_hint", text("source.local"));
+			else if (row.binding() != null && row.source() != null
+					&& this.editMode == EditMode.LOCAL && row.source() != MusicTracksManager.DynamicSource.LOCAL)
+				lockedHint = text("source.locked_hint", text("source.server"));
+			trackModels.add(new PlaylistSelectionList.Model<>(row.playlist() + "#" + row.index(), row,
 					Component.literal(row.title()), Component.literal(subtitle),
 					trackStatus(row), selectedRowEditable(row), selectedRowEditable(row),
-					this.selectedRowSet.contains(row.playlist() + "#" + row.entry().url())));
+					this.selectedRowSet.contains(row.playlist() + "#" + row.entry().url()),
+					badge, lockedHint));
 		}
 		String selectedKey = selectedRow() == null ? null : selectedRow().playlist() + "#" + selectedRow().index();
 		this.trackList.setItems(trackModels, selectedKey);

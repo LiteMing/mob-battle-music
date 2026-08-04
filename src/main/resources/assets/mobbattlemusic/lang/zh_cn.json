@@ -81,6 +81,7 @@
 	"gui.mobbattlemusic.playlist.detail.editable": "可编辑：%s",
 	"gui.mobbattlemusic.playlist.detail.source": "来源：",
 	"gui.mobbattlemusic.playlist.source.resource_pack": "资源包",
+	"gui.mobbattlemusic.playlist.source.locked_hint": "这是 %s 条目 - 切换编辑模式以修改",
 	"gui.mobbattlemusic.playlist.source.local": "本地",
 	"gui.mobbattlemusic.playlist.source.server": "服务器",
 	"gui.mobbattlemusic.playlist.message.scene_music_required": "必须填写场景和音乐",

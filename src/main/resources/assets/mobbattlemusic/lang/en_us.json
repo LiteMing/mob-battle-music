@@ -81,6 +81,7 @@
 	"gui.mobbattlemusic.playlist.detail.editable": "Editable: %s",
 	"gui.mobbattlemusic.playlist.detail.source": "Source:",
 	"gui.mobbattlemusic.playlist.source.resource_pack": "resource pack",
+	"gui.mobbattlemusic.playlist.source.locked_hint": "This is a %s entry - switch edit mode to modify it",
 	"gui.mobbattlemusic.playlist.source.local": "local",
 	"gui.mobbattlemusic.playlist.source.server": "server",
 	"gui.mobbattlemusic.playlist.message.scene_music_required": "Scene and music are required",

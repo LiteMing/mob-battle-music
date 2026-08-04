@@ -38,7 +38,8 @@ final class PlaylistSelectionList<T> extends ObjectSelectionList<PlaylistSelecti
 	}
 
 	record Model<T>(String key, T value, Component title, Component subtitle, Status status,
-			boolean canToggle, boolean canDelete, boolean checked)
+			boolean canToggle, boolean canDelete, boolean checked, @Nullable String sourceBadge,
+			@Nullable Component lockedHint)
 	{
 		Model
 		{
@@ -51,7 +52,7 @@ final class PlaylistSelectionList<T> extends ObjectSelectionList<PlaylistSelecti
 		Model(String key, T value, Component title, Component subtitle, Status status,
 				boolean canToggle, boolean canDelete)
 		{
-			this(key, value, title, subtitle, status, canToggle, canDelete, false);
+			this(key, value, title, subtitle, status, canToggle, canDelete, false, null, null);
 		}
 	}
 
@@ -163,6 +164,9 @@ final class PlaylistSelectionList<T> extends ObjectSelectionList<PlaylistSelecti
 			return entry.model.title();
 		if (this.hoveredSubtitleTruncated)
 			return entry.model.subtitle();
+		// K15-C: a locked row explains WHY it cannot be edited here
+		if (entry.model.lockedHint() != null)
+			return entry.model.lockedHint();
 		return text(entry.model.status().translation);
 	}
 
@@ -255,7 +259,12 @@ final class PlaylistSelectionList<T> extends ObjectSelectionList<PlaylistSelecti
 		// placeholder so the column position stays stable across modes.
 		int textLeft = left + 15;
 		int actionSpace = (this.model.canToggle() || this.model.canDelete()) ? 31 : 5;
-		int textWidth = Math.max(1, width - 15 - actionSpace);
+		// K15-C: a source badge (LOCAL/SERVER/RP) reserves the right edge so
+		// the row always communicates WHERE it lives, and a locked row shows a
+		// dim lock where the action keys would be
+		boolean locked = this.model.lockedHint() != null;
+		int badgeSpace = (this.model.sourceBadge() != null || locked) ? 44 : 5;
+		int textWidth = Math.max(1, width - 15 - actionSpace - badgeSpace);
 		String title = ellipsize(this.model.title().getString(), textWidth);
 		String subtitle = ellipsize(this.model.subtitle().getString(), textWidth);
 		// K13-A: batch-mode check mark replaces the status icon for checked rows
@@ -273,6 +282,14 @@ final class PlaylistSelectionList<T> extends ObjectSelectionList<PlaylistSelecti
 				graphics.drawString(font, "-", left + width - 25, top + 7, 0xFF3A4550, false);
 			if (this.model.canDelete())
 				graphics.drawString(font, "x", left + width - 11, top + 7, 0xFFE06C75, false);
+			// K15-C: source badge + lock indicator - always visible so the
+			// row says WHERE it lives and whether the current mode can edit it
+			if (locked) {
+				graphics.drawString(font, "\u26d4", left + width - 40, top + 6, 0xFF8B929C, false);
+			} else if (this.model.sourceBadge() != null) {
+				graphics.drawString(font, this.model.sourceBadge(), left + width - 40, top + 6,
+						0xFF7F8791, false);
+			}
 			// K15-C: track hover state for tooltips regardless of keys
 			if (hovered) {
 				hoveredIndex = index;
