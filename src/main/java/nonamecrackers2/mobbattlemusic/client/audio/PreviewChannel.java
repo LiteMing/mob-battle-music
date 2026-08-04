@@ -5,6 +5,7 @@ import javax.annotation.Nullable;
 import net.minecraft.client.Minecraft;
 import net.minecraft.resources.ResourceLocation;
 import nonamecrackers2.mobbattlemusic.client.music.ExternalMusicHandler;
+import nonamecrackers2.mobbattlemusic.client.music.StreamMusicPlayer;
 import nonamecrackers2.mobbattlemusic.client.sound.MobBattleTrack;
 
 /**
@@ -20,17 +21,33 @@ public final class PreviewChannel
 	private static volatile @Nullable MobBattleTrack soundTrack;
 	private static volatile @Nullable PlaybackHandle handle;
 	private static volatile @Nullable String previewKey;
-	
+	// K13-C: client takeover - when true, the preview player covers the main
+	// channel (main playback + sound leg muted, server process untouched)
+	// and continues after the playlist GUI closes. AUD-3 is relaxed for this
+	// explicit cover mode: the GUI handoff keeps the channel alive.
+	private static volatile boolean coverMain;
+
 	private PreviewChannel() {}
-	
+
 	public static void playUrl(String url, int fadeTime, long durationHintMillis)
 	{
+		playUrl(url, fadeTime, durationHintMillis, false);
+	}
+
+	// K13-C: coverMain=true is the manual-song-selection path - the preview
+	// player takes over the audible output; the main channel is muted and the
+	// server-side playback process (URL/session/CUE) is left untouched.
+	public static void playUrl(String url, int fadeTime, long durationHintMillis, boolean coverMain)
+	{
 		stop();
+		PreviewChannel.coverMain = coverMain;
 		ExternalMusicHandler.getInstance().playPreviewMusic(url, fadeTime, durationHintMillis);
 		PreviewChannel.handle = PlaybackHandle.create(url);
 		PreviewChannel.previewKey = url;
+		if (coverMain)
+			StreamMusicPlayer.setMainCovered(true);
 	}
-	
+
 	public static void playSound(ResourceLocation sound, int fadeTime, String key)
 	{
 		stop();
@@ -40,7 +57,7 @@ public final class PreviewChannel
 		PreviewChannel.handle = PlaybackHandle.create(sound.toString());
 		PreviewChannel.previewKey = key;
 	}
-	
+
 	public static void stop()
 	{
 		ExternalMusicHandler.getInstance().stopPreviewMusic();
@@ -53,6 +70,17 @@ public final class PreviewChannel
 			active.markStopped();
 		PreviewChannel.handle = null;
 		PreviewChannel.previewKey = null;
+		// K13-C: releasing the cover restores the main channel envelope
+		if (PreviewChannel.coverMain) {
+			PreviewChannel.coverMain = false;
+			StreamMusicPlayer.setMainCovered(false);
+		}
+	}
+
+	// K13-C: is the preview currently covering the main channel?
+	public static boolean isCoveringMain()
+	{
+		return PreviewChannel.coverMain;
 	}
 	
 	// AUD-20 v1.1: read-only key for outside invalidation comparison;

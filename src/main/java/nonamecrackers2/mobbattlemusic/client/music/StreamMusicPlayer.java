@@ -1063,7 +1063,35 @@ public class StreamMusicPlayer {
         // AUD-42/45: pure target projection; no gain computation on this
         // thread. The mute envelope fades in/out over 200ms (AUD-46).
         this.gameMuted = muted;
+        // K13-C: while the client's preview player covers the main channel
+        // (manual song selection with the server process untouched), the
+        // world channel's unconditional unmute projection must NOT restore
+        // the main mute envelope - the cover owns it until released.
+        if (StreamMusicPlayer.mainCovered) {
+            if (!muted && MUTE_ENV.target() > 0.0f)
+                MUTE_ENV.setTarget(0.0f, 0L);
+            return;
+        }
         MUTE_ENV.setTarget(muted ? 0.0f : 1.0f, 200L);
+    }
+
+    // K13-C: client takeover lock - when the preview player covers the main
+    // channel, MUTE_ENV is pinned to 0 (main playback + sound leg silenced)
+    // and the world channel's per-tick unmute projection is suppressed. The
+    // server-side playback process (URL/state/CUE) keeps running untouched.
+    private static volatile boolean mainCovered;
+
+    public static void setMainCovered(boolean covered) {
+        StreamMusicPlayer.mainCovered = covered;
+        if (covered) {
+            MUTE_ENV.setTarget(0.0f, 200L);
+        } else {
+            MUTE_ENV.setTarget(1.0f, 200L);
+        }
+    }
+
+    public static boolean isMainCovered() {
+        return StreamMusicPlayer.mainCovered;
     }
 
     public boolean isMutedForGame() {

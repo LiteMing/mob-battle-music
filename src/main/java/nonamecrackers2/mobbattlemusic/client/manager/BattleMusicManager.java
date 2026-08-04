@@ -427,6 +427,15 @@ public class BattleMusicManager {
 								oldTrack.stop();
 								this.externalTracks.remove(type);
 								tracksManager.clearExternalSessionSelection(trackLocation);
+								// K13-C: an entry switch (disabled current
+								// entry / selection change) must NOT inherit
+								// the stopped track's idle cooldown - the next
+								// tick must be allowed to pick the replacement
+								// immediately, otherwise disabling the playing
+								// idle track leaves silence until the cooldown
+								// expires. The cooldown still applies to
+								// natural stops (url==null path).
+								this.idleNextStartMillis.remove(type.getTrack());
 								LOGGER.info("Switched external URL track to selected playlist entry: {}", newUrl);
 							},
 							fadeIn);

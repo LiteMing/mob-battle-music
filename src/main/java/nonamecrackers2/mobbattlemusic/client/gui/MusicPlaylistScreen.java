@@ -117,6 +117,9 @@ public class MusicPlaylistScreen extends Screen
 	// rebuildRows since rows are rebuilt as new instances
 	private final java.util.Set<String> selectedRowSet = new java.util.LinkedHashSet<>();
 	private Button multiSelectButton;
+	// K13-C: manual song selection - plays the selected row through the
+	// preview player while covering the main channel
+	private Button coverPlayButton;
 	// K9-3: volume popup state - two sliders + preview-follows-main toggle
 	private boolean volumePanelOpen;
 	private float mainGainValue = 1.0F;
@@ -352,6 +355,13 @@ public class MusicPlaylistScreen extends Screen
 		this.multiSelectButton = this.addRenderableWidget(Button.builder(
 				Component.literal("Batch: off"), button -> toggleMultiSelect())
 				.bounds(ix, editY + 106, iw, 20).build());
+		// K13-C: manual song selection - play the selected row through the
+		// preview player while covering the main channel; the server-side
+		// playback process keeps running untouched and the song continues
+		// after this GUI closes
+		this.coverPlayButton = this.addRenderableWidget(Button.builder(
+				Component.literal("Play selected (cover main)"), button -> coverPlaySelected())
+				.bounds(ix, editY + 130, iw, 20).build());
 		this.copyUrlButton = this.addRenderableWidget(Button.builder(text("button.copy_url"), button -> copySelectedUrl())
 				.bounds(ix, detailActionY, iw, 20).build());
 		this.timelineEditorButton.setTooltip(net.minecraft.client.gui.components.Tooltip.create(text("button.timeline_editor")));
@@ -928,6 +938,26 @@ public class MusicPlaylistScreen extends Screen
 	private void stopPreview()
 	{
 		PreviewChannel.stop();
+	}
+
+	// K13-C: manual song selection - play the selected row through the
+	// preview player while covering the main channel. The server-side
+	// playback process (URL/session/CUE) is untouched; releasing (stop or a
+	// new selection) restores the main channel envelope.
+	private void coverPlaySelected()
+	{
+		if (this.selected < 0 || this.selected >= this.rows.size())
+			return;
+		Row row = this.rows.get(this.selected);
+		int fadeTicks = Math.max(1, row.binding() == null ? 0 : row.binding().kind() == MusicTracksManager.DynamicBinding.Kind.SCENE
+				? switch (row.binding().scene()) {
+					case "ambient", "idle" -> 0;
+					default -> 40;
+				}
+				: 40);
+		PreviewChannel.playUrl(row.entry().url(), fadeTicks, 0L, true);
+		message(Component.literal("Playing selected track (covers main) - close this screen to keep it playing"));
+		this.updateButtonState();
 	}
 
 	private void renderPreviewProgress(GuiGraphics graphics)
@@ -1570,8 +1600,12 @@ public class MusicPlaylistScreen extends Screen
 
 	private void requestClose()
 	{
+		// K13-C: a cover (manual song selection) survives the GUI - the
+		// preview player keeps playing after the screen closes; only plain
+		// auditions are stopped
 		if (!this.draftDirty) {
-			stopPreview();
+			if (!PreviewChannel.isCoveringMain())
+				stopPreview();
 			closeToParent();
 			return;
 		}
@@ -1580,7 +1614,8 @@ public class MusicPlaylistScreen extends Screen
 		this.minecraft.setScreen(new net.minecraft.client.gui.screens.ConfirmScreen(confirmed -> {
 			if (confirmed) {
 				this.draftDirty = false;
-				stopPreview();
+				if (!PreviewChannel.isCoveringMain())
+					stopPreview();
 				closeToParent();
 			} else {
 				this.minecraft.setScreen(this);
@@ -1613,7 +1648,9 @@ public class MusicPlaylistScreen extends Screen
 			return;
 		}
 		saveState();
-		stopPreview();
+		// K13-C: a cover survives navigation between playlist screens
+		if (!PreviewChannel.isCoveringMain())
+			stopPreview();
 		openTab(this.parent, this.editMode, tab);
 	}
 
@@ -1624,7 +1661,9 @@ public class MusicPlaylistScreen extends Screen
 			return;
 		}
 		saveState();
-		stopPreview();
+		// K13-C: a cover survives edit-mode switches
+		if (!PreviewChannel.isCoveringMain())
+			stopPreview();
 		EditMode next = this.editMode == EditMode.LOCAL ? EditMode.SERVER : EditMode.LOCAL;
 		this.minecraft.setScreen(new MusicPlaylistScreen(this.parent, next));
 	}
@@ -1725,6 +1764,11 @@ public class MusicPlaylistScreen extends Screen
 					? "Add checked to target group" : "Add selected to target group"));
 		this.multiSelectButton.visible = this.viewMode == ViewMode.LIBRARY && binding;
 		this.multiSelectButton.active = this.multiSelectButton.visible;
+		// K13-C: cover-play is available wherever a LIBRARY row is selected
+		if (this.coverPlayButton != null) {
+			this.coverPlayButton.visible = this.viewMode == ViewMode.LIBRARY && binding;
+			this.coverPlayButton.active = this.coverPlayButton.visible && hasTrack;
+		}
 		this.copyUrlButton.visible = this.viewMode == ViewMode.NETEASE && details;
 		this.copyUrlButton.active = this.searchSelected >= 0 && this.searchSelected < this.searchRows.size();
 		int editorY = conditionEditorY();
@@ -2238,6 +2282,10 @@ public class MusicPlaylistScreen extends Screen
 				: this.selected >= 0 && this.selected < this.rows.size();
 		if (this.previewButton != null)
 			this.previewButton.active = hasSelection;
+		if (this.coverPlayButton != null) {
+			// K13-C: manual song selection is available for LIBRARY rows
+			this.coverPlayButton.active = this.viewMode == ViewMode.LIBRARY && hasSelection;
+		}
 		if (this.addBindingButton != null)
 			this.addBindingButton.active = this.viewMode == ViewMode.NETEASE
 					? this.searchSelected >= 0 && this.searchSelected < this.searchRows.size()
@@ -2490,7 +2538,7 @@ public class MusicPlaylistScreen extends Screen
 		MusicTracksManager manager = MusicTracksManager.getInstance();
 		boolean enabled = !manager.isMusicEntryEnabled(row.playlist(), row.entry());
 		message(manager.setMusicEntryEnabled(row.playlist(), row.entry(), enabled).message());
-		if (!enabled)
+		if (!enabled && !PreviewChannel.isCoveringMain())
 			stopPreview();
 		this.updateButtonState();
 	}
