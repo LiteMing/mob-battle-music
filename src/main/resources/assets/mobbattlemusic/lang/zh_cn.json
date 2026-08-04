@@ -219,6 +219,8 @@
 	"gui.mobbattlemusic.playlist.button.cancel": "取消",
 	"gui.mobbattlemusic.playlist.button.save": "保存",
 	"gui.mobbattlemusic.playlist.message.saved": "已保存歌单设置",
+	"gui.mobbattlemusic.playlist.message.batch_no_selection": "批量模式下未勾选任何曲目，请先点击曲目行勾选",
+	"gui.mobbattlemusic.playlist.message.batch_invalid_target": "当前类型/场景/目标无法构成有效的目标分组",
 	"gui.mobbattlemusic.playlist.confirm.title": "放弃更改？",
 	"gui.mobbattlemusic.playlist.confirm.message": "还有未保存的歌单字段，要放弃吗？",
 	"key.mobbattlemusic.dump_probe": "转储探针环形缓冲",

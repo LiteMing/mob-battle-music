@@ -161,11 +161,14 @@ public class PlaylistImportScreen extends Screen
 				.bounds(this.listLeft + 4, this.listTop + this.listHeight + 6, 120, 20).build());
 		this.sceneBox = new EditBox(this.font, this.listLeft + 130, this.listTop + this.listHeight + 6, 120, 20,
 				Component.literal("scene"));
+		this.sceneBox.setMaxLength(64);
 		this.sceneBox.setHint(Component.literal("scene (e.g. aggressive)"));
 		this.sceneBox.setValue("aggressive");
 		this.addRenderableWidget(this.sceneBox);
 		this.targetBox = new EditBox(this.font, this.listLeft + 256, this.listTop + this.listHeight + 6, 160, 20,
 				Component.literal("target"));
+		// K13-B: entity ids / idle rule ids / uuids exceed the 32-char default
+		this.targetBox.setMaxLength(128);
 		this.targetBox.setHint(Component.literal("target (entity type / rule id)"));
 		this.addRenderableWidget(this.targetBox);
 
@@ -184,6 +187,9 @@ public class PlaylistImportScreen extends Screen
 		// K13-A: netease playlist fetch - one line above the action row
 		this.playlistUrlBox = new EditBox(this.font, this.listLeft + 4, this.listTop + this.listHeight + 56,
 				this.listWidth - 140, 20, Component.literal("playlist url"));
+		// K13-B: netease playlist URLs (with uct2/params) exceed the default
+		// 32-char EditBox cap and were silently truncated - raise the limit
+		this.playlistUrlBox.setMaxLength(512);
 		this.playlistUrlBox.setHint(Component.literal("music.163.com/playlist?id=..."));
 		this.addRenderableWidget(this.playlistUrlBox);
 		this.fetchButton = this.addRenderableWidget(Button.builder(
@@ -392,6 +398,10 @@ public class PlaylistImportScreen extends Screen
 			return;
 		}
 		this.playlistFetching = true;
+		// K13-B: the fetch joins the same pending counter as file parses so
+		// Confirm stays disabled until the network result is in (atomic batch)
+		this.pendingParseCount++;
+		this.updateConfirmState();
 		this.fetchButton.active = false;
 		this.fetchButton.setMessage(Component.literal("Fetching..."));
 		this.statusMessage = "Fetching playlist tracks...";
@@ -402,15 +412,18 @@ public class PlaylistImportScreen extends Screen
 				.whenCompleteAsync((songs, error) -> {
 					if (generation != this.importGeneration)
 						return;
+					this.pendingParseCount = Math.max(0, this.pendingParseCount - 1);
 					this.playlistFetching = false;
 					this.fetchButton.active = true;
 					this.fetchButton.setMessage(Component.literal("Fetch playlist"));
 					if (error != null) {
 						this.statusMessage = "Playlist fetch failed: " + error;
+						this.updateConfirmState();
 						return;
 					}
 					if (songs == null || songs.isEmpty()) {
 						this.statusMessage = "Playlist has no tracks (or private playlist)";
+						this.updateConfirmState();
 						return;
 					}
 					int before = this.rows.size();
@@ -668,8 +681,11 @@ public class PlaylistImportScreen extends Screen
 		return true;
 	}
 
-	// K13-A: click a row to toggle its selection (for batch re-targeting);
-	// ctrl+click extends, plain click selects only that row
+	// K13-A/K13-B: click a row to toggle its selection (for batch
+	// re-targeting); ctrl+click extends, plain click selects only that row.
+	// Widgets (buttons, edit boxes) get the FIRST chance to consume the click
+	// - only a click on truly empty background clears the selection, otherwise
+	// clicking kind/scene/target/Apply would wipe it before the action ran.
 	@Override
 	public boolean mouseClicked(double mouseX, double mouseY, int button)
 	{
@@ -688,11 +704,13 @@ public class PlaylistImportScreen extends Screen
 				return true;
 			}
 		}
-		// click outside the list clears the selection
-		if (button == 0 && (mouseY < this.listTop || mouseY >= this.listTop + this.listHeight)) {
+		// let widgets consume their clicks first
+		if (super.mouseClicked(mouseX, mouseY, button))
+			return true;
+		// only a click on empty background clears the selection
+		if (button == 0)
 			this.selectedRows.clear();
-		}
-		return super.mouseClicked(mouseX, mouseY, button);
+		return false;
 	}
 
 	@Override

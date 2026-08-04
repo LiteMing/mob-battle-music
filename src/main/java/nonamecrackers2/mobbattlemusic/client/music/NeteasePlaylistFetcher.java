@@ -112,31 +112,46 @@ public final class NeteasePlaylistFetcher
 	}
 
 	// /api/v6 returns only trackIds; resolve each through the song/detail
-	// endpoint in parallel (bounded to 50 tracks per playlist page)
+	// endpoint in chunks of 50, merged back in original trackIds order so
+	// playlists larger than 50 tracks are NOT silently truncated
 	private static JsonArray detailTracks(JsonObject playlist)
 	{
 		JsonArray ids = playlist.getAsJsonArray("trackIds");
 		if (ids.isEmpty())
 			return null;
-		int limit = Math.min(50, ids.size());
-		StringBuilder joined = new StringBuilder();
-		for (int i = 0; i < limit; i++) {
-			JsonElement element = ids.get(i);
+		// collect all ids in original order first
+		List<String> allIds = new ArrayList<>();
+		for (JsonElement element : ids) {
 			String id = element.isJsonObject() ? string(element.getAsJsonObject(), "id") : "";
 			if (id.isBlank() && element.isJsonPrimitive())
 				id = element.getAsString();
-			if (id.isBlank())
-				continue;
-			if (!joined.isEmpty())
-				joined.append(',');
-			joined.append(id);
+			if (!id.isBlank())
+				allIds.add(id);
 		}
-		if (joined.isEmpty())
+		if (allIds.isEmpty())
 			return null;
+		JsonArray merged = new JsonArray();
+		for (int start = 0; start < allIds.size(); start += 50) {
+			List<String> chunk = allIds.subList(start, Math.min(allIds.size(), start + 50));
+			StringBuilder joined = new StringBuilder();
+			for (String id : chunk) {
+				if (!joined.isEmpty())
+					joined.append(',');
+				joined.append(id);
+			}
+			JsonArray songs = fetchDetailChunk(joined.toString());
+			if (songs != null)
+				merged.addAll(songs);
+		}
+		return merged.isEmpty() ? null : merged;
+	}
+
+	private static JsonArray fetchDetailChunk(String joinedIds)
+	{
 		try {
 			String body = CLIENT.send(
 					HttpRequest.newBuilder(URI.create(
-							"https://music.163.com/api/song/detail/?ids=%5B" + joined + "%5D"))
+							"https://music.163.com/api/song/detail/?ids=%5B" + joinedIds + "%5D"))
 							.header("Referer", "https://music.163.com/")
 							.header("User-Agent", "Mozilla/5.0")
 							.timeout(Duration.ofSeconds(25))

@@ -219,6 +219,8 @@
 	"gui.mobbattlemusic.playlist.button.cancel": "Cancel",
 	"gui.mobbattlemusic.playlist.button.save": "Save",
 	"gui.mobbattlemusic.playlist.message.saved": "Saved playlist settings",
+	"gui.mobbattlemusic.playlist.message.batch_no_selection": "No tracks checked - click tracks in Batch mode first",
+	"gui.mobbattlemusic.playlist.message.batch_invalid_target": "Target group is not valid for the current kind/scene/target",
 	"gui.mobbattlemusic.playlist.confirm.title": "Discard changes?",
 	"gui.mobbattlemusic.playlist.confirm.message": "There are unsaved playlist fields. Discard them?",
 	"key.mobbattlemusic.dump_probe": "Dump Probe Ring",

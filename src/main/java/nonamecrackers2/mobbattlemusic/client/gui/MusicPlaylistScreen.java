@@ -618,10 +618,12 @@ public class MusicPlaylistScreen extends Screen
 	private void deleteTrackRow(Row row)
 	{
 		// K13-A: batch mode - delete removes the row from the checked set
-		// instead of deleting from disk
+		// instead of deleting from disk; K13-B: refresh the button state so
+		// unchecking the LAST row deactivates "add checked to target group"
 		if (this.multiSelectActive) {
 			this.selectedRowSet.remove(row.playlist() + "#" + row.entry().url());
 			this.refreshSelectionLists();
+			this.updateButtonState();
 			return;
 		}
 		selectTrackRow(row);
@@ -2313,23 +2315,58 @@ public class MusicPlaylistScreen extends Screen
 
 	private void useSelectedSource()
 	{
-		// K13-A: batch mode adds every checked row's URL to the target group
-		// (kind/scene/target); normal mode adds the single selected row
-		if (this.multiSelectActive && !this.selectedRowSet.isEmpty()) {
-			int added = 0;
+		// K13-A/K13-B: batch mode adds every checked row's URL to the target
+		// group (kind/scene/target) in ONE atomic plan; normal mode adds the
+		// single selected row
+		if (this.multiSelectActive) {
+			if (this.selectedRowSet.isEmpty()) {
+				message(text("message.batch_no_selection"));
+				return;
+			}
+			String scene = this.sceneBox.getValue().trim();
+			String target = this.targetBox.getValue().trim();
+			if ((scene.isBlank() && !"idle_rule".equals(this.addKind)) ||
+					(!"scene".equals(this.addKind) && target.isBlank())) {
+				message(text("message.scene_music_required"));
+				return;
+			}
+			if (this.editMode == EditMode.SERVER) {
+				// server mode: commands are inherently per-track, best-effort
+				int sent = 0;
+				for (String key : List.copyOf(this.selectedRowSet)) {
+					Row row = this.rows.stream()
+							.filter(candidate -> (candidate.playlist() + "#" + candidate.entry().url()).equals(key))
+							.findFirst().orElse(null);
+					if (row == null || row.binding() == null || row.entry() == null)
+						continue;
+					runServerCommand(addCommand(scene, target, row.entry().url()));
+					sent++;
+				}
+				this.selectedRowSet.clear();
+				this.rebuildRows();
+				this.loadSelectedSettings(true);
+				this.updateButtonState();
+				return;
+			}
+			MusicTracksManager.DynamicBinding binding = currentTargetBinding();
+			if (binding == null) {
+				message(text("message.batch_invalid_target"));
+				return;
+			}
+			// K13-B: ONE plan -> ONE validation -> ONE commit -> ONE save
+			java.util.Map<MusicTracksManager.DynamicBinding, List<String>> plan =
+					new java.util.LinkedHashMap<>();
 			for (String key : List.copyOf(this.selectedRowSet)) {
 				Row row = this.rows.stream()
 						.filter(candidate -> (candidate.playlist() + "#" + candidate.entry().url()).equals(key))
 						.findFirst().orElse(null);
-				if (row == null || row.binding() == null || row.entry() == null)
+				if (row == null || row.entry() == null)
 					continue;
-				if (addBindingSilent(row.entry().url()))
-					added++;
+				plan.computeIfAbsent(binding, b -> new java.util.ArrayList<>()).add(row.entry().url());
 			}
-			if (added > 0)
-				message(Component.literal("Added " + added + " checked track(s) to the target group"));
-			else
-				message(text("message.add_bind_failed"));
+			MusicTracksManager.PlaylistControlResult result =
+					MusicTracksManager.getInstance().importLocalPlan(plan);
+			message(result.message());
 			this.selectedRowSet.clear();
 			this.rebuildRows();
 			this.loadSelectedSettings(true);
@@ -2347,28 +2384,18 @@ public class MusicPlaylistScreen extends Screen
 		addBinding(this.rows.get(this.selected).entry().url());
 	}
 
-	// K13-A: like addBinding but returns success instead of messaging the
-	// user each iteration (batch add)
-	private boolean addBindingSilent(String music)
+	// K13-B: resolve the current kind/scene/target editor into a binding for
+	// the atomic batch import plan
+	private MusicTracksManager.DynamicBinding currentTargetBinding()
 	{
 		String scene = this.sceneBox.getValue().trim();
 		String target = this.targetBox.getValue().trim();
-		if ((scene.isBlank() && !"idle_rule".equals(this.addKind)) || music.isBlank())
-			return false;
-		if (!"scene".equals(this.addKind) && target.isBlank())
-			return false;
-		if (this.editMode == EditMode.SERVER) {
-			runServerCommand(addCommand(scene, target, music));
-			return true;
-		}
-		MusicTracksManager.PlaylistControlResult result = switch (this.addKind) {
-			case "idle_rule" -> MusicTracksManager.getInstance().addLocalIdleRuleUrl(target, music);
-			case "type" -> MusicTracksManager.getInstance().addLocalEntityTypeUrl(scene, target, music);
-			case "uuid" -> MusicTracksManager.getInstance().addLocalEntityUuidUrl(scene, target, music);
-			case "player" -> addLocalPlayer(scene, target, music);
-			default -> MusicTracksManager.getInstance().addLocalSceneUrl(scene, music);
+		return switch (this.addKind) {
+			case "type" -> MusicTracksManager.DynamicBinding.entityType(scene, target);
+			case "uuid" -> MusicTracksManager.DynamicBinding.entityUuid(scene, target);
+			case "idle_rule" -> MusicTracksManager.DynamicBinding.idleRule(target);
+			default -> MusicTracksManager.DynamicBinding.scene(scene);
 		};
-		return result.success();
 	}
 
 	private void addBinding(String music)
