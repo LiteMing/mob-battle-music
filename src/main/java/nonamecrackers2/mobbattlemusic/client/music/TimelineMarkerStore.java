@@ -53,6 +53,31 @@ public final class TimelineMarkerStore
 		return List.copyOf(indexed == null ? server.getOrDefault(url, List.of()) : indexed);
 	}
 
+	// K14-D: strict source isolation - the SERVER editor must only ever see
+	// the server snapshot (a LOCAL marker for the same playlist/index must
+	// not leak in and corrupt the delete index math); the LOCAL editor only
+	// sees local markers.
+	public static synchronized List<TimelineMarker> localMarkers(ResourceLocation playlist, String url, int entryIndex)
+	{
+		load();
+		Map<String, List<TimelineMarker>> local = LOCAL.get(playlist.toString());
+		if (local != null) {
+			List<TimelineMarker> indexed = local.get(entryKey(entryIndex));
+			if (indexed != null)
+				return List.copyOf(indexed);
+			if (local.containsKey(url))
+				return List.copyOf(local.get(url));
+		}
+		return List.of();
+	}
+
+	public static synchronized List<TimelineMarker> serverMarkers(ResourceLocation playlist, String url, int entryIndex)
+	{
+		Map<String, List<TimelineMarker>> server = SERVER.getOrDefault(playlist.toString(), Map.of());
+		List<TimelineMarker> indexed = server.get(entryKey(entryIndex));
+		return List.copyOf(indexed == null ? server.getOrDefault(url, List.of()) : indexed);
+	}
+
 	public static synchronized void applyServerSync(ServerExternalPlaylistSyncPacket packet)
 	{
 		SERVER.clear();

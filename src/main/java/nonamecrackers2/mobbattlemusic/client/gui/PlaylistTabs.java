@@ -20,10 +20,13 @@ final class PlaylistTabs
 
 	static List<Button> create(PlaylistScreenLayout.Rect bounds, Tab selected, Consumer<Tab> onSelected)
 	{
-		List<Tab> visibleTabs = List.of(Tab.LIBRARY, Tab.IDLE, Tab.FILTERS, Tab.NETEASE);
+		// K14-D: TIMELINE is a first-class entry again - it was excluded from
+		// visibleTabs, so the marker editor had no top-level navigation. Five
+		// tabs share the width adaptively.
+		List<Tab> visibleTabs = List.of(Tab.LIBRARY, Tab.IDLE, Tab.TIMELINE, Tab.FILTERS, Tab.NETEASE);
 		int gap = PlaylistScreenLayout.GAP;
 		int available = Math.max(1, bounds.width());
-		int width = Math.max(38, Math.min(104, (available - gap * (visibleTabs.size() - 1)) / visibleTabs.size()));
+		int width = Math.max(30, Math.min(84, (available - gap * (visibleTabs.size() - 1)) / visibleTabs.size()));
 		int total = width * visibleTabs.size() + gap * (visibleTabs.size() - 1);
 		int x = bounds.x() + Math.max(0, (bounds.width() - total) / 2);
 		List<Button> buttons = new ArrayList<>();

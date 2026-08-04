@@ -51,7 +51,11 @@ final class TimelineMarkerScreen extends Screen
 	private int trackScroll;
 	private int markerScroll;
 	private int syncRefreshCooldown;
-	private boolean scrubbedTime;
+	// K14-D: time-box mode - FOLLOW follows the playhead every tick, PINNED
+	// keeps the chosen time stable while the user types the event id (the old
+	// code overwrote the scrubbed time on every tick once the box lost focus)
+	private boolean followPlayhead = true;
+	private Button followButton;
 
 	TimelineMarkerScreen(Screen parent, MusicPlaylistScreen.EditMode editMode)
 	{
@@ -112,7 +116,8 @@ final class TimelineMarkerScreen extends Screen
 		this.markerTimeBox.setValue(state.markerTime);
 		this.markerTimeBox.setResponder(value -> {
 			state().markerTime = value;
-			this.scrubbedTime = true;
+			// K14-D: manual edit pins the time
+			this.followPlayhead = false;
 			updateButtonState();
 		});
 		int eventWidth = Math.max(48, detailRight() - x - timeWidth - addWidth - deleteWidth - doneWidth - 16);
@@ -125,6 +130,10 @@ final class TimelineMarkerScreen extends Screen
 			state().markerEvent = value;
 			updateButtonState();
 		});
+		// K14-D: follow/pin toggle - a focused or edited time box pins the time
+		this.followButton = this.addRenderableWidget(Button.builder(followLabel(), button -> toggleFollow())
+				.bounds(x, bottomY + 22, timeWidth + 4, 18).build());
+		this.followButton.active = isPreviewing(selectedTrack());
 		int actionsX = this.markerEventBox.getX() + this.markerEventBox.getWidth() + 4;
 		this.addMarkerButton = this.addRenderableWidget(Button.builder(text("button.marker_add"), button -> addMarker())
 				.bounds(actionsX, bottomY, addWidth, 20).build());
@@ -272,7 +281,7 @@ final class TimelineMarkerScreen extends Screen
 			return false;
 		double progress = (mouseX - x) / Math.max(1.0D, right - x);
 		long position = Math.round(duration * Math.max(0.0D, Math.min(1.0D, progress)));
-		this.scrubbedTime = true;
+		this.followPlayhead = false;
 		this.markerTimeBox.setValue(String.valueOf(position));
 		ExternalMusicHandler.getInstance().seekPreviewMusic(position);
 		List<TimelineMarker> markers = markers(track);
@@ -302,7 +311,7 @@ final class TimelineMarkerScreen extends Screen
 		this.selectedTrack = index;
 		this.selectedMarker = 0;
 		this.markerScroll = 0;
-		this.scrubbedTime = false;
+		this.followPlayhead = true;
 		this.markerTimeBox.setValue("0");
 		this.updateButtonState();
 		return true;
@@ -322,7 +331,7 @@ final class TimelineMarkerScreen extends Screen
 		if (index < 0 || index >= markers.size())
 			return false;
 		this.selectedMarker = index;
-		this.scrubbedTime = true;
+		this.followPlayhead = false;
 		this.markerTimeBox.setValue(String.valueOf(markers.get(index).timeMillis()));
 		if (previewDuration(track) > 0L)
 			ExternalMusicHandler.getInstance().seekPreviewMusic(markers.get(index).timeMillis());
@@ -345,16 +354,33 @@ final class TimelineMarkerScreen extends Screen
 	{
 		super.tick();
 		Track track = selectedTrack();
-		if (!this.markerTimeBox.isFocused() && isPreviewing(track)) {
-			// K4 P1: isPreviewing() is NOT a valid guard - previewUrl is set
-			// before the decode thread opens the line; -1 must not enter the
-			// box
+		// K14-D: FOLLOW only - the playhead writes the box only while in
+		// follow mode AND the box is not focused AND the event box is not
+		// focused (typing the event must never move the chosen time). Any
+		// manual edit, timeline scrub or marker selection pins the time.
+		if (this.followPlayhead && !this.markerTimeBox.isFocused() && !this.markerEventBox.isFocused()
+				&& isPreviewing(track)) {
 			long position = ExternalMusicHandler.getInstance().getPreviewPositionMillis();
 			this.markerTimeBox.setValue(String.valueOf(Math.max(0L, position)));
-			this.scrubbedTime = false;
 		}
 		if (this.syncRefreshCooldown > 0 && --this.syncRefreshCooldown == 0)
 			MobBattleMusicNetwork.requestServerExternalPlaylistSync();
+	}
+
+	private void toggleFollow()
+	{
+		this.followPlayhead = !this.followPlayhead;
+		if (this.followButton != null)
+			this.followButton.setMessage(followLabel());
+		if (this.followPlayhead && isPreviewing(selectedTrack())) {
+			long position = ExternalMusicHandler.getInstance().getPreviewPositionMillis();
+			this.markerTimeBox.setValue(String.valueOf(Math.max(0L, position)));
+		}
+	}
+
+	private Component followLabel()
+	{
+		return text(this.followPlayhead ? "button.follow_playhead" : "button.pin_time");
 	}
 
 	@Override
@@ -415,7 +441,7 @@ final class TimelineMarkerScreen extends Screen
 		if (track == null)
 			return;
 		stopPreview();
-		this.scrubbedTime = false;
+		this.followPlayhead = true;
 		PreviewChannel.playUrl(track.entry().url(), 20, 0L);
 	}
 
@@ -481,9 +507,15 @@ final class TimelineMarkerScreen extends Screen
 				? source == MusicTracksManager.DynamicSource.SERVER : source == MusicTracksManager.DynamicSource.LOCAL;
 	}
 
+	// K14-D: strict source isolation - SERVER mode reads only the server
+	// snapshot, LOCAL mode reads only local markers
 	private List<TimelineMarker> markers(Track track)
 	{
-		return track == null ? List.of() : TimelineMarkerStore.markers(track.playlist(), track.entry().url(), track.entryIndex());
+		if (track == null)
+			return List.of();
+		return this.editMode == MusicPlaylistScreen.EditMode.SERVER
+				? TimelineMarkerStore.serverMarkers(track.playlist(), track.entry().url(), track.entryIndex())
+				: TimelineMarkerStore.localMarkers(track.playlist(), track.entry().url(), track.entryIndex());
 	}
 
 	private boolean isPreviewing(Track track)
