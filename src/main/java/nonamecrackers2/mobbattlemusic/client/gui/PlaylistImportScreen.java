@@ -54,11 +54,24 @@ public class PlaylistImportScreen extends Screen
 	private Button cancelButton;
 	private Button clipboardButton;
 	private Button clearButton;
+	// K13-A: netease playlist URL fetch - paste a music.163.com/playlist?id=
+	// link, fetch its tracks into the preview (async, generation-guarded)
+	private EditBox playlistUrlBox;
+	private Button fetchButton;
+	private boolean playlistFetching;
+	// K13-A: apply the target editor (kind/scene/target) to all selected rows
+	private Button applyTargetButton;
 	private EditBox sceneBox;
 	private EditBox targetBox;
 	private String addKind = "scene";
 	private Button kindButton;
 	private String statusMessage = "";
+	// K13-A: per-row target selection - rows can be split across condition
+	// groups (idle / ambient / aggressive type / idle rule). Clicking a row
+	// toggles its selection; the target controls then apply to ALL selected
+	// rows, and the row's own binding overrides the screen default.
+	private final java.util.Set<Integer> selectedRows = new java.util.LinkedHashSet<>();
+	private boolean dragSelecting;
 
 	private enum RowStatus
 	{
@@ -86,8 +99,9 @@ public class PlaylistImportScreen extends Screen
 		final String raw;
 		final @Nullable String title;
 		// K10-D: JSON-imported rows keep their source binding; null rows use
-		// the screen's selected target
-		final @Nullable MusicTracksManager.DynamicBinding binding;
+		// the screen's selected target. K13-A: mutable - the user can re-target
+		// a row (or a batch of rows) to a different condition group.
+		@Nullable MusicTracksManager.DynamicBinding binding;
 		final SourceKind sourceKind;
 		RowStatus status;
 		String error;
@@ -140,7 +154,7 @@ public class PlaylistImportScreen extends Screen
 		this.listLeft = centerX - panelWidth / 2;
 		this.listTop = 44;
 		this.listWidth = panelWidth;
-		this.listHeight = Math.min(MAX_VISIBLE_ROWS * ROW_HEIGHT, this.height - 190);
+		this.listHeight = Math.min(MAX_VISIBLE_ROWS * ROW_HEIGHT, this.height - 260);
 
 		this.kindButton = this.addRenderableWidget(Button.builder(
 				Component.literal(kindLabel()), button -> cycleKind())
@@ -167,6 +181,20 @@ public class PlaylistImportScreen extends Screen
 		this.confirmButton = this.addRenderableWidget(Button.builder(
 				Component.literal("Import (atomic)"), button -> commit())
 				.bounds(this.listLeft + this.listWidth - 114, this.listTop + this.listHeight + 32, 110, 20).build());
+		// K13-A: netease playlist fetch - one line above the action row
+		this.playlistUrlBox = new EditBox(this.font, this.listLeft + 4, this.listTop + this.listHeight + 56,
+				this.listWidth - 140, 20, Component.literal("playlist url"));
+		this.playlistUrlBox.setHint(Component.literal("music.163.com/playlist?id=..."));
+		this.addRenderableWidget(this.playlistUrlBox);
+		this.fetchButton = this.addRenderableWidget(Button.builder(
+				Component.literal("Fetch playlist"), button -> fetchPlaylist())
+				.bounds(this.listLeft + this.listWidth - 130, this.listTop + this.listHeight + 56, 126, 20).build());
+		// K13-A: apply the current target (kind/scene/target boxes) to all
+		// selected rows - split one playlist across condition groups
+		this.applyTargetButton = this.addRenderableWidget(Button.builder(
+				Component.literal("Apply target to selected"), button -> applyTargetToSelected())
+				.bounds(this.listLeft + 4, this.listTop + this.listHeight + 80,
+						Math.min(220, this.listWidth - 8), 20).build());
 		// K10-D: the first open must already show validated rows - the
 		// constructor's addFile only collected raw entries
 		this.refreshStatuses();
@@ -346,6 +374,86 @@ public class PlaylistImportScreen extends Screen
 		this.updateConfirmState();
 	}
 
+	// K13-A: fetch a music.163.com playlist into the preview. Runs on a
+	// background thread; results are generation-guarded like file parses.
+	private void fetchPlaylist()
+	{
+		String url = this.playlistUrlBox.getValue().trim();
+		if (url.isEmpty()) {
+			this.statusMessage = "Paste a music.163.com playlist URL first";
+			return;
+		}
+		if (nonamecrackers2.mobbattlemusic.client.music.NeteasePlaylistFetcher.playlistId(url) == null) {
+			this.statusMessage = "Not a netease playlist URL (need id=...)";
+			return;
+		}
+		if (this.playlistFetching) {
+			this.statusMessage = "Playlist fetch already in progress";
+			return;
+		}
+		this.playlistFetching = true;
+		this.fetchButton.active = false;
+		this.fetchButton.setMessage(Component.literal("Fetching..."));
+		this.statusMessage = "Fetching playlist tracks...";
+		final int generation = this.importGeneration;
+		java.util.concurrent.CompletableFuture
+				.supplyAsync(() -> nonamecrackers2.mobbattlemusic.client.music.NeteasePlaylistFetcher.fetch(url))
+				.thenCompose(future -> future)
+				.whenCompleteAsync((songs, error) -> {
+					if (generation != this.importGeneration)
+						return;
+					this.playlistFetching = false;
+					this.fetchButton.active = true;
+					this.fetchButton.setMessage(Component.literal("Fetch playlist"));
+					if (error != null) {
+						this.statusMessage = "Playlist fetch failed: " + error;
+						return;
+					}
+					if (songs == null || songs.isEmpty()) {
+						this.statusMessage = "Playlist has no tracks (or private playlist)";
+						return;
+					}
+					int before = this.rows.size();
+					for (nonamecrackers2.mobbattlemusic.client.music.NeteasePlaylistFetcher.Song song : songs) {
+						this.rows.add(new Row(song.url(), song.title() +
+								(song.artist().isBlank() ? "" : " - " + song.artist()),
+								null, SourceKind.URL, RowStatus.NEW, ""));
+					}
+					this.statusMessage = "Added " + (this.rows.size() - before)
+							+ " tracks from netease playlist";
+					this.refreshStatuses();
+					this.updateConfirmState();
+				}, Minecraft.getInstance());
+	}
+
+	// K13-A: apply the current target editor to all selected rows - this is
+	// how one playlist is split across condition groups (idle / ambient /
+	// aggressive type / idle rule).
+	private void applyTargetToSelected()
+	{
+		MusicTracksManager.DynamicBinding target = currentBinding();
+		if (target == null) {
+			this.statusMessage = "Target not valid for the current kind/scene/target";
+			return;
+		}
+		java.util.Set<Integer> selection = new java.util.LinkedHashSet<>(this.selectedRows);
+		if (selection.isEmpty()) {
+			this.statusMessage = "Click rows to select them, then apply a target";
+			return;
+		}
+		for (Integer index : selection) {
+			if (index < 0 || index >= this.rows.size())
+				continue;
+			Row row = this.rows.get(index);
+			if (row.sourceKind == SourceKind.LOCAL_AUDIO)
+				continue;
+			row.binding = target;
+		}
+		this.statusMessage = "Applied target to " + selection.size() + " selected row(s)";
+		this.refreshStatuses();
+		this.updateConfirmState();
+	}
+
 	private void clearRows()
 	{
 		// K11-D: a clear invalidates every in-flight async parse; K12-C: the
@@ -359,6 +467,7 @@ public class PlaylistImportScreen extends Screen
 		this.filesInfo.clear();
 		this.statusMessage = "";
 		this.scrollOffset = 0;
+		this.selectedRows.clear();
 		this.updateConfirmState();
 	}
 
@@ -509,24 +618,30 @@ public class PlaylistImportScreen extends Screen
 		if (this.scrollOffset > Math.max(0, this.rows.size() - visible))
 			this.scrollOffset = Math.max(0, this.rows.size() - visible);
 		for (int i = 0; i < visible && this.scrollOffset + i < this.rows.size(); i++) {
-			Row row = this.rows.get(this.scrollOffset + i);
+			int rowIndex = this.scrollOffset + i;
+			Row row = this.rows.get(rowIndex);
 			int y = this.listTop + i * ROW_HEIGHT;
+			// K13-A: selected rows get a highlight so the "apply target to
+			// selected" action has visible feedback
+			if (this.selectedRows.contains(rowIndex))
+				graphics.fill(this.listLeft, y, this.listLeft + this.listWidth, y + ROW_HEIGHT - 2, 0xFF2A3B4D);
 			int color = switch (row.status) {
 				case DUPLICATE -> 0xFF8B929C;
 				case BLOCKING_INVALID -> 0xFFE06C75;
 				case INFORMATIONAL_UNSUPPORTED -> 0xFFE6C07A;
 				default -> 0xFF73D98A;
 			};
-			graphics.drawString(this.font, row.status.name().charAt(0) + " ", this.listLeft + 6, y + 4, color);
+			String marker = this.selectedRows.contains(rowIndex) ? "\u2713 " : row.status.name().charAt(0) + " ";
+			graphics.drawString(this.font, marker, this.listLeft + 6, y + 4, color);
 			String title = row.title == null || row.title.isEmpty() ? row.raw : row.title;
 			graphics.drawString(this.font, title, this.listLeft + 24, y + 4, 0xFFFFFF);
-			// K10-D: JSON rows show their source binding tag
-			if (row.binding != null)
-				graphics.drawString(this.font, "[" + row.binding.storageKey() + "]", this.listLeft + 24, y + 4,
-						0xFFE5C07B);
+			// K10-D/K13-A: JSON and re-targeted rows show their binding tag;
+			// rows without an explicit binding fall back to the screen target
+			graphics.drawString(this.font, row.binding == null ? "[screen target]" : "[" + row.binding.storageKey() + "]",
+					this.listLeft + this.listWidth - Math.min(150, this.listWidth / 3), y + 4, 0xFFE5C07B);
 			graphics.drawString(this.font, row.raw, this.listLeft + 24, y + 14, 0x8B929C);
 		}
-		int summaryY = this.listTop + this.listHeight + 58;
+		int summaryY = this.listTop + this.listHeight + 104;
 		int newCount = 0, dupCount = 0, invalidCount = 0, infoCount = 0;
 		for (Row row : this.rows) {
 			if (row.status == RowStatus.NEW) newCount++;
@@ -551,6 +666,33 @@ public class PlaylistImportScreen extends Screen
 		this.scrollOffset = Math.max(0, Math.min(this.scrollOffset - (int) Math.signum(delta),
 				Math.max(0, this.rows.size() - visible)));
 		return true;
+	}
+
+	// K13-A: click a row to toggle its selection (for batch re-targeting);
+	// ctrl+click extends, plain click selects only that row
+	@Override
+	public boolean mouseClicked(double mouseX, double mouseY, int button)
+	{
+		if (button == 0 && mouseX >= this.listLeft && mouseX < this.listLeft + this.listWidth
+				&& mouseY >= this.listTop && mouseY < this.listTop + this.listHeight) {
+			int rowIndex = (int) ((mouseY - this.listTop) / ROW_HEIGHT) + this.scrollOffset;
+			if (rowIndex >= 0 && rowIndex < this.rows.size()) {
+				boolean ctrl = hasControlDown();
+				if (ctrl) {
+					if (!this.selectedRows.remove(rowIndex))
+						this.selectedRows.add(rowIndex);
+				} else {
+					this.selectedRows.clear();
+					this.selectedRows.add(rowIndex);
+				}
+				return true;
+			}
+		}
+		// click outside the list clears the selection
+		if (button == 0 && (mouseY < this.listTop || mouseY >= this.listTop + this.listHeight)) {
+			this.selectedRows.clear();
+		}
+		return super.mouseClicked(mouseX, mouseY, button);
 	}
 
 	@Override

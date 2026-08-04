@@ -107,8 +107,16 @@ public class MusicPlaylistScreen extends Screen
 	private Button cancelButton;
 	private Button addBindingButton;
 	private Button importButton;
-	private Button exportButton;
 	private Button volumeButton;
+	// K13-A: LIBRARY batch condition management - when multi-select is on,
+	// clicking rows only toggles their membership in selectedRowSet; the
+	// "add selected to target" action (addBindingButton) then adds every
+	// checked row's URL to the target group chosen by kind/scene/target.
+	private boolean multiSelectActive;
+	// K13-A: batch selection keys (playlist + "#" + url) - stable across
+	// rebuildRows since rows are rebuilt as new instances
+	private final java.util.Set<String> selectedRowSet = new java.util.LinkedHashSet<>();
+	private Button multiSelectButton;
 	// K9-3: volume popup state - two sliders + preview-follows-main toggle
 	private boolean volumePanelOpen;
 	private float mainGainValue = 1.0F;
@@ -333,12 +341,16 @@ public class MusicPlaylistScreen extends Screen
 						Math.max(24, iw - half - PlaylistScreenLayout.GAP), 20).build());
 		this.addBindingButton = this.addRenderableWidget(Button.builder(text("button.add_bind"), button -> useSelectedSource())
 				.bounds(ix, editY + 58, iw, 20).build());
-		// K9-1: transactional import preview + export (MBM JSON round-trip)
+		// K9-1: transactional import preview (export is config-file only)
 		this.importButton = this.addRenderableWidget(Button.builder(text("button.import"),
 				button -> this.minecraft.setScreen(new PlaylistImportScreen(this)))
 				.bounds(ix, editY + 82, iw, 20).build());
-		this.exportButton = this.addRenderableWidget(Button.builder(text("button.export"),
-				button -> exportSelectedBinding())
+		// K13-A: LIBRARY batch condition management - toggle multi-select
+		// mode; while active, row clicks check rows instead of editing, and
+		// "add selected to target" copies every checked track into the target
+		// group chosen by kind/scene/target
+		this.multiSelectButton = this.addRenderableWidget(Button.builder(
+				Component.literal("Batch: off"), button -> toggleMultiSelect())
 				.bounds(ix, editY + 106, iw, 20).build());
 		this.copyUrlButton = this.addRenderableWidget(Button.builder(text("button.copy_url"), button -> copySelectedUrl())
 				.bounds(ix, detailActionY, iw, 20).build());
@@ -494,9 +506,11 @@ public class MusicPlaylistScreen extends Screen
 		for (Row row : this.rows) {
 			if (this.selectedPlaylist != null && !this.selectedPlaylist.equals(row.playlist()))
 				continue;
+			// K13-A: batch-mode check marks (last arg)
 			trackModels.add(new PlaylistSelectionList.Model<>(row.playlist() + "#" + row.index(), row,
 					Component.literal(row.title()), Component.literal(row.context() + "  #" + (row.index() + 1)),
-					trackStatus(row), selectedRowEditable(row), selectedRowEditable(row)));
+					trackStatus(row), selectedRowEditable(row), selectedRowEditable(row),
+					this.selectedRowSet.contains(row.playlist() + "#" + row.entry().url())));
 		}
 		String selectedKey = selectedRow() == null ? null : selectedRow().playlist() + "#" + selectedRow().index();
 		this.trackList.setItems(trackModels, selectedKey);
@@ -557,11 +571,32 @@ public class MusicPlaylistScreen extends Screen
 
 	private void selectTrackRow(Row row)
 	{
+		// K13-A: while batch mode is on, clicking a row only toggles its
+		// membership - no editor reload, no state change
+		if (this.multiSelectActive) {
+			String key = row.playlist() + "#" + row.entry().url();
+			if (!this.selectedRowSet.remove(key))
+				this.selectedRowSet.add(key);
+			this.refreshSelectionLists();
+			this.updateButtonState();
+			return;
+		}
 		this.selected = this.rows.indexOf(row);
 		this.selectedPlaylist = row.playlist();
 		state().selected = this.selected;
 		state().selectedPlaylist = row.playlist().toString();
 		this.loadSelectedSettings(true);
+		this.updateButtonState();
+	}
+
+	private void toggleMultiSelect()
+	{
+		this.multiSelectActive = !this.multiSelectActive;
+		if (!this.multiSelectActive)
+			this.selectedRowSet.clear();
+		if (this.multiSelectButton != null)
+			this.multiSelectButton.setMessage(Component.literal(this.multiSelectActive ? "Batch: on" : "Batch: off"));
+		this.refreshSelectionLists();
 		this.updateButtonState();
 	}
 
@@ -582,6 +617,13 @@ public class MusicPlaylistScreen extends Screen
 
 	private void deleteTrackRow(Row row)
 	{
+		// K13-A: batch mode - delete removes the row from the checked set
+		// instead of deleting from disk
+		if (this.multiSelectActive) {
+			this.selectedRowSet.remove(row.playlist() + "#" + row.entry().url());
+			this.refreshSelectionLists();
+			return;
+		}
 		selectTrackRow(row);
 		deleteSelected();
 		this.refreshSelectionLists();
@@ -1673,7 +1715,14 @@ public class MusicPlaylistScreen extends Screen
 		this.targetBox.active = this.targetBox.visible && !"scene".equals(this.addKind);
 		this.addBindingButton.visible = binding || this.viewMode == ViewMode.NETEASE;
 		this.addBindingButton.active = this.viewMode == ViewMode.NETEASE
-				? this.searchSelected >= 0 && this.searchSelected < this.searchRows.size() : hasTrack;
+				? this.searchSelected >= 0 && this.searchSelected < this.searchRows.size()
+				: this.multiSelectActive ? !this.selectedRowSet.isEmpty() : hasTrack;
+		// K13-A: batch-mode button label reflects the current mode
+		if (this.addBindingButton != null)
+			this.addBindingButton.setMessage(Component.literal(this.multiSelectActive
+					? "Add checked to target group" : "Add selected to target group"));
+		this.multiSelectButton.visible = this.viewMode == ViewMode.LIBRARY && binding;
+		this.multiSelectButton.active = this.multiSelectButton.visible;
 		this.copyUrlButton.visible = this.viewMode == ViewMode.NETEASE && details;
 		this.copyUrlButton.active = this.searchSelected >= 0 && this.searchSelected < this.searchRows.size();
 		int editorY = conditionEditorY();
@@ -1741,26 +1790,6 @@ public class MusicPlaylistScreen extends Screen
 	private Row selectedRow()
 	{
 		return this.selected < 0 || this.selected >= this.rows.size() ? null : this.rows.get(this.selected);
-	}
-
-	// K9-1: export the selected binding as MBM playlist JSON (importable via
-	// PlaylistImportScreen -> round-trip)
-	private void exportSelectedBinding()
-	{
-		MusicTracksManager.DynamicBinding binding = selectedBinding();
-		if (binding == null || this.editMode != EditMode.LOCAL) {
-			message(text("message.export_requires_local_binding"));
-			return;
-		}
-		String json = MusicTracksManager.getInstance().exportLocalBindingJson(binding);
-		Path path = this.minecraft.gameDirectory.toPath()
-				.resolve("mobbattlemusic_export_" + binding.storageKey().replace(':', '_') + ".json");
-		try {
-			Files.writeString(path, json, StandardCharsets.UTF_8);
-			message(text("message.exported_to", path.getFileName().toString()));
-		} catch (IOException e) {
-			message(text("message.export_failed"));
-		}
 	}
 
 	// K9-1: called by PlaylistImportScreen after an atomic commit
@@ -2284,6 +2313,29 @@ public class MusicPlaylistScreen extends Screen
 
 	private void useSelectedSource()
 	{
+		// K13-A: batch mode adds every checked row's URL to the target group
+		// (kind/scene/target); normal mode adds the single selected row
+		if (this.multiSelectActive && !this.selectedRowSet.isEmpty()) {
+			int added = 0;
+			for (String key : List.copyOf(this.selectedRowSet)) {
+				Row row = this.rows.stream()
+						.filter(candidate -> (candidate.playlist() + "#" + candidate.entry().url()).equals(key))
+						.findFirst().orElse(null);
+				if (row == null || row.binding() == null || row.entry() == null)
+					continue;
+				if (addBindingSilent(row.entry().url()))
+					added++;
+			}
+			if (added > 0)
+				message(Component.literal("Added " + added + " checked track(s) to the target group"));
+			else
+				message(text("message.add_bind_failed"));
+			this.selectedRowSet.clear();
+			this.rebuildRows();
+			this.loadSelectedSettings(true);
+			this.updateButtonState();
+			return;
+		}
 		if (this.viewMode == ViewMode.NETEASE) {
 			if (this.searchSelected < 0 || this.searchSelected >= this.searchRows.size())
 				return;
@@ -2293,6 +2345,30 @@ public class MusicPlaylistScreen extends Screen
 		if (this.selected < 0 || this.selected >= this.rows.size())
 			return;
 		addBinding(this.rows.get(this.selected).entry().url());
+	}
+
+	// K13-A: like addBinding but returns success instead of messaging the
+	// user each iteration (batch add)
+	private boolean addBindingSilent(String music)
+	{
+		String scene = this.sceneBox.getValue().trim();
+		String target = this.targetBox.getValue().trim();
+		if ((scene.isBlank() && !"idle_rule".equals(this.addKind)) || music.isBlank())
+			return false;
+		if (!"scene".equals(this.addKind) && target.isBlank())
+			return false;
+		if (this.editMode == EditMode.SERVER) {
+			runServerCommand(addCommand(scene, target, music));
+			return true;
+		}
+		MusicTracksManager.PlaylistControlResult result = switch (this.addKind) {
+			case "idle_rule" -> MusicTracksManager.getInstance().addLocalIdleRuleUrl(target, music);
+			case "type" -> MusicTracksManager.getInstance().addLocalEntityTypeUrl(scene, target, music);
+			case "uuid" -> MusicTracksManager.getInstance().addLocalEntityUuidUrl(scene, target, music);
+			case "player" -> addLocalPlayer(scene, target, music);
+			default -> MusicTracksManager.getInstance().addLocalSceneUrl(scene, music);
+		};
+		return result.success();
 	}
 
 	private void addBinding(String music)

@@ -38,7 +38,7 @@ final class PlaylistSelectionList<T> extends ObjectSelectionList<PlaylistSelecti
 	}
 
 	record Model<T>(String key, T value, Component title, Component subtitle, Status status,
-			boolean canToggle, boolean canDelete)
+			boolean canToggle, boolean canDelete, boolean checked)
 	{
 		Model
 		{
@@ -46,6 +46,12 @@ final class PlaylistSelectionList<T> extends ObjectSelectionList<PlaylistSelecti
 			Objects.requireNonNull(title);
 			Objects.requireNonNull(subtitle);
 			Objects.requireNonNull(status);
+		}
+
+		Model(String key, T value, Component title, Component subtitle, Status status,
+				boolean canToggle, boolean canDelete)
+		{
+			this(key, value, title, subtitle, status, canToggle, canDelete, false);
 		}
 	}
 
@@ -241,14 +247,17 @@ final class PlaylistSelectionList<T> extends ObjectSelectionList<PlaylistSelecti
 		public void render(GuiGraphics graphics, int index, int top, int left, int width, int height,
 				int mouseX, int mouseY, boolean hovered, float partialTick)
 		{
-			if (hovered)
-				graphics.fill(left, top - 1, left + width, top + height + 1, 0xFF252A30);
-			int textLeft = left + 15;
-			int actionSpace = hovered && (this.model.canToggle() || this.model.canDelete()) ? 31 : 5;
-			int textWidth = Math.max(1, width - 15 - actionSpace);
-			String title = ellipsize(this.model.title().getString(), textWidth);
-			String subtitle = ellipsize(this.model.subtitle().getString(), textWidth);
-			graphics.drawString(font, this.model.status().icon, left + 3, top + 5, this.model.status().color, false);
+		if (hovered)
+			graphics.fill(left, top - 1, left + width, top + height + 1, 0xFF252A30);
+		int textLeft = left + 15;
+		int actionSpace = hovered && (this.model.canToggle() || this.model.canDelete()) ? 31 : 5;
+		int textWidth = Math.max(1, width - 15 - actionSpace);
+		String title = ellipsize(this.model.title().getString(), textWidth);
+		String subtitle = ellipsize(this.model.subtitle().getString(), textWidth);
+		// K13-A: batch-mode check mark replaces the status icon for checked rows
+		String icon = this.model.checked ? "\u2713" : this.model.status().icon;
+		int iconColor = this.model.checked ? 0xFFE0C36E : this.model.status().color;
+		graphics.drawString(font, icon, left + 3, top + 5, iconColor, false);
 			graphics.drawString(font, title, textLeft, top + 2,
 					this.model.status() == Status.DISABLED ? 0xFF8B929C : 0xFFF0F1F2, false);
 			graphics.drawString(font, subtitle, textLeft, top + 13, 0xFF929AA5, false);
