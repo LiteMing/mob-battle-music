@@ -249,8 +249,12 @@ final class PlaylistSelectionList<T> extends ObjectSelectionList<PlaylistSelecti
 		{
 		if (hovered)
 			graphics.fill(left, top - 1, left + width, top + height + 1, 0xFF252A30);
+		// K15-C: action keys are ALWAYS visible (not hover-gated) - hovering
+		// to reveal them reads as 'flashing in and out'. Editable rows show
+		// the enabled toggle/delete key; non-editable rows show a dimmed
+		// placeholder so the column position stays stable across modes.
 		int textLeft = left + 15;
-		int actionSpace = hovered && (this.model.canToggle() || this.model.canDelete()) ? 31 : 5;
+		int actionSpace = (this.model.canToggle() || this.model.canDelete()) ? 31 : 5;
 		int textWidth = Math.max(1, width - 15 - actionSpace);
 		String title = ellipsize(this.model.title().getString(), textWidth);
 		String subtitle = ellipsize(this.model.subtitle().getString(), textWidth);
@@ -261,15 +265,19 @@ final class PlaylistSelectionList<T> extends ObjectSelectionList<PlaylistSelecti
 			graphics.drawString(font, title, textLeft, top + 2,
 					this.model.status() == Status.DISABLED ? 0xFF8B929C : 0xFFF0F1F2, false);
 			graphics.drawString(font, subtitle, textLeft, top + 13, 0xFF929AA5, false);
+			if (this.model.canToggle())
+				graphics.drawString(font, this.model.status() == Status.DISABLED ? "+" : "-",
+						left + width - 25, top + 7, 0xFFE0C36E, false);
+			else if (this.model.canDelete())
+				// only the delete key is available - reserve the same column
+				graphics.drawString(font, "-", left + width - 25, top + 7, 0xFF3A4550, false);
+			if (this.model.canDelete())
+				graphics.drawString(font, "x", left + width - 11, top + 7, 0xFFE06C75, false);
+			// K15-C: track hover state for tooltips regardless of keys
 			if (hovered) {
 				hoveredIndex = index;
 				hoveredTitleTruncated = !title.equals(this.model.title().getString());
 				hoveredSubtitleTruncated = !subtitle.equals(this.model.subtitle().getString());
-				if (this.model.canToggle())
-					graphics.drawString(font, this.model.status() == Status.DISABLED ? "+" : "-",
-							left + width - 25, top + 7, 0xFFE0C36E, false);
-				if (this.model.canDelete())
-					graphics.drawString(font, "x", left + width - 11, top + 7, 0xFFE06C75, false);
 			}
 		}
 
