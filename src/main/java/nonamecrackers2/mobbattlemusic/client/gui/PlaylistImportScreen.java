@@ -18,6 +18,7 @@ import net.minecraft.network.chat.Component;
 import nonamecrackers2.mobbattlemusic.client.resource.MusicTracksManager;
 import nonamecrackers2.mobbattlemusic.client.resource.PlaylistImportParser;
 import nonamecrackers2.mobbattlemusic.client.resource.PlaylistImportParser.ImportLine;
+import nonamecrackers2.mobbattlemusic.client.resource.PlaylistImportParser.PlainImportLine;
 
 /**
  * K9-1: transactional playlist import preview. Candidate entries come from
@@ -193,18 +194,25 @@ public class PlaylistImportScreen extends Screen
 					collected.add(null);
 				}
 				return collected;
-			}).thenAcceptAsync(collected -> {
-				this.pendingParseCount--;
+			}).whenCompleteAsync((collected, error) -> {
+				// K12-C: generation check BEFORE touching the counter - a
+				// stale task (screen closed/cleared) must not decrement the
+				// new generation's pending count into the negative
 				if (generation != this.importGeneration)
 					return;
-				for (Path child : collected) {
-					if (child == null) {
-						this.filesInfo.add(file.toString() + ": traversal failed");
-						continue;
+				this.pendingParseCount = Math.max(0, this.pendingParseCount - 1);
+				if (error == null) {
+					for (Path child : collected) {
+						if (child == null) {
+							this.filesInfo.add(file.toString() + ": traversal failed");
+							continue;
+						}
+						this.addFile(child);
 					}
-					this.addFile(child);
+					this.statusMessage = "Parsed folder " + file.getFileName();
+				} else {
+					this.filesInfo.add(file.toString() + ": traversal failed: " + error);
 				}
-				this.statusMessage = "Parsed folder " + file.getFileName();
 				this.refreshStatuses();
 				this.updateConfirmState();
 			}, Minecraft.getInstance());
@@ -220,14 +228,23 @@ public class PlaylistImportScreen extends Screen
 			final int generation = this.importGeneration;
 			this.pendingParseCount++;
 			java.util.concurrent.CompletableFuture.supplyAsync(() -> parseFile(file, name))
-					.thenAcceptAsync(lines -> {
-						this.pendingParseCount--;
+					.whenCompleteAsync((lines, error) -> {
+						// K12-C: generation check BEFORE decrementing - a
+						// stale task must not make the counter negative; the
+						// decrement also runs on supplyAsync failure so a
+						// crashed parse can never wedge Confirm disabled
 						if (generation != this.importGeneration)
 							return;
-						this.addLines(lines, name);
+						this.pendingParseCount = Math.max(0, this.pendingParseCount - 1);
+						if (error == null) {
+							this.addLines(lines, name);
+							this.statusMessage = "Parsed " + name;
+						} else {
+							this.filesInfo.add(name + ": parse failed: " + error);
+							this.statusMessage = "Parse failed for " + name;
+						}
 						this.refreshStatuses();
 						this.updateConfirmState();
-						this.statusMessage = "Parsed " + name;
 					}, Minecraft.getInstance());
 		} else if (PlaylistImportParser.isAudioFile(lower)) {
 			// K10-D/K11-D/K12-B: local audio files are visible as rows but
@@ -249,8 +266,15 @@ public class PlaylistImportScreen extends Screen
 		String lower = name.toLowerCase(Locale.ROOT);
 		if (lower.endsWith(".m3u") || lower.endsWith(".m3u8"))
 			return PlaylistImportParser.parseM3U(file);
-		if (lower.endsWith(".json"))
+		if (lower.endsWith(".json")) {
+			// K12-C: malformed JSON must block the whole batch instead of
+			// looking like an empty file (an empty map would let a valid M3U
+			// in the same drop commit while the broken JSON is silently
+			// dropped). The marker row normalizes to null -> BLOCKING_INVALID.
+			if (PlaylistImportParser.isMalformedMbmJson(file))
+				return java.util.List.of(new PlainImportLine("malformed-json:" + name, "malformed JSON file"));
 			return flattenJson(PlaylistImportParser.parseMbmJson(file));
+		}
 		try {
 			return PlaylistImportParser.parseText(java.nio.file.Files.readString(file));
 		} catch (Exception e) {
@@ -324,8 +348,13 @@ public class PlaylistImportScreen extends Screen
 
 	private void clearRows()
 	{
-		// K11-D: a clear invalidates every in-flight async parse
+		// K11-D: a clear invalidates every in-flight async parse; K12-C: the
+		// pending counter is RESET with the generation bump (stale tasks no
+		// longer decrement it thanks to the generation-first check, so the
+		// new generation starts from a clean zero instead of inheriting the
+		// old count)
 		this.importGeneration++;
+		this.pendingParseCount = 0;
 		this.rows.clear();
 		this.filesInfo.clear();
 		this.statusMessage = "";

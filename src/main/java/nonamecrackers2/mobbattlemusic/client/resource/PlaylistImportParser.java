@@ -192,4 +192,24 @@ public final class PlaylistImportParser
 				result.put(entry.getKey(), lines);
 		}
 	}
+
+	/**
+	 * K12-C: did the JSON file fail to parse as a whole? parseMbmJson returns
+	 * an empty map for malformed input, which the import preview would treat
+	 * as "empty file" - that would let a valid M3U in the same batch commit
+	 * while a corrupt JSON is silently dropped. The screen uses this to emit
+	 * a BLOCKING_INVALID row instead.
+	 */
+	public static boolean isMalformedMbmJson(Path file)
+	{
+		try {
+			String text = Files.readString(file, StandardCharsets.UTF_8);
+			if (text.isBlank())
+				return false;
+			JsonParser.parseString(text).getAsJsonObject();
+			return false;
+		} catch (IOException | JsonSyntaxException | IllegalStateException e) {
+			return true;
+		}
+	}
 }

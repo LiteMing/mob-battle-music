@@ -220,9 +220,13 @@ public class ExternalMusicHandler {
                     if (request != this.playbackRequest.get())
                         return;
                     try {
-                        // K12-B: the async generation handoff refuses (old
-                        // thread alive) - the refusal must reach the handle
-                        // instead of the dock pretending playback is active
+                        // K12-B/K12-C: the async generation handoff refuses
+                        // (old thread alive) or the line/decode aborts - the
+                        // failure must reach the handle AND clear the handler
+                        // playback state so the dock / MAN-CUE hold / wrapper
+                        // sync stop referencing a URL that has no audible
+                        // source. Both run atomically under playbackLock while
+                        // the request is still current.
                         this.player.setStartResultListener((generation, result, failure) -> {
                             synchronized (this.playbackLock) {
                                 if (request != this.playbackRequest.get())
@@ -230,6 +234,7 @@ public class ExternalMusicHandler {
                                 if (result == StreamMusicPlayer.PlayResult.STARTED)
                                     WorldPlaybackChannel.markCurrentHandleActive(url);
                                 else {
+                                    clearPlaybackState();
                                     WorldPlaybackChannel.markCurrentHandleFailed(url);
                                     LOGGER.error("[MBM] playback of {} failed during start: {}", url,
                                             failure == null ? result : failure.toString());

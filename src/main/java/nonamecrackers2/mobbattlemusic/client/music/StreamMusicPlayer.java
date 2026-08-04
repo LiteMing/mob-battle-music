@@ -8,6 +8,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
+import javax.annotation.Nullable;
 import javax.sound.sampled.AudioFileFormat;
 import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.AudioInputStream;
@@ -39,10 +40,22 @@ public class StreamMusicPlayer {
     // never race into a double close.
     private static final class PlaybackGeneration {
         final long id;
+        // K12-C: the start-result listener is bound to THIS generation (the
+        // handler registers it before play(); startPlayback captures it into
+        // the generation and clears the player field). A stale generation's
+        // finally can never fire a newer generation's listener.
+        final @Nullable StartResultListener listener;
+        // K12-C: published once per generation - STARTED at the first write,
+        // or FAILED by the catch / finally fallback. The finally fallback
+        // guarantees EVERY generation that exits without a start result
+        // reports a failure (line unsupported, early invalidation, decode
+        // stream abort, thread never started) - never a stuck PREPARING.
+        final java.util.concurrent.atomic.AtomicBoolean startResultPublished =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
         volatile SourceDataLine line;
         volatile boolean closeRequested;
         volatile boolean closed;
-        PlaybackGeneration(long id) { this.id = id; }
+        PlaybackGeneration(long id, @Nullable StartResultListener listener) { this.id = id; this.listener = listener; }
     }
 
     private Thread playbackThread;
@@ -320,7 +333,13 @@ public class StreamMusicPlayer {
         if (!stopAndAwaitThreadExit())
             return PlayResult.REFUSED_OLD_THREAD_ALIVE;
         long generationId = playbackGeneration.incrementAndGet();
-        PlaybackGeneration generation = new PlaybackGeneration(generationId);
+        // K12-C: capture the one-shot listener registered by the caller for
+        // THIS play() and bind it to the generation; the player field is
+        // cleared so a stale generation's finally can never deliver into a
+        // newer listener
+        StartResultListener listener = this.startResultListener;
+        this.startResultListener = null;
+        PlaybackGeneration generation = new PlaybackGeneration(generationId, listener);
         this.currentGeneration = generation;
         // AUD-42: a new generation must not inherit the previous playback's
         // pause/mute intent; the channel re-applies its target state the same
@@ -440,9 +459,6 @@ public class StreamMusicPlayer {
                         LOGGER.debug("Starting audio line...");
                         playbackLine.start();
                         LOGGER.debug("Audio line started");
-                        // K12-B: the line is open and producing audio - the
-                        // start succeeded (published exactly once)
-                        publishStartResult(generation, PlayResult.STARTED, null);
                 
                         // Play the audio
                         byte[] buffer = new byte[BUFFER_SIZE];
@@ -578,6 +594,12 @@ public class StreamMusicPlayer {
                                 break;
                             totalBytesWritten += bytesRead;
                             playedPcmBytes += bytesRead;
+                            // K12-C: ACTIVE is published only once the first
+                            // frame batch has actually been written to the
+                            // line - "audio flowing", not merely "line open".
+                            // publishStartResult is once-only per generation.
+                            if (totalBytesWritten == bytesRead)
+                                publishStartResult(generation, PlayResult.STARTED, null);
                         }
 
                         LOGGER.debug("Playback loop ended. Total bytes written: {}, playing: {}", totalBytesWritten, playing);
@@ -615,6 +637,17 @@ public class StreamMusicPlayer {
             } finally {
                 // K8-B: close-once - idempotent with stop()'s close
                 closeLineOnce(generation);
+                // K12-C: fallback - ANY exit of the current generation before
+                // a start result was published (line unsupported, generation
+                // invalidated during startup, decode stream abort, thread
+                // start failure) must report a failure so the handler clears
+                // state instead of leaving a stuck PREPARING handle. The
+                // once-only flag makes this a no-op when STARTED/FAILED was
+                // already delivered.
+                if (generation == this.currentGeneration
+                        && !generation.startResultPublished.get())
+                    publishStartResult(generation,
+                            generation.line == null ? PlayResult.FAILED_LINE : PlayResult.FAILED_DECODE, null);
                 if (generation == this.currentGeneration) {
                     playing = false;
                     paused = false;
@@ -627,21 +660,35 @@ public class StreamMusicPlayer {
         
         playbackThread.setName("StreamMusicPlayer");
         playbackThread.setDaemon(true);
-        playbackThread.start();
+        try {
+            playbackThread.start();
+        } catch (Throwable t) {
+            // K12-C: a thread that never started must still report the
+            // failure - no finally will ever run for it
+            LOGGER.error("[MBM] failed to start playback thread: {}", t.toString(), t);
+            this.playbackThreads.decrementAndGet();
+            if (generation == this.currentGeneration)
+                this.currentGeneration = null;
+            closeLineOnce(generation);
+            publishStartResult(generation, PlayResult.FAILED_LINE, t);
+            return PlayResult.FAILED_LINE;
+        }
         LOGGER.debug("Playback thread started");
         return PlayResult.STARTED;
     }
 
     /**
-     * K12-B: deliver the start result to the registered listener, exactly
-     * once per generation. The listener field is cleared on delivery so a
-     * stale one-shot never fires for a later generation.
+     * K12-B/K12-C: deliver the start result to the generation's OWN listener,
+     * exactly once per generation (CAS on the generation flag). The listener
+     * is bound to the generation at startPlayback time, so a stale
+     * generation's finally can never deliver into a newer listener.
      */
     private void publishStartResult(PlaybackGeneration generation, PlayResult result, Throwable failure) {
-        StartResultListener listener = this.startResultListener;
+        if (!generation.startResultPublished.compareAndSet(false, true))
+            return;
+        StartResultListener listener = generation.listener;
         if (listener == null)
             return;
-        this.startResultListener = null;
         try {
             listener.onStartResult(generation.id, result, failure);
         } catch (Throwable t) {
