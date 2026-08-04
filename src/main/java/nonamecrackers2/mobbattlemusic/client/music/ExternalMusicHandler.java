@@ -243,10 +243,17 @@ public class ExternalMusicHandler {
                         });
                         StreamMusicPlayer.PlayResult playResult = this.player.play(cachedPath, fadeTime,
                                 startPositionMillis, durationHintMillis);
-                        if (playResult == StreamMusicPlayer.PlayResult.REFUSED_OLD_THREAD_ALIVE) {
+                        // K12-D: EVERY synchronous non-STARTED result is a
+                        // failed request - the thread-start failure (FAILED_LINE)
+                        // and the generation refusal must both clear the handler
+                        // state instead of falling through to the success write.
+                        // Note: synchronous STARTED means "thread launched",
+                        // not handle-ACTIVE; ACTIVE is delivered later by the
+                        // start-result listener on the first write.
+                        if (playResult != StreamMusicPlayer.PlayResult.STARTED) {
                             clearPlaybackState();
                             WorldPlaybackChannel.markCurrentHandleFailed(url);
-                            LOGGER.error("[MBM] playback of {} refused: previous playback generation still alive", url);
+                            LOGGER.error("[MBM] playback request failed synchronously: {} ({})", playResult, url);
                             return;
                         }
                         this.currentlyPlayingPath = cachedPath;

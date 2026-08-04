@@ -732,14 +732,13 @@ public final class WorldPlaybackChannel
 	{
 		String url = handler.getCurrentlyPlayingUrl();
 		PlaybackHandle created = PlaybackHandle.create(url);
-		// K12-C: the AUTO handle follows the SAME PREPARING->ACTIVE lifecycle
-		// as MAN. It is created while the track is alive (possibly still
-		// decoding / opening the line); ACTIVE is only applied here when the
-		// line is already open (the start-result listener already fired and
-		// found no handle yet). Otherwise the listener's STARTED delivery
-		// promotes it via markCurrentHandleActive. A handle must never be
-		// ACTIVE before audio actually flows.
-		if (handler.getPlayer().getOpenLines() > 0)
+		// K12-C/K12-D: the AUTO handle follows the SAME PREPARING->ACTIVE
+		// lifecycle as MAN. ACTIVE is applied here ONLY when the current
+		// generation has already published STARTED (audio flowing) - openLines
+		// > 0 would be true between line.open and the first write, i.e. before
+		// any audio actually flows. Otherwise the handle stays PREPARING and
+		// the start-result listener promotes it via markCurrentHandleActive.
+		if (handler.getPlayer().hasPublishedStartedForCurrentGeneration())
 			created.markActive();
 		MusicTracksManager manager = MusicTracksManager.getInstance();
 		MusicTracksManager.PlaybackTarget target = manager.resolvePlaybackTarget(url);
