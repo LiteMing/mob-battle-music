@@ -78,6 +78,7 @@
 	"gui.mobbattlemusic.playlist.detail.playlist": "Playlist: %s",
 	"gui.mobbattlemusic.playlist.detail.context": "Context: %s",
 	"gui.mobbattlemusic.playlist.detail.uses": "Also used in:",
+	"gui.mobbattlemusic.playlist.detail.uses_more": "...and %s more",
 	"gui.mobbattlemusic.playlist.detail.editable": "Editable: %s",
 	"gui.mobbattlemusic.playlist.detail.source": "Source:",
 	"gui.mobbattlemusic.playlist.source.resource_pack": "resource pack",

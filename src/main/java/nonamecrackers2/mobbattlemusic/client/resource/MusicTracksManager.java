@@ -307,26 +307,17 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		MusicTracksManager.bumpAllPlaylistRevisions();
 		// AUD-20 v1.1: entries may have vanished with the reload
 		this.stopPreviewIfInvalid();
-		// K15-A: rebuild the music-first TrackAsset registry from every source
-		this.registerAllAssets();
 	}
 
 	/**
-	 * K15-A: register every known source URL as a TrackAsset (one asset per
-	 * URL, shared across all bindings). This is the identity layer for the
-	 * music-first authoring model - the runtime selection keeps its
-	 * condition-first index; this registry answers "which bindings use this
-	 * song?".
+	 * K15-A/K15-C: rebuild the music-first TrackAsset registry + reverse
+	 * index from every known source. Called after EVERY data commit (resource
+	 * apply, local import, server sync, enable/disable, GUI edits) so the
+	 * index never goes stale - the O(1) reverse query replaces per-row scans.
 	 */
 	private void registerAllAssets()
 	{
-		TrackAssetRegistry.clear();
-		for (ExternalPlaylist playlist : this.externalPlaylistsByTrack.values()) {
-			MusicTracksManager.DynamicBinding binding = this.editableBinding(playlist.configLocation());
-			for (ExternalPlaylistEntry entry : playlist.entries()) {
-				TrackAssetRegistry.register(entry.url(), entry.name());
-			}
-		}
+		TrackAssetRegistry.rebuildDerivedIndexes();
 	}
 
 	private static void insert(List<TrackType> list, TrackType track, int index) {
@@ -1611,6 +1602,10 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 			insert(merged, track, dynamicTrack.priority());
 		}
 		this.tracks = ImmutableList.copyOf(merged);
+		// K15-C: every dynamic rebuild (local import, server sync, enable/
+		// disable, GUI edits) refreshes the music-first reverse index - it
+		// must never go stale relative to the playlist data
+		this.registerAllAssets();
 	}
 	
 	private static int dynamicSourceInsertionRank(DynamicExternalTrack track) {

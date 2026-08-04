@@ -78,6 +78,7 @@
 	"gui.mobbattlemusic.playlist.detail.playlist": "播放列表：%s",
 	"gui.mobbattlemusic.playlist.detail.context": "条件：%s",
 	"gui.mobbattlemusic.playlist.detail.uses": "还用于：",
+	"gui.mobbattlemusic.playlist.detail.uses_more": "...还有 %s 个用途",
 	"gui.mobbattlemusic.playlist.detail.editable": "可编辑：%s",
 	"gui.mobbattlemusic.playlist.detail.source": "来源：",
 	"gui.mobbattlemusic.playlist.source.resource_pack": "资源包",

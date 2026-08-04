@@ -440,8 +440,8 @@ public class MusicPlaylistScreen extends Screen
 		this.searchResultList = this.addRenderableWidget(new PlaylistSelectionList<>(this.minecraft, this.font,
 				main.width(), this.height, main.y() + 22, main.bottom() - 6,
 				this::selectSearchSong, value -> {}, value -> {}, move -> {}));
-		this.playlistList.setBounds(new PlaylistScreenLayout.Rect(sidebar.x(), sidebar.y() + 52,
-				sidebar.width(), Math.max(1, sidebar.height() - 58)));
+		this.playlistList.setBounds(new PlaylistScreenLayout.Rect(sidebar.x(), sidebar.y() + 58,
+				sidebar.width(), Math.max(1, sidebar.height() - 64)));
 		this.trackList.setBounds(new PlaylistScreenLayout.Rect(main.x(), main.y() + 22,
 				main.width(), Math.max(1, main.height() - 56)));
 		this.searchResultList.setBounds(new PlaylistScreenLayout.Rect(main.x(), main.y() + 22,
@@ -534,8 +534,12 @@ public class MusicPlaylistScreen extends Screen
 		}
 		this.playlistList.setItems(playlistModels, this.selectedPlaylist == null ? null : this.selectedPlaylist.toString());
 		List<PlaylistSelectionList.Model<Row>> trackModels = new ArrayList<>();
+		// K15-C: grouped (by-track) view is a GLOBAL song library - the
+		// playlist sidebar filter must NOT apply, otherwise a track whose
+		// representative row happens to live in another binding disappears
+		boolean grouped = state().groupByTrack;
 		for (Row row : this.rows) {
-			if (this.selectedPlaylist != null && !this.selectedPlaylist.equals(row.playlist()))
+			if (!grouped && this.selectedPlaylist != null && !this.selectedPlaylist.equals(row.playlist()))
 				continue;
 			// K13-A/K15-A: batch-mode check marks (last arg); subtitle shows
 			// the music-first uses ("where else is this song used?")
@@ -656,11 +660,24 @@ public class MusicPlaylistScreen extends Screen
 	// K15-A: switch between binding-entry view and music-first (grouped) view
 	private void toggleGroupByTrack()
 	{
+		// K15-C: keep the selection across the switch by track identity
+		Row current = selectedRow();
+		String keepTrackId = current == null ? null : current.trackId();
 		state().groupByTrack = !state().groupByTrack;
 		if (this.groupByTrackButton != null)
 			this.groupByTrackButton.setMessage(groupByTrackLabel());
 		this.rebuildRows();
-		this.selected = this.rows.isEmpty() ? -1 : clamp(this.selected, 0, this.rows.size() - 1);
+		this.selected = -1;
+		if (keepTrackId != null) {
+			for (int i = 0; i < this.rows.size(); i++) {
+				if (keepTrackId.equals(this.rows.get(i).trackId())) {
+					this.selected = i;
+					break;
+				}
+			}
+		}
+		if (this.selected < 0 && !this.rows.isEmpty())
+			this.selected = 0;
 		this.loadSelectedSettings(true);
 		this.updateButtonState();
 	}
@@ -863,13 +880,16 @@ public class MusicPlaylistScreen extends Screen
 					x, y + 51, 0xFF9AA2AD, false);
 			graphics.drawString(this.font, trimPixels(text("detail.source_value", editableLabel(row)).getString(), width), x, y + 64,
 					0xFF9AA2AD, false);
-			// K15-A: music-first - show every OTHER use of this track; each
-			// entry jumps to that binding's row
+			// K15-A/K15-C: music-first - show every OTHER use of this track;
+			// each entry jumps to that binding's row. Capped at 3 rows so a
+			// long use list can never overlap the priority fields below.
 			java.util.List<Row> uses = rowsUsingSameTrack(row.trackId(), row);
 			if (!uses.isEmpty()) {
 				graphics.drawString(this.font, text("detail.uses"), x, y + 80, 0xFF9AA2AD, false);
 				int useY = y + 92;
-				for (Row use : uses) {
+				int shown = Math.min(3, uses.size());
+				for (int u = 0; u < shown; u++) {
+					Row use = uses.get(u);
 					boolean hovered = mouseX >= x && mouseX < x + width && mouseY >= useY && mouseY < useY + 14;
 					graphics.drawString(this.font, trimPixels(use.context() + "  #" + (use.index() + 1), width - 4),
 							x + 3, useY, hovered ? 0xFFE5C07B : 0xFFD6D9DE, false);
@@ -877,6 +897,9 @@ public class MusicPlaylistScreen extends Screen
 						graphics.fill(x, useY - 1, x + width, useY + 13, 0x44253847);
 					useY += 14;
 				}
+				if (uses.size() > shown)
+					graphics.drawString(this.font, text("detail.uses_more", uses.size() - shown),
+							x + 3, useY, 0xFF7F8791, false);
 			}
 			graphics.drawString(this.font, text("field.priority"), x, detailFieldsY() - 12, 0xFF9AA2AD, false);
 			if (this.intervalBox.visible)
@@ -1278,7 +1301,9 @@ public class MusicPlaylistScreen extends Screen
 		if (uses.isEmpty())
 			return false;
 		int y = this.layout.inspector().innerY() + 92;
-		for (Row use : uses) {
+		int shown = Math.min(3, uses.size());
+		for (int u = 0; u < shown; u++) {
+			Row use = uses.get(u);
 			if (mouseX >= x && mouseX < x + width && mouseY >= y && mouseY < y + 14) {
 				jumpToUse(use);
 				return true;
@@ -1827,7 +1852,7 @@ public class MusicPlaylistScreen extends Screen
 		if (this.nextPageButton != null)
 			this.nextPageButton.visible = !library;
 		if (this.playlistList != null)
-			this.playlistList.setVisible(library);
+			this.playlistList.setVisible(library && !state().groupByTrack);
 		if (this.trackList != null)
 			this.trackList.setVisible(library);
 		if (this.searchResultList != null)
@@ -1945,33 +1970,38 @@ public class MusicPlaylistScreen extends Screen
 		return this.selected < 0 || this.selected >= this.rows.size() ? null : this.rows.get(this.selected);
 	}
 
-	// K15-A: rows for every use of this track (music-first navigation).
-	// Non-grouped view: other rows with the same trackId. Grouped view: the
-	// merged row represents the track, so the navigation lists the track's
-	// uses from the registry (each jumps to that binding's row, which exists
-	// in the underlying data even when not shown as separate rows).
+	// K15-A/K15-C: rows for every OTHER use of this track (music-first
+	// navigation). Reads the O(1) registry reverse index - never rescans
+	// playlists, never mixes in songs that merely share a binding.
 	private java.util.List<Row> rowsUsingSameTrack(String trackId, Row self)
 	{
 		if (trackId == null || trackId.isBlank())
 			return List.of();
-		if (!state().groupByTrack) {
-			java.util.List<Row> result = new java.util.ArrayList<>();
-			for (Row row : this.rows) {
-				if (row == self)
-					continue;
-				if (trackId.equals(row.trackId()))
-					result.add(row);
-			}
-			return result;
-		}
-		// grouped view: collect rows by URL from the full row list is
-		// impossible (they are merged), so resolve through the registry
 		java.util.List<Row> result = new java.util.ArrayList<>();
-		for (var binding : nonamecrackers2.mobbattlemusic.client.resource.TrackAssetRegistry.bindingsFor(trackId)) {
-			for (Row row : this.allRowsCached) {
-				if (row.binding() != null && row.binding().equals(binding))
-					result.add(row);
+		for (var use : nonamecrackers2.mobbattlemusic.client.resource.TrackAssetRegistry.usesFor(trackId)) {
+			Row match = null;
+			if (!state().groupByTrack) {
+				// by-use view: all rows for this track except the selected one
+				for (Row row : this.rows) {
+					if (row == self)
+						continue;
+					if (trackId.equals(row.trackId()) && use.playlistId().equals(row.playlist())
+							&& use.entryId().equals(row.entry().id())) {
+						match = row;
+						break;
+					}
+				}
+			} else {
+				// grouped view: find the underlying use row in the cached list
+				for (Row row : this.allRowsCached) {
+					if (use.playlistId().equals(row.playlist()) && use.entryId().equals(row.entry().id())) {
+						match = row;
+						break;
+					}
+				}
 			}
+			if (match != null && match != self)
+				result.add(match);
 		}
 		return result;
 	}

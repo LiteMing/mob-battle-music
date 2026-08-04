@@ -1,5 +1,6 @@
 package nonamecrackers2.mobbattlemusic.client.resource;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -9,46 +10,59 @@ import javax.annotation.Nullable;
 import net.minecraft.resources.ResourceLocation;
 import nonamecrackers2.mobbattlemusic.client.music.MusicMetadata;
 import nonamecrackers2.mobbattlemusic.client.music.MusicMetadataCache;
+import nonamecrackers2.mobbattlemusic.playlist.IdleCondition;
 
 /**
- * K15-A: the central TrackAsset registry - the music-first creation model.
+ * K15-A/K15-C: the central TrackAsset registry - the music-first creation
+ * model with a REAL reverse index.
  *
- * A TrackAsset is the STABLE identity of a song, independent of which
- * playlist binding (scene/entity/idle rule) uses it. The track id is derived
- * from the source URL (the existing entryId hash), so the same URL registered
- * in several bindings yields the SAME track id - this is the seed of
- * "one song, many uses".
+ * A TrackAsset is the STABLE identity of a song (trackId = URL-derived SHA-1
+ * hash), independent of which playlist binding uses it. rebuildDerivedIndexes()
+ * is the single entry point: it builds BOTH maps in one pass, so every UI
+ * query (usesFor, usesDisplay) is O(1) - never a rescan of all playlists.
  *
- * The runtime selection engine keeps its condition-first index (fast);
- * this registry is the authoring/identity layer on top: given a track id you
- * can find every binding (assignment) that uses it, and given a URL you get
- * one canonical asset instead of N duplicated entries.
+ * A TrackUse is one concrete use of the track in one playlist entry. Unlike
+ * DynamicBinding (which is only the rule target), a TrackUse carries the
+ * entry identity, so two entries of the same song in the same binding stay
+ * distinct uses.
  *
- * Persistence stays on the legacy format for now (K15 scope): assets are
- * re-registered on load; nothing is written back yet.
+ * Persistence stays on the legacy format (K15 scope): indexes are rebuilt on
+ * every data commit, nothing new is written back.
  */
 public final class TrackAssetRegistry
 {
 	private static final Map<String, TrackAsset> ASSETS = new LinkedHashMap<>();
+	private static final Map<String, List<TrackUse>> USES_BY_TRACK = new LinkedHashMap<>();
 
 	private TrackAssetRegistry() {}
 
 	/**
-	 * Register (or reuse) the asset for a source URL. Same URL -> same asset,
-	 * regardless of how many bindings reference it.
+	 * K15-C: rebuild the whole derived index in one pass. Must be called after
+	 * EVERY playlist data commit (resource apply, local import, server sync,
+	 * enable/disable, GUI edits) - not only on resource reload.
 	 */
-	public static TrackAsset register(String url, @Nullable String titleHint)
+	public static synchronized void rebuildDerivedIndexes()
 	{
-		String trackId = MusicTracksManager.entryId(url);
-		TrackAsset existing = ASSETS.get(trackId);
-		if (existing != null) {
-			if (titleHint != null && !titleHint.isBlank() && existing.title() == null)
-				existing = new TrackAsset(trackId, url, titleHint, existing.bindings());
-			return existing;
+		ASSETS.clear();
+		USES_BY_TRACK.clear();
+		MusicTracksManager manager = MusicTracksManager.getInstance();
+		for (MusicTracksManager.ExternalPlaylist playlist : manager.getExternalPlaylists()) {
+			MusicTracksManager.DynamicBinding binding = manager.editableBinding(playlist.configLocation());
+			for (int i = 0; i < playlist.entries().size(); i++) {
+				MusicTracksManager.ExternalPlaylistEntry entry = playlist.entries().get(i);
+				String trackId = MusicTracksManager.entryId(entry.url());
+				TrackAsset asset = ASSETS.get(trackId);
+				if (asset == null) {
+					asset = new TrackAsset(trackId, entry.url(), entry.name());
+					ASSETS.put(trackId, asset);
+				} else if (asset.title() == null) {
+					ASSETS.put(trackId, asset.withTitle(entry.name()));
+				}
+				TrackUse use = new TrackUse(trackId, playlist.configLocation(), entry.id(), binding,
+						i, entry.conditions(), entry.url());
+				USES_BY_TRACK.computeIfAbsent(trackId, key -> new ArrayList<>()).add(use);
+			}
 		}
-		TrackAsset asset = new TrackAsset(trackId, url, titleHint, List.of());
-		ASSETS.put(trackId, asset);
-		return asset;
 	}
 
 	/** The stable id for a source URL (same as entryId - kept as the canonical name here). */
@@ -75,69 +89,84 @@ public final class TrackAssetRegistry
 	}
 
 	/**
-	 * K15-A: every playlist binding (assignment) that uses this track - the
-	 * music-first reverse index the current condition-first UI is missing.
+	 * K15-C: O(1) reverse index - every use of a track.
+	 */
+	public static List<TrackUse> usesFor(String trackId)
+	{
+		return List.copyOf(USES_BY_TRACK.getOrDefault(trackId, List.of()));
+	}
+
+	/**
+	 * K15-A: every playlist binding that uses this track, deduplicated by
+	 * binding (display-level view).
 	 */
 	public static List<MusicTracksManager.DynamicBinding> bindingsFor(String trackId)
 	{
-		TrackAsset asset = ASSETS.get(trackId);
-		if (asset == null)
-			return List.of();
-		MusicTracksManager manager = MusicTracksManager.getInstance();
-		java.util.List<MusicTracksManager.DynamicBinding> result = new java.util.ArrayList<>();
-		for (MusicTracksManager.ExternalPlaylist playlist : manager.getExternalPlaylists()) {
-			for (MusicTracksManager.ExternalPlaylistEntry entry : playlist.entries()) {
-				if (entry.id().equals(trackId) || entry.url().equals(asset.sourceUrl())) {
-					MusicTracksManager.DynamicBinding binding = manager.editableBinding(playlist.configLocation());
-					if (binding != null && !result.contains(binding))
-						result.add(binding);
-					break;
-				}
-			}
+		List<TrackUse> uses = usesFor(trackId);
+		List<MusicTracksManager.DynamicBinding> result = new ArrayList<>();
+		for (TrackUse use : uses) {
+			if (use.binding() != null && !result.contains(use.binding()))
+				result.add(use.binding());
 		}
 		return List.copyOf(result);
 	}
 
 	/**
 	 * K15-A: human-readable uses of a track ("aggressive/remilia",
-	 * "scene idle", "idle rule foo") - the music-first answer to "where is
-	 * this song used?".
+	 * "scene idle", "idle rule foo") - O(1) via the reverse index.
 	 */
 	public static String usesDisplay(String trackId)
 	{
-		List<MusicTracksManager.DynamicBinding> bindings = bindingsFor(trackId);
-		if (bindings.isEmpty())
+		List<TrackUse> uses = usesFor(trackId);
+		if (uses.isEmpty())
 			return "";
 		StringBuilder builder = new StringBuilder();
-		for (MusicTracksManager.DynamicBinding binding : bindings) {
+		for (TrackUse use : uses) {
+			if (use.binding() == null)
+				continue;
 			if (!builder.isEmpty())
 				builder.append(" | ");
-			builder.append(binding.displayName());
+			builder.append(use.binding().displayName());
 		}
 		return builder.toString();
 	}
 
-	/** Drop all assets (resource reload / logout). */
-	public static void clear()
+	/** Drop all indexes (logout / world unload). */
+	public static synchronized void clear()
 	{
 		ASSETS.clear();
+		USES_BY_TRACK.clear();
 	}
 
 	/**
 	 * K15-A: one song, stable identity, optional metadata.
 	 */
-	public record TrackAsset(String trackId, String sourceUrl, @Nullable String title,
-			List<MusicTracksManager.DynamicBinding> bindings)
+	public record TrackAsset(String trackId, String sourceUrl, @Nullable String title)
 	{
 		public TrackAsset withTitle(String title)
 		{
-			return new TrackAsset(this.trackId, this.sourceUrl, title, this.bindings);
+			return new TrackAsset(this.trackId, this.sourceUrl, title);
 		}
 
 		@Nullable
 		public MusicMetadata metadata()
 		{
 			return MusicMetadataCache.getInstance().get(this.sourceUrl).orElse(null);
+		}
+	}
+
+	/**
+	 * K15-C: ONE concrete use of a track in one playlist entry. useId is
+	 * stable across reorders (playlist + entryId); entryIndex is the current
+	 * display position only.
+	 */
+	public record TrackUse(String trackId, ResourceLocation playlistId, String entryId,
+			@Nullable MusicTracksManager.DynamicBinding binding, int entryIndex,
+			List<IdleCondition> entryConditions, String url)
+	{
+		public String useId()
+		{
+			return this.playlistId + "#" + this.entryId;
 		}
 	}
 }
