@@ -52,10 +52,25 @@ public class StreamMusicPlayer {
         // stream abort, thread never started) - never a stuck PREPARING.
         final java.util.concurrent.atomic.AtomicBoolean startResultPublished =
                 new java.util.concurrent.atomic.AtomicBoolean(false);
+        // K12-E: the result that was actually published, once. This is
+        // distinct from "some result was published": hasStartedSuccessfully()
+        // must only be true for STARTED, never for a FAILED that raced with
+        // handle adoption.
+        volatile PlayResult publishedStartResult;
+        // K12-E: set ONLY after line.open() succeeded (the audible-position
+        // base is ready) - classifies FAILED_LINE (never opened) vs
+        // FAILED_DECODE (opened but audio never flowed). Independent of the
+        // line field, which closeLineOnce nulls on the way out.
+        volatile boolean lineOpened;
         volatile SourceDataLine line;
         volatile boolean closeRequested;
         volatile boolean closed;
         PlaybackGeneration(long id, @Nullable StartResultListener listener) { this.id = id; this.listener = listener; }
+
+        boolean hasStartedSuccessfully()
+        {
+            return this.publishedStartResult == PlayResult.STARTED;
+        }
     }
 
     private Thread playbackThread;
@@ -432,6 +447,11 @@ public class StreamMusicPlayer {
                                 decodedFormat.getFrameRate() * decodedFormat.getFrameSize() * 0.5D));
                         playbackLine.open(decodedFormat, (int)Math.min(Integer.MAX_VALUE, capacityBytes));
                         LOGGER.debug("Audio line opened, buffer size: {}", playbackLine.getBufferSize());
+                        // K12-E: ONLY after open() succeeded - the audible
+                        // line is ready; failure classification uses this
+                        // instead of the line field (which closeLineOnce
+                        // nulls on the way out)
+                        generation.lineOpened = true;
                         // K8-B: the line joins THIS generation only; the
                         // open-lines counter is incremented here and
                         // decremented exactly once by closeLineOnce
@@ -587,23 +607,30 @@ public class StreamMusicPlayer {
                             // fading)
                             if (this.muteEnv.current() <= 0.001f)
                                 Arrays.fill(buffer, 0, bytesRead, (byte)0);
-                            // K12-D: honour the actual write() return value -
-                            // a short write must not be counted as a full
-                            // buffer write, and STARTED ("audio flowing")
-                            // requires at least one byte actually written
-                            int written = playbackLine.write(buffer, 0, bytesRead);
+                            // K12-D/K12-E: honour the actual write() return
+                            // value. A short write (0 < written < bytesRead)
+                            // must not drop the remaining PCM - loop until the
+                            // whole buffer is consumed. Writes stay PCM-frame
+                            // aligned (JavaSound writes whole frames; the
+                            // remaining length is always frame-aligned).
+                            // STARTED ("audio flowing") requires at least one
+                            // byte actually written; publishStartResult is
+                            // once-only per generation.
+                            int offset = 0;
+                            while (offset < bytesRead && generation == this.currentGeneration) {
+                                int written = playbackLine.write(buffer, offset, bytesRead - offset);
+                                if (written <= 0)
+                                    break;
+                                offset += written;
+                                totalBytesWritten += written;
+                                playedPcmBytes += written;
+                                if (written > 0)
+                                    publishStartResult(generation, PlayResult.STARTED, null);
+                            }
                             // K8-B: generation check after the potentially
-                            // blocking write
+                            // blocking writes
                             if (generation != this.currentGeneration)
                                 break;
-                            totalBytesWritten += written;
-                            playedPcmBytes += written;
-                            // K12-C: ACTIVE is published only once the first
-                            // frame batch has actually been written to the
-                            // line - "audio flowing", not merely "line open".
-                            // publishStartResult is once-only per generation.
-                            if (written > 0 && totalBytesWritten == written)
-                                publishStartResult(generation, PlayResult.STARTED, null);
                         }
 
                         LOGGER.debug("Playback loop ended. Total bytes written: {}, playing: {}", totalBytesWritten, playing);
@@ -618,8 +645,8 @@ public class StreamMusicPlayer {
                     // audible output - classify line vs decode and publish the
                     // failure exactly once so the handler can mark the handle
                     // FAILED instead of pretending playback is active
-                    PlayResult failure = generation.line == null
-                            ? PlayResult.FAILED_LINE : PlayResult.FAILED_DECODE;
+                    PlayResult failure = generation.lineOpened
+                            ? PlayResult.FAILED_DECODE : PlayResult.FAILED_LINE;
                     publishStartResult(generation, failure, e);
                 } else if (isExpectedCancel(e)) {
                     // K8-B: an expected line-closed exception from a
@@ -639,11 +666,10 @@ public class StreamMusicPlayer {
                             e.getClass().getName(), e);
                 }
             } finally {
-                // K12-D: capture the line state BEFORE closeLineOnce - the
-                // closer nulls generation.line, so judging after it would
-                // classify every fallback as FAILED_LINE even when the line
-                // was opened and the decode stream ended pre-first-write
-                boolean lineWasOpened = generation.line != null;
+                // K12-E: lineOpened survives closeLineOnce (which nulls the
+                // line field) - classifies FAILED_LINE (never opened) vs
+                // FAILED_DECODE (opened but audio never flowed)
+                boolean lineWasOpened = generation.lineOpened;
                 // K8-B: close-once - idempotent with stop()'s close
                 closeLineOnce(generation);
                 // K12-C: fallback - ANY exit of the current generation before
@@ -695,6 +721,9 @@ public class StreamMusicPlayer {
     private void publishStartResult(PlaybackGeneration generation, PlayResult result, Throwable failure) {
         if (!generation.startResultPublished.compareAndSet(false, true))
             return;
+        // K12-E: record WHICH result was published - the success predicate
+        // reads this, never the mere published flag
+        generation.publishedStartResult = result;
         StartResultListener listener = generation.listener;
         if (listener == null)
             return;
@@ -1127,15 +1156,15 @@ public class StreamMusicPlayer {
         return this.playbackThreads.get();
     }
 
-    // K12-D: has the CURRENT generation published STARTED (i.e. audio has
-    // actually flowed at least once)? This is the precise "FLOWING" predicate
-    // for AUTO handle adoption - openLines > 0 is true between line.open and
-    // the first write, which is BEFORE audio flows. A handle must only be
-    // adopted as ACTIVE when this is true; otherwise the start-result
-    // listener promotes it later.
+    // K12-D/K12-E: has the CURRENT generation successfully published STARTED
+    // (audio has actually flowed at least once)? This is the precise "FLOWING"
+    // predicate for AUTO handle adoption - the mere published flag is set for
+    // FAILED results too, so the predicate checks the recorded RESULT, never
+    // the flag. openLines > 0 was rejected earlier because it is true between
+    // line.open and the first write, before any audio flows.
     public boolean hasPublishedStartedForCurrentGeneration()
     {
         PlaybackGeneration active = this.currentGeneration;
-        return active != null && active.startResultPublished.get();
+        return active != null && active.hasStartedSuccessfully();
     }
 }
