@@ -668,14 +668,17 @@ public class MusicPlaylistScreen extends Screen
 		// K15-E: keep the selection across the switch by use identity
 		Row current = selectedRow();
 		// K15-F: leaving by-use for grouped persists the exact concrete use
-		// (playlist#entryId#occurrenceOrdinal) - grouped representative rows
-		// never overwrite it, so switching back returns to the SAME use the
-		// user was editing, not the first occurrence of the track
+		// (playlist#entryId#occurrenceOrdinal) under its trackId - grouped
+		// representative rows never overwrite it, so switching back returns
+		// to the SAME use the user was editing, not the first occurrence of
+		// the track. K15-F-r1: the map keeps one entry PER track, so a track
+		// selected in grouped that differs from the persisted one falls back
+		// to the grouped selection instead of jumping back to an old track.
 		boolean enteringGrouped = !state().groupByTrack;
 		if (enteringGrouped && current != null) {
 			String key = concreteUseKey(current);
 			if (key != null)
-				state().lastConcreteUseKey = key;
+				state().lastConcreteUseByTrackId.put(current.trackId(), key);
 		}
 		String keepTrackId = current == null ? null : current.trackId();
 		ResourceLocation keepPlaylist = current == null ? null : current.playlist();
@@ -688,11 +691,14 @@ public class MusicPlaylistScreen extends Screen
 		this.inspectorPage = InspectorPage.DETAILS;
 		this.rebuildRows();
 		this.selected = -1;
-		// K15-F: when returning to by-use, prefer the persisted concrete use,
-		// then a same-playlist same-track row, then any same-track row
-		if (!state().groupByTrack && !state().lastConcreteUseKey.isBlank()) {
+		// K15-F: when returning to by-use, the persisted concrete use is only
+		// restored if the grouped selection is still the SAME track - a track
+		// picked inside grouped must not bounce back to an old track's use
+		String restoredUseKey = keepTrackId == null ? null
+				: state().lastConcreteUseByTrackId.get(keepTrackId);
+		if (!state().groupByTrack && restoredUseKey != null) {
 			for (int i = 0; i < this.rows.size(); i++) {
-				if (state().lastConcreteUseKey.equals(concreteUseKey(this.rows.get(i)))) {
+				if (restoredUseKey.equals(concreteUseKey(this.rows.get(i)))) {
 					this.selected = i;
 					break;
 				}
@@ -3020,11 +3026,13 @@ public class MusicPlaylistScreen extends Screen
 		private List<NeteaseMusicSearch.Song> searchRows = List.of();
 		// K15-A: music-first grouping - merge same-track rows into one
 		private boolean groupByTrack;
-		// K15-F: the concrete use (playlist#entryId#occurrenceOrdinal) that
-		// was selected when leaving by-use view for grouped view; grouped
-		// representative rows never overwrite it, so switching back returns
-		// to the exact use instead of the first occurrence of the track
-		private String lastConcreteUseKey = "";
+		// K15-F: per-track record of the concrete use
+		// (playlist#entryId#occurrenceOrdinal) selected when leaving by-use
+		// view for grouped view; grouped representative rows never overwrite
+		// it, so switching back returns to the exact use instead of the first
+		// occurrence. Keyed by trackId (not a single global value) so a track
+		// selected inside grouped is never overridden by another track's use.
+		private Map<String, String> lastConcreteUseByTrackId = new java.util.LinkedHashMap<>();
 	}
 
 	private record CompletionPopup(EditBox box, List<String> matches, int x, int y, int width, int height)
