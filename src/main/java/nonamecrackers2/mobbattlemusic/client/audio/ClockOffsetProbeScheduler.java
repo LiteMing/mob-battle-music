@@ -47,6 +47,19 @@ public final class ClockOffsetProbeScheduler
 			ClockOffsetProbeScheduler.probesSentThisWindow = 0;
 			return;
 		}
+		// K16-A: a local loopback connection (singleplayer world, including
+		// the LAN host's OWN client) shares one JVM clock with its server - a
+		// probe always measures offset 0.0ms and carries zero information.
+		// It also trips Forge's LocalConnection double-dispatch, which logs
+		// "Unknown custom packet identifier" for every S2C payload on this
+		// channel. LAN clients (real network) are NOT local and keep probing
+		// normally; the window stays closed here and opens fresh (new nonce)
+		// on the first tick after connecting to a real server.
+		if (mc.isLocalServer()) {
+			ClockOffsetProbeScheduler.windowStartMillis = 0L;
+			ClockOffsetProbeScheduler.probesSentThisWindow = 0;
+			return;
+		}
 		long now = System.currentTimeMillis();
 		if (ClockOffsetProbeScheduler.windowStartMillis <= 0L
 				|| now - ClockOffsetProbeScheduler.windowStartMillis >= ClockOffsetProbeScheduler.WINDOW_MILLIS) {
