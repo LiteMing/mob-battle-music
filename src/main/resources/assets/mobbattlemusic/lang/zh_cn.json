@@ -138,6 +138,8 @@
 	"gui.mobbattlemusic.playlist.button.marker_add": "打标",
 	"gui.mobbattlemusic.playlist.button.marker_delete": "删除",
 	"gui.mobbattlemusic.playlist.button.timeline_editor": "时间轴...",
+	"gui.mobbattlemusic.playlist.button.playlist_rules": "歌单规则...",
+	"gui.mobbattlemusic.playlist.button.use_editor": "编辑用途...",
 	"gui.mobbattlemusic.playlist.message.invalid_marker": "标记时间或事件 ID 无效",
 	"gui.mobbattlemusic.playlist.message.invalid_marker_index": "标记序号无效",
 	"gui.mobbattlemusic.playlist.idle.title": "空闲播放列表",

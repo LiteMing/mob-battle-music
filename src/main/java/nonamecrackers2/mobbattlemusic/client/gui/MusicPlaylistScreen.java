@@ -103,6 +103,8 @@ public class MusicPlaylistScreen extends Screen
 	private Button conditionDeleteButton;
 	private Button conditionsInspectorButton;
 	private Button timelineEditorButton;
+	private Button playlistRulesButton;
+	private Button useEditorButton;
 	private Button inspectorDetailsButton;
 	private Button inspectorBindingButton;
 	private Button inspectorConditionsButton;
@@ -350,6 +352,15 @@ public class MusicPlaylistScreen extends Screen
 		this.timelineEditorButton = this.addRenderableWidget(Button.builder(text("button.timeline_editor"),
 				button -> openTimelineEditor()).bounds(ix + half + PlaylistScreenLayout.GAP, detailActionY,
 						Math.max(24, iw - half - PlaylistScreenLayout.GAP), 20).build());
+		// K16-B: 歌单规则 - the playlist-level rule editor (conditions every
+		// entry of this playlist inherits); by-use view only
+		this.playlistRulesButton = this.addRenderableWidget(Button.builder(text("button.playlist_rules"),
+				button -> openPlaylistRules()).bounds(ix, detailActionY + 24, iw, 20).build());
+		// K16-B: 编辑用途 - the music-first use editor (all uses of the
+		// selected track, add/remove/jump); by-track view only. Offset from
+		// detailActionY so the batch toggle (editY+106) does not overlap.
+		this.useEditorButton = this.addRenderableWidget(Button.builder(text("button.use_editor"),
+				button -> openUseEditor()).bounds(ix, detailActionY + 48, iw, 20).build());
 		this.addBindingButton = this.addRenderableWidget(Button.builder(text("button.add_bind"), button -> useSelectedSource())
 				.bounds(ix, editY + 58, iw, 20).build());
 		// K9-1: transactional import preview (export is config-file only)
@@ -547,6 +558,15 @@ public class MusicPlaylistScreen extends Screen
 					.usesDisplay(row.entry().id());
 			String subtitle = row.context() + "  #" + (row.index() + 1) +
 					(uses.isBlank() ? "" : "  [" + uses + "]");
+			// K16-B: the representative use's own conditions override the
+			// playlist rule (conflict -> entry wins) - flag such rows with a
+			// readable condition summary so the override is visible at a
+			// glance in the grouped track view
+			if (grouped) {
+				String conditionSummary = describeConditions(row.entry().conditions());
+				if (!conditionSummary.isBlank())
+					subtitle += "  \u26a1" + conditionSummary;
+			}
 			// K15-C: the row always shows WHERE it lives (source badge) and
 			// WHY it is locked when the current edit mode cannot touch it -
 			// singleplayer has both LOCAL and SERVER data, so a SERVER page
@@ -1989,6 +2009,14 @@ public class MusicPlaylistScreen extends Screen
 		this.intervalBox.active = idle;
 		this.timelineEditorButton.visible = details && editable;
 		this.timelineEditorButton.active = editable;
+		// K16-B: 歌单规则 lives in the by-use view only - grouped rows are
+		// assets and have no playlist of their own
+		this.playlistRulesButton.visible = details && !grouped && hasTrack;
+		this.playlistRulesButton.active = this.playlistRulesButton.visible;
+		// K16-B: the use editor opens from the grouped (music-first) view -
+		// it manages every use of the selected track
+		this.useEditorButton.visible = details && grouped && hasTrack;
+		this.useEditorButton.active = this.useEditorButton.visible;
 		this.sceneBox.visible = binding && this.viewMode == ViewMode.LIBRARY;
 		this.sceneBox.active = this.sceneBox.visible;
 		this.kindButton.visible = binding && this.viewMode == ViewMode.LIBRARY;
@@ -2003,7 +2031,7 @@ public class MusicPlaylistScreen extends Screen
 		if (this.addBindingButton != null)
 			this.addBindingButton.setMessage(Component.literal(this.multiSelectActive
 					? "Add checked to target group" : "Add selected to target group"));
-		this.multiSelectButton.visible = this.viewMode == ViewMode.LIBRARY && binding;
+		this.multiSelectButton.visible = this.viewMode == ViewMode.LIBRARY && (binding || grouped);
 		this.multiSelectButton.active = this.multiSelectButton.visible;
 		// K13-C: cover-play is available wherever a LIBRARY row is selected
 		if (this.coverPlayButton != null) {
@@ -2049,6 +2077,38 @@ public class MusicPlaylistScreen extends Screen
 			return;
 		saveState();
 		this.minecraft.setScreen(new TimelineMarkerScreen(this, this.editMode, row.playlist(), row.index()));
+	}
+
+	// K16-B: open the playlist-level rule editor for the selected playlist
+	private void openPlaylistRules()
+	{
+		Row row = selectedRow();
+		if (row == null || state().groupByTrack)
+			return;
+		saveState();
+		this.minecraft.setScreen(new PlaylistRulesScreen(this, this.editMode, row.playlist(), row.binding()));
+	}
+
+	// K16-B: open the music-first use editor for the selected track; in
+	// batch mode every checked track's URL is added to the chosen use
+	private void openUseEditor()
+	{
+		Row row = selectedRow();
+		if (row == null || !state().groupByTrack)
+			return;
+		saveState();
+		List<String> urls = new java.util.ArrayList<>();
+		if (this.multiSelectActive) {
+			for (Row candidate : this.rows) {
+				if (this.selectedRowSet.contains(candidate.playlist() + "#" + candidate.entry().url()))
+					urls.add(candidate.entry().url());
+			}
+		} else {
+			urls.add(row.entry().url());
+		}
+		if (urls.isEmpty())
+			return;
+		this.minecraft.setScreen(new UseEditorScreen(this, this.editMode, row.trackId(), row.title(), urls));
 	}
 
 	private void loadSelectedSettings(boolean force)
@@ -2135,6 +2195,35 @@ public class MusicPlaylistScreen extends Screen
 		this.selectedPlaylist = target.playlist();
 		state().selected = index;
 		state().selectedPlaylist = target.playlist().toString();
+		this.loadSelectedSettings(true);
+		this.refreshSelectionLists();
+		this.updateButtonState();
+	}
+
+	// K16-B: public jump used by the use-editor screen - leave grouped view
+	// and select the concrete use (playlist, entryIndex)
+	public void selectUse(ResourceLocation playlist, int entryIndex)
+	{
+		if (state().groupByTrack) {
+			state().groupByTrack = false;
+			if (this.groupByTrackButton != null)
+				this.groupByTrackButton.setMessage(groupByTrackLabel());
+			this.rebuildRows();
+		}
+		int index = -1;
+		for (int i = 0; i < this.rows.size(); i++) {
+			Row candidate = this.rows.get(i);
+			if (candidate.playlist().equals(playlist) && candidate.index() == entryIndex) {
+				index = i;
+				break;
+			}
+		}
+		if (index < 0 && !this.rows.isEmpty())
+			index = 0;
+		this.selected = index;
+		this.selectedPlaylist = playlist;
+		state().selected = index;
+		state().selectedPlaylist = playlist.toString();
 		this.loadSelectedSettings(true);
 		this.refreshSelectionLists();
 		this.updateButtonState();
@@ -2963,6 +3052,40 @@ public class MusicPlaylistScreen extends Screen
 		}
 	}
 	
+	// K16-B: readable condition summary, e.g. "维度=the_end 且 群系=deep_dark" -
+	// used to flag entries whose own conditions override the playlist rule
+	private static String describeConditions(List<IdleCondition> conditions)
+	{
+		if (conditions == null || conditions.isEmpty())
+			return "";
+		StringBuilder builder = new StringBuilder();
+		for (int i = 0; i < conditions.size(); i++) {
+			IdleCondition condition = conditions.get(i);
+			if (i > 0)
+				builder.append(condition.join() == IdleCondition.Join.OR ? " \u6216 " : " \u4e14 ");
+			builder.append(conditionTypeName(condition.type()));
+			if (!condition.argument().isBlank())
+				builder.append('=').append(condition.argument());
+		}
+		return builder.toString();
+	}
+
+	private static String conditionTypeName(String type)
+	{
+		ResourceLocation id = nonamecrackers2.mobbattlemusic.playlist.IdleConditionRegistry.normalizeId(type);
+		if (id == null)
+			return type;
+		return switch (id.getPath()) {
+			case "dimension" -> "\u7ef4\u5ea6";
+			case "biome" -> "\u7fa4\u7cfb";
+			case "structure" -> "\u5efa\u7b51";
+			case "underwater" -> "\u6c34\u4e0b";
+			case "entity" -> "\u9644\u8fd1\u5b9e\u4f53";
+			case "scene" -> "\u573a\u666f";
+			default -> id.toString();
+		};
+	}
+
 	private static String rowFilterText(Row row)
 	{
 		StringBuilder text = new StringBuilder().append(row.title()).append(' ').append(row.artist()).append(' ')
@@ -2976,18 +3099,23 @@ public class MusicPlaylistScreen extends Screen
 				case "player" -> text.append("player pvp 玩家 ");
 			}
 		}
-		for (IdleCondition condition : row.entry().conditions()) {
-			text.append(condition.type()).append(' ').append(condition.argument()).append(' ');
-			if (condition.type().endsWith(":underwater"))
-				text.append("underwater 水下 ");
-			else if (condition.type().endsWith(":structure"))
-				text.append("structure 结构 ");
-			else if (condition.type().endsWith(":biome"))
-				text.append("biome 生物群系 ");
-			else if (condition.type().endsWith(":dimension"))
-				text.append("dimension 维度 ");
+		// K16-B: the search text covers the conditions of EVERY use of the
+		// track (not just the representative row) plus the Chinese condition
+		// words - searching "\u7ef4\u5ea6" or "the_end" finds the song no matter
+		// which playlist carries the condition
+		for (IdleCondition condition : conditionsOfEveryUse(row)) {
+			text.append(condition.type()).append(' ').append(condition.argument()).append(' ')
+					.append(conditionTypeName(condition.type())).append(' ');
 		}
 		return text.toString().toLowerCase(Locale.ROOT);
+	}
+
+	private static List<IdleCondition> conditionsOfEveryUse(Row row)
+	{
+		java.util.List<IdleCondition> all = new java.util.ArrayList<>(row.entry().conditions());
+		for (var use : nonamecrackers2.mobbattlemusic.client.resource.TrackAssetRegistry.usesFor(row.trackId()))
+			all.addAll(use.entryConditions());
+		return all;
 	}
 
 	private static String formatDuration(long durationMillis)

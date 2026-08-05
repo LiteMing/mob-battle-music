@@ -271,7 +271,10 @@ public class BattleMusicManager {
 		initializeIdleCooldowns(tracks, now);
 		TrackType priority = null;
 		for (TrackType type : tracks) {
-			if (type.canPlay(selection) && isStartAllowed(type, now)) {
+			// K16-B: the playlist-level rule gate joins the bucket canPlay
+			// check - a playlist whose 歌单规则 does not match (e.g. wrong
+			// dimension/biome for a combat playlist) can never win
+			if (type.canPlay(selection) && type.playlistConditionsMatch() && isStartAllowed(type, now)) {
 				priority = type;
 				break;
 			}

@@ -138,6 +138,8 @@
 	"gui.mobbattlemusic.playlist.button.marker_add": "Mark",
 	"gui.mobbattlemusic.playlist.button.marker_delete": "Del",
 	"gui.mobbattlemusic.playlist.button.timeline_editor": "Timeline...",
+	"gui.mobbattlemusic.playlist.button.playlist_rules": "Playlist rules...",
+	"gui.mobbattlemusic.playlist.button.use_editor": "Edit uses...",
 	"gui.mobbattlemusic.playlist.message.invalid_marker": "Marker time or event ID is invalid",
 	"gui.mobbattlemusic.playlist.message.invalid_marker_index": "Invalid marker index",
 	"gui.mobbattlemusic.playlist.idle.title": "Idle Playlists",

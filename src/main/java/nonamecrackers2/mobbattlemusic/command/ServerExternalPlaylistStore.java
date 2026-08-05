@@ -720,17 +720,33 @@ public class ServerExternalPlaylistStore
 		return null;
 	}
 
-	public static Set<ResourceLocation> activeIdleRules(ServerPlayer player)
+	// K16-B: every server playlist whose playlist-level rule (歌单规则)
+	// currently matches the player - scene/entity playlists included, not
+	// just idle rules. Empty conditions count as always-active: the set
+	// doubles as the "playable server playlists" registry, and the client
+	// only queries it for tracks that actually carry conditions.
+	public static Set<ResourceLocation> activeRules(ServerPlayer player)
 	{
 		load(player.getServer());
 		java.util.Set<ResourceLocation> active = new java.util.LinkedHashSet<>();
-		for (String key : IDLE_RULE_URLS.keySet()) {
-			Binding binding = Binding.create(Kind.IDLE_RULE, key);
-			if (binding != null && IdleConditionRegistry.test(player,
-					IDLE_CONDITIONS.getOrDefault(binding.serializedKey(), List.of())))
+		collectActiveRules(player, Kind.SCENE, SCENE_URLS, active);
+		collectActiveRules(player, Kind.ENTITY_TYPE, ENTITY_TYPE_URLS, active);
+		collectActiveRules(player, Kind.ENTITY_UUID, ENTITY_UUID_URLS, active);
+		collectActiveRules(player, Kind.IDLE_RULE, IDLE_RULE_URLS, active);
+		return Set.copyOf(active);
+	}
+
+	private static void collectActiveRules(ServerPlayer player, Kind kind, Map<String, List<String>> urlsByTarget,
+			java.util.Set<ResourceLocation> active)
+	{
+		for (String key : urlsByTarget.keySet()) {
+			Binding binding = Binding.create(kind, key);
+			if (binding == null || urlsByTarget.get(key).isEmpty())
+				continue;
+			List<IdleCondition> conditions = IDLE_CONDITIONS.getOrDefault(binding.serializedKey(), List.of());
+			if (IdleConditionRegistry.test(player, conditions))
 				active.add(configLocation(binding));
 		}
-		return Set.copyOf(active);
 	}
 
 	public static Set<String> activeEntryConditions(ServerPlayer player)

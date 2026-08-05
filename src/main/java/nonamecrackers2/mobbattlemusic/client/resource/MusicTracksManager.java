@@ -1632,28 +1632,39 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 			return new ConfiguredIdleTrack(dynamicTrack.configLocation(), dynamicTrack.fadeTime(),
 					dynamicTrack.source() == DynamicSource.SERVER, dynamicTrack.idleConditions(),
 					dynamicTrack.idleIntervalSeconds());
+		// K16-B: every non-idle kind carries the playlist-level rule
+		// (歌单规则) through the unified TrackType gate - the conditions are
+		// evaluated in BattleMusicManager.playlistConditionsMatch(); the
+		// scene "idle" fallback below also goes through the gate now instead
+		// of the ConfiguredIdleTrack internal check
+		boolean serverConditioned = dynamicTrack.source() == DynamicSource.SERVER;
+		List<IdleCondition> conditions = dynamicTrack.idleConditions();
+		TrackType track;
 		if (binding.kind() == DynamicBinding.Kind.ENTITY_TYPE) {
 			MobSelection.GroupType group = entityGroup(binding.scene());
 			MobSelection.Selector selector = entitySelector(binding.scene());
 			boolean matchPanicTarget = "aggressive".equals(binding.scene());
-			return new MobSpecificTrack(parseEntityType(binding.target()), null, null, dynamicTrack.configLocation(),
+			track = new MobSpecificTrack(parseEntityType(binding.target()), null, null, dynamicTrack.configLocation(),
 					dynamicTrack.fadeTime(), group, selector, matchPanicTarget);
-		}
-		if (binding.kind() == DynamicBinding.Kind.ENTITY_UUID) {
+		} else if (binding.kind() == DynamicBinding.Kind.ENTITY_UUID) {
 			MobSelection.GroupType group = entityGroup(binding.scene());
 			MobSelection.Selector selector = entitySelector(binding.scene());
 			boolean matchPanicTarget = "aggressive".equals(binding.scene());
-			return new EntityUuidTrack(UUID.fromString(binding.target()), dynamicTrack.configLocation(),
+			track = new EntityUuidTrack(UUID.fromString(binding.target()), dynamicTrack.configLocation(),
 					dynamicTrack.fadeTime(), group, selector, matchPanicTarget);
+		} else {
+			track = switch (binding.scene()) {
+				case "player" -> new ConfiguredPlayerTrack(dynamicTrack.configLocation(), dynamicTrack.fadeTime());
+				case "aggressive" -> new ConfiguredAggressiveTrack(dynamicTrack.configLocation(), dynamicTrack.fadeTime());
+				case "ambient" -> new ConfiguredAmbientTrack(dynamicTrack.configLocation(), dynamicTrack.fadeTime());
+				case "idle" -> new ConfiguredIdleTrack(dynamicTrack.configLocation(), dynamicTrack.fadeTime(), false,
+						List.of(), dynamicTrack.idleIntervalSeconds());
+				default -> null;
+			};
 		}
-		return switch (binding.scene()) {
-			case "player" -> new ConfiguredPlayerTrack(dynamicTrack.configLocation(), dynamicTrack.fadeTime());
-			case "aggressive" -> new ConfiguredAggressiveTrack(dynamicTrack.configLocation(), dynamicTrack.fadeTime());
-			case "ambient" -> new ConfiguredAmbientTrack(dynamicTrack.configLocation(), dynamicTrack.fadeTime());
-			case "idle" -> new ConfiguredIdleTrack(dynamicTrack.configLocation(), dynamicTrack.fadeTime(), false,
-					List.of(), dynamicTrack.idleIntervalSeconds());
-			default -> null;
-		};
+		if (track != null)
+			track.setPlaylistConditions(serverConditioned, conditions);
+		return track;
 	}
 	
 	private static MobSelection.GroupType entityGroup(String scene) {

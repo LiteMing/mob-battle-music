@@ -25,7 +25,7 @@ public final class IdleConditionStateServer
 		if (event.phase != TickEvent.Phase.END || !(event.player instanceof ServerPlayer player) ||
 				player.tickCount % 10 != 0)
 			return;
-		Set<ResourceLocation> active = ServerExternalPlaylistStore.activeIdleRules(player);
+		Set<ResourceLocation> active = ServerExternalPlaylistStore.activeRules(player);
 		Set<String> activeEntries = ServerExternalPlaylistStore.activeEntryConditions(player);
 		ActiveState state = new ActiveState(Set.copyOf(active), Set.copyOf(activeEntries));
 		ActiveState previous = LAST_ACTIVE.put(player.getUUID(), state);
@@ -36,7 +36,7 @@ public final class IdleConditionStateServer
 	public static void onPlayerLoggedIn(PlayerEvent.PlayerLoggedInEvent event)
 	{
 		if (event.getEntity() instanceof ServerPlayer player) {
-			Set<ResourceLocation> active = ServerExternalPlaylistStore.activeIdleRules(player);
+			Set<ResourceLocation> active = ServerExternalPlaylistStore.activeRules(player);
 			ActiveState state = new ActiveState(Set.copyOf(active),
 					ServerExternalPlaylistStore.activeEntryConditions(player));
 			LAST_ACTIVE.put(player.getUUID(), state);
