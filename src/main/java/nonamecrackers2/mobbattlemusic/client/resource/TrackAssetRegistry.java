@@ -46,6 +46,10 @@ public final class TrackAssetRegistry
 		ASSETS.clear();
 		USES_BY_TRACK.clear();
 		MusicTracksManager manager = MusicTracksManager.getInstance();
+		// K15-F: occurrence ordinals are counted in the SAME single pass -
+		// the previous per-entry occurrenceIn() rescan was O(N^2) on large
+		// playlists
+		Map<String, Integer> occurrenceCounts = new java.util.HashMap<>();
 		for (MusicTracksManager.ExternalPlaylist playlist : manager.getExternalPlaylists()) {
 			MusicTracksManager.DynamicBinding binding = manager.editableBinding(playlist.configLocation());
 			for (int i = 0; i < playlist.entries().size(); i++) {
@@ -58,9 +62,11 @@ public final class TrackAssetRegistry
 				} else if (asset.title() == null) {
 					ASSETS.put(trackId, asset.withTitle(entry.name()));
 				}
+				String occurrenceKey = playlist.configLocation() + "#" + entry.id();
+				int ordinal = occurrenceCounts.getOrDefault(occurrenceKey, 0);
+				occurrenceCounts.put(occurrenceKey, ordinal + 1);
 				TrackUse use = new TrackUse(trackId, playlist.configLocation(), entry.id(), binding,
-						i, List.copyOf(entry.conditions()), entry.url(),
-						occurrenceIn(playlist.configLocation(), entry.id(), i));
+						i, List.copyOf(entry.conditions()), entry.url(), ordinal);
 				USES_BY_TRACK.computeIfAbsent(trackId, key -> new ArrayList<>()).add(use);
 			}
 		}
@@ -182,20 +188,4 @@ public final class TrackAssetRegistry
 		}
 	}
 
-	// K15-E: the occurrence number of (playlist, entryId) among entries 0..i
-	// (inclusive) - duplicate URLs in one playlist get distinct ordinals
-	private static int occurrenceIn(ResourceLocation playlistId, String entryId, int upToIndex)
-	{
-		MusicTracksManager manager = MusicTracksManager.getInstance();
-		int count = 0;
-		for (MusicTracksManager.ExternalPlaylist playlist : manager.getExternalPlaylists()) {
-			if (!playlist.configLocation().equals(playlistId))
-				continue;
-			for (int i = 0; i <= upToIndex && i < playlist.entries().size(); i++) {
-				if (playlist.entries().get(i).id().equals(entryId))
-					count++;
-			}
-		}
-		return count - 1;
-	}
 }
