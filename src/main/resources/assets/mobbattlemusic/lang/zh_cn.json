@@ -1,4 +1,4 @@
-﻿{
+{
 	"gui.mobbattlemusic.config.maxMobsForMaxVolume.title": "最大音量所需生物数量",
 	"gui.mobbattlemusic.config.maxMobSearchRadius.title": "最大生物搜索半径",
 	"gui.mobbattlemusic.config.threatRadius.title": "威胁半径",
@@ -92,7 +92,6 @@
 	"gui.mobbattlemusic.playlist.message.search_selected": "已将所选歌曲填入音乐栏",
 	"gui.mobbattlemusic.playlist.message.url_copied": "已复制歌曲 URL",
 	"gui.mobbattlemusic.playlist.tab.library": "歌单",
-	"gui.mobbattlemusic.playlist.tab.idle": "空闲",
 	"gui.mobbattlemusic.playlist.tab.timeline": "时间轴",
 	"gui.mobbattlemusic.playlist.tab.filters": "滤镜",
 	"gui.mobbattlemusic.playlist.tab.netease": "网易云搜索",

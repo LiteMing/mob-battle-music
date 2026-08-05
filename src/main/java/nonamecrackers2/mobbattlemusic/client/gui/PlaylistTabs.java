@@ -20,10 +20,10 @@ final class PlaylistTabs
 
 	static List<Button> create(PlaylistScreenLayout.Rect bounds, Tab selected, Consumer<Tab> onSelected)
 	{
-		// K14-D: TIMELINE is a first-class entry again - it was excluded from
-		// visibleTabs, so the marker editor had no top-level navigation. Five
-		// tabs share the width adaptively.
-		List<Tab> visibleTabs = List.of(Tab.LIBRARY, Tab.IDLE, Tab.TIMELINE, Tab.FILTERS, Tab.NETEASE);
+		// K16-C: idle rules are playlists too (Kind.IDLE_RULE) - the LIBRARY
+		// tab manages them like any other playlist, so the separate IDLE tab
+		// is gone. Four tabs share the width adaptively.
+		List<Tab> visibleTabs = List.of(Tab.LIBRARY, Tab.TIMELINE, Tab.FILTERS, Tab.NETEASE);
 		int gap = PlaylistScreenLayout.GAP;
 		int available = Math.max(1, bounds.width());
 		int width = Math.max(30, Math.min(84, (available - gap * (visibleTabs.size() - 1)) / visibleTabs.size()));
@@ -43,7 +43,6 @@ final class PlaylistTabs
 	enum Tab
 	{
 		LIBRARY("library"),
-		IDLE("idle"),
 		TIMELINE("timeline"),
 		FILTERS("filters"),
 		NETEASE("netease");

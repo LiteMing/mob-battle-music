@@ -1,4 +1,4 @@
-﻿{
+{
 	"gui.mobbattlemusic.config.maxMobsForMaxVolume.title": "Max Mobs For Max Volume",
 	"gui.mobbattlemusic.config.maxMobSearchRadius.title": "Max Mob Search Radius",
 	"gui.mobbattlemusic.config.threatRadius.title": "Threat Radius",
@@ -92,7 +92,6 @@
 	"gui.mobbattlemusic.playlist.message.search_selected": "Selected song copied to the music field",
 	"gui.mobbattlemusic.playlist.message.url_copied": "Copied song URL",
 	"gui.mobbattlemusic.playlist.tab.library": "Library",
-	"gui.mobbattlemusic.playlist.tab.idle": "Idle",
 	"gui.mobbattlemusic.playlist.tab.timeline": "Timeline",
 	"gui.mobbattlemusic.playlist.tab.filters": "Filters",
 	"gui.mobbattlemusic.playlist.tab.netease": "Netease",

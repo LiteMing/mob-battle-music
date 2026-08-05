@@ -90,9 +90,9 @@ public class MusicPlaylistScreen extends Screen
 	private Button kindButton;
 	private Button copyUrlButton;
 	private Button libraryTabButton;
-	private Button idleTabButton;
+	private Button timelineTabButton;
 	private Button filtersTabButton;
-	private Button searchTabButton;
+	private Button neteaseTabButton;
 	private Button modeButton;
 	private Button searchButton;
 	private Button previousPageButton;
@@ -189,7 +189,6 @@ public class MusicPlaylistScreen extends Screen
 		Minecraft mc = Minecraft.getInstance();
 		switch (tab) {
 			case LIBRARY -> mc.setScreen(new MusicPlaylistScreen(parent, editMode, ViewMode.LIBRARY));
-			case IDLE -> mc.setScreen(new IdlePlaylistScreen(parent, editMode));
 			case TIMELINE -> mc.setScreen(new TimelineMarkerScreen(parent, editMode));
 			case FILTERS -> mc.setScreen(new AudioFilterScreen(parent, editMode));
 			case NETEASE -> mc.setScreen(new MusicPlaylistScreen(parent, editMode, ViewMode.NETEASE));
@@ -221,7 +220,6 @@ public class MusicPlaylistScreen extends Screen
 			screen.loadSelectedSettings(true);
 			screen.updateButtonState();
 		}
-		IdlePlaylistScreen.refreshIfOpen();
 		TimelineMarkerScreen.refreshIfOpen();
 	}
 	
@@ -246,9 +244,9 @@ public class MusicPlaylistScreen extends Screen
 				this.viewMode == ViewMode.LIBRARY ? PlaylistTabs.Tab.LIBRARY : PlaylistTabs.Tab.NETEASE,
 				this::navigateTo);
 		this.libraryTabButton = this.addRenderableWidget(tabs.get(0));
-		this.idleTabButton = this.addRenderableWidget(tabs.get(1));
+		this.timelineTabButton = this.addRenderableWidget(tabs.get(1));
 		this.filtersTabButton = this.addRenderableWidget(tabs.get(2));
-		this.searchTabButton = this.addRenderableWidget(tabs.get(3));
+		this.neteaseTabButton = this.addRenderableWidget(tabs.get(3));
 		this.modeButton = this.addRenderableWidget(Button.builder(modeLabel(), button -> toggleModeDropdown())
 				.bounds(this.layout.titleBar().right() - 106, this.layout.titleBar().y(), 100, 20).build());
 		this.modeButton.active = this.editMode == EditMode.SERVER || canEditServer();
@@ -1950,12 +1948,12 @@ public class MusicPlaylistScreen extends Screen
 		boolean library = this.viewMode == ViewMode.LIBRARY;
 		if (this.libraryTabButton != null)
 			this.libraryTabButton.active = !library;
-		if (this.idleTabButton != null)
-			this.idleTabButton.active = true;
+		if (this.timelineTabButton != null)
+			this.timelineTabButton.active = true;
 		if (this.filtersTabButton != null)
 			this.filtersTabButton.active = true;
-		if (this.searchTabButton != null)
-			this.searchTabButton.active = library;
+		if (this.neteaseTabButton != null)
+			this.neteaseTabButton.active = library;
 		if (this.searchBox != null)
 			this.searchBox.visible = !library;
 		if (this.libraryFilterBox != null)
