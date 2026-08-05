@@ -964,9 +964,13 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		return PlaylistControlResult.success("Set local " + binding.displayName() + " interval to " + seconds + " seconds");
 	}
 
+	// K16-B: 歌单规则 - the playlist-level conditions apply to EVERY local
+	// playlist kind (scene/entity/uuid/idle rule), not only IDLE_RULE - the
+	// PlaylistRulesScreen edits rules for any playlist
 	public PlaylistControlResult addLocalIdleCondition(DynamicBinding binding, IdleCondition condition) {
-		if (binding == null || binding.kind() != DynamicBinding.Kind.IDLE_RULE || !hasLocalPlaylist(binding))
-			return PlaylistControlResult.failure("No local idle rule playlist exists");
+		if (binding == null || !hasLocalPlaylist(binding))
+			return PlaylistControlResult.failure("No local playlist exists for "
+					+ (binding == null ? "null" : binding.serializedKey()));
 		this.localIdleConditions.computeIfAbsent(binding.serializedKey(), key -> Lists.newArrayList()).add(condition);
 		this.saveLocalSceneUrls();
 		this.refreshLocalDynamicTracks();
@@ -979,7 +983,7 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 	public PlaylistControlResult deleteLocalIdleCondition(DynamicBinding binding, int index) {
 		List<IdleCondition> conditions = binding == null ? null : this.localIdleConditions.get(binding.serializedKey());
 		if (conditions == null || index < 0 || index >= conditions.size())
-			return PlaylistControlResult.failure("Idle condition index out of range");
+			return PlaylistControlResult.failure("Condition index out of range");
 		conditions.remove(index);
 		if (conditions.isEmpty())
 			this.localIdleConditions.remove(binding.serializedKey());
@@ -988,7 +992,7 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		this.rebuildTracksWithDynamic();
 		// AUD-18: idle condition change
 		MusicTracksManager.bumpPlaylistRevision(dynamicConfigLocation(DynamicSource.LOCAL, binding));
-		return PlaylistControlResult.success("Deleted local idle condition #" + (index + 1));
+		return PlaylistControlResult.success("Deleted local condition #" + (index + 1));
 	}
 
 	public PlaylistControlResult addLocalEntryCondition(DynamicBinding binding, int entryIndex, IdleCondition condition)

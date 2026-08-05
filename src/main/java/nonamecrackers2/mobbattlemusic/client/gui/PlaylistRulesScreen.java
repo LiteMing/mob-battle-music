@@ -90,7 +90,7 @@ public class PlaylistRulesScreen extends Screen
 
 		this.conditionTypeDropdown.setItems(IdleConditionStateClient.descriptors().stream()
 				.map(descriptor -> new PlaylistDropdown.Item(descriptor.id().toString(),
-						Component.literal(descriptor.displayName()),
+						Component.literal(conditionTypeName(descriptor.id().toString())),
 						Component.literal(descriptor.id().toString()), false))
 				.toList());
 		this.conditionTypeDropdown.setBounds(x, editorY + 20, iw, this.height - 4);
@@ -370,11 +370,7 @@ public class PlaylistRulesScreen extends Screen
 
 	private Component conditionTypeLabel()
 	{
-		for (IdleConditionRegistry.Descriptor descriptor : IdleConditionStateClient.descriptors()) {
-			if (descriptor.id().toString().equals(this.conditionType))
-				return Component.literal(descriptor.displayName());
-		}
-		return Component.literal(this.conditionType);
+		return Component.literal(conditionTypeName(this.conditionType));
 	}
 
 	private Component invertLabel()
