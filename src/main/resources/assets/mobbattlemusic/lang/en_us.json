@@ -89,6 +89,7 @@
 	"gui.mobbattlemusic.playlist.message.target_required": "Target is required for %s",
 	"gui.mobbattlemusic.playlist.message.unknown_player": "Unknown online player: %s",
 	"gui.mobbattlemusic.playlist.message.sent_command": "Sent /%s",
+	"gui.mobbattlemusic.playlist.message.dock_neighbor_unavailable": "No neighboring track available",
 	"gui.mobbattlemusic.playlist.message.search_selected": "Selected song copied to the music field",
 	"gui.mobbattlemusic.playlist.message.url_copied": "Copied song URL",
 	"gui.mobbattlemusic.playlist.tab.library": "Library",

@@ -89,6 +89,7 @@
 	"gui.mobbattlemusic.playlist.message.target_required": "%s 需要填写目标",
 	"gui.mobbattlemusic.playlist.message.unknown_player": "未知在线玩家：%s",
 	"gui.mobbattlemusic.playlist.message.sent_command": "已发送 /%s",
+	"gui.mobbattlemusic.playlist.message.dock_neighbor_unavailable": "没有可用的相邻曲目",
 	"gui.mobbattlemusic.playlist.message.search_selected": "已将所选歌曲填入音乐栏",
 	"gui.mobbattlemusic.playlist.message.url_copied": "已复制歌曲 URL",
 	"gui.mobbattlemusic.playlist.tab.library": "歌单",

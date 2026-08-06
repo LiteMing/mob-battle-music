@@ -1743,7 +1743,13 @@ public class MusicPlaylistScreen extends Screen
 	private void playNeighbor(int direction)
 	{
 		nonamecrackers2.mobbattlemusic.client.audio.PlaybackHandle handle = WorldPlaybackChannel.handle();
-		if (handle == null || handle.sourceRef() == null || handle.sourceRef().isDirect()) {
+		if (handle == null || handle.sourceRef() == null || handle.sourceRef().isDirect()
+				|| ExternalMusicHandler.getInstance().getCurrentlyPlayingUrl() == null) {
+			// K16-F: no current track (stopped / direct URL / nothing ever
+			// played) - pick a playable entry from an idle playlist instead of
+			// failing; the idle library always has candidates unless empty
+			if (playIdleFallback())
+				return;
 			message(text("message.dock_neighbor_unavailable"));
 			return;
 		}
@@ -1782,6 +1788,28 @@ public class MusicPlaylistScreen extends Screen
 			return;
 		}
 		message(text("message.dock_neighbor_unavailable"));
+	}
+
+	// K16-F: manual prev/next with nothing currently playing - start a
+	// playable entry from the first idle playlist (the shared idle library)
+	private boolean playIdleFallback()
+	{
+		MusicTracksManager manager = MusicTracksManager.getInstance();
+		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
+		for (MusicTracksManager.DynamicExternalTrack track : manager.getDynamicExternalTracksSnapshot()) {
+			MusicTracksManager.DynamicBinding binding = manager.editableBinding(track.configLocation());
+			if (binding == null || binding.kind() != MusicTracksManager.DynamicBinding.Kind.IDLE_RULE)
+				continue;
+			for (MusicTracksManager.ExternalPlaylistEntry entry : track.entries()) {
+				if (entry.url().startsWith("sound:") || !manager.isMusicEntryEnabled(track.configLocation(), entry))
+					continue;
+				WorldPlaybackChannel.adoptManualSelection(entry.url(), track.configLocation().toString(),
+						entry.id(), MusicTracksManager.playlistRevision(track.configLocation()));
+				handler.playMusic(entry.url(), track.fadeTime());
+				return true;
+			}
+		}
+		return false;
 	}
 
 	private boolean clickConditionRow(double mouseX, double mouseY)
