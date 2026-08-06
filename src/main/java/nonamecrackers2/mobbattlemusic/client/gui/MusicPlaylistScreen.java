@@ -427,7 +427,9 @@ public class MusicPlaylistScreen extends Screen
 		this.previewFollowsMain = MobBattleMusicConfig.CLIENT.previewFollowsMain.get();
 		this.volumeButton = this.addRenderableWidget(Button.builder(Component.literal("Vol"),
 				button -> this.volumePanelOpen = !this.volumePanelOpen)
-				.bounds(this.width - 46, 6, 40, 18).build());
+				// K16-G-r4: Vol sits LEFT of the mode button - the old
+				// fixed (width-46) position overlapped it on the title bar
+				.bounds(this.modeButton.getX() - 46, 6, 40, 18).build());
 		this.previousPageButton = this.addRenderableWidget(Button.builder(text("button.previous"), button -> startSearch(this.searchPage - 1))
 				.bounds(sidebar.innerX(), sidebar.innerY() + 59, Math.max(1, (sidebar.innerWidth() - 4) / 2), 20).build());
 		this.nextPageButton = this.addRenderableWidget(Button.builder(text("button.next"), button -> startSearch(this.searchPage + 1))
@@ -2269,6 +2271,11 @@ public class MusicPlaylistScreen extends Screen
 		if (this.addBindingButton != null)
 			this.addBindingButton.setMessage(text(this.multiSelectActive
 					? "button.add_bind_checked" : "button.add_bind_selected"));
+		// K16-G-r4: the import button only exists on the LIBRARY BINDING page -
+		// it was unconditionally visible and overlapped the DETAILS order row
+		// (editY+82 vs detailActionY) and covered the NETEASE search detail
+		if (this.importButton != null)
+			this.importButton.visible = this.viewMode == ViewMode.LIBRARY && binding;
 		this.multiSelectButton.visible = this.viewMode == ViewMode.LIBRARY && (binding || grouped);
 		this.multiSelectButton.active = this.multiSelectButton.visible;
 		// K13-C: cover-play is available wherever a LIBRARY row is selected
