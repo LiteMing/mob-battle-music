@@ -1486,57 +1486,83 @@ public class MusicPlaylistScreen extends Screen
 		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
 		graphics.fill(0, dockY(), this.width, this.height, 0xF0141A20);
 		graphics.fill(0, dockY(), this.width, dockY() + 1, 0xFF3A4550);
-		// MAIN vs PREVIEW are never mixed - the dock only ever reads the main
-		// channel handler state
+		// K16-F: the dock always reflects what the player ACTUALLY hears -
+		// an active preview/cover (audible) wins over the main channel (which
+		// may be covered/muted or empty)
 		graphics.drawString(this.font, "MAIN", 8, dockY() + 5, 0xFF73D98A);
-		if (!hasMainTrack()) {
-			graphics.drawString(this.font, "no track", 52, dockY() + 6, 0xFF8B929C);
-			graphics.drawString(this.font, "[AUTO]", 8, dockY() + 24, 0xFF8B929C);
-			return;
-		}
-		String url = handler.getCurrentlyPlayingUrl();
-		boolean buffering = handler.isPreparingCurrentMusic();
-		boolean audible = handler.getPositionMillis() >= 0L;
-		nonamecrackers2.mobbattlemusic.client.audio.PlaybackHandle handle = WorldPlaybackChannel.handle();
-		String title = buffering ? "buffering..." : describeTrackTitle(url);
-		graphics.drawString(this.font, title, 52, dockY() + 5, 0xFFD6D9DE);
-		String source = describeDockSource(handle);
-		graphics.drawString(this.font, source, 52, dockY() + 18, 0xFF8B929C);
-		WorldPlaybackChannel.PlaybackOwner owner = WorldPlaybackChannel.playbackOwner();
-		graphics.drawString(this.font, "[" + owner + "]", 8, dockY() + 24, ownerColor(owner));
-		// K10-B: the owner badge is the explicit way back to AUTO
-		if (owner != WorldPlaybackChannel.PlaybackOwner.AUTO)
-			graphics.drawString(this.font, "click to return to AUTO", 52, dockY() + 32, 0xFF8B929C);
-
 		int progressLeft = 150;
 		int progressRight = this.width - 220;
 		int progressY = dockY() + 36;
-		long duration = handler.getDurationMillis();
-		long position = handler.getPositionMillis();
-		graphics.fill(progressLeft, progressY, progressRight, progressY + 4, 0xFF3A4550);
-		if (duration > 0L && position >= 0L) {
-			// K10-B: while dragging, show the previewed position, not the
-			// live one - the seek commits only on release
-			long displayed = this.dockSeekDragging && this.dockPreviewPosition >= 0L
-					? this.dockPreviewPosition : position;
-			long filledLong = Math.round((progressRight - progressLeft)
-					* Math.min(1.0D, displayed / (double) duration));
-			int filled = (int) Math.min(progressRight - progressLeft, filledLong);
-			graphics.fill(progressLeft, progressY, progressLeft + filled, progressY + 4, 0xFF73D98A);
-			graphics.drawString(this.font, formatMillis(displayed) + " / " + formatMillis(duration),
-					progressLeft, progressY + 8, 0xFFB8C0CA);
-		} else {
-			graphics.drawString(this.font, buffering ? "preparing..." : "position n/a", progressLeft, progressY + 8,
-					0xFF8B929C);
-		}
-		if (audible && owner == WorldPlaybackChannel.PlaybackOwner.CUE)
-			graphics.drawString(this.font, "locked (CUE)", progressRight - 70, dockY() + 5, 0xFFE06C75);
+		boolean previewActive = PreviewChannel.isActive();
+		WorldPlaybackChannel.PlaybackOwner owner = WorldPlaybackChannel.playbackOwner();
+		if (previewActive) {
+			String previewUrl = PreviewChannel.currentTrack();
+			String title = previewUrl == null ? "..." : describeTrackTitle(previewUrl);
+			graphics.drawString(this.font, title, 52, dockY() + 5, 0xFFD6D9DE);
+			graphics.drawString(this.font, PreviewChannel.isCoveringMain() ? "cover main" : "preview",
+					52, dockY() + 18, 0xFF8B929C);
+			graphics.drawString(this.font, "[AUTO]", 8, dockY() + 24, 0xFF8B929C);
+			long duration = PreviewChannel.durationMillis();
+			long position = PreviewChannel.positionMillis();
+			graphics.fill(progressLeft, progressY, progressRight, progressY + 4, 0xFF3A4550);
+			if (duration > 0L && position >= 0L) {
+				long filled = Math.round((progressRight - progressLeft)
+						* Math.min(1.0D, position / (double) duration));
+				graphics.fill(progressLeft, progressY, progressLeft + filled, progressY + 4, 0xFF73D98A);
+				graphics.drawString(this.font, formatMillis(position) + " / " + formatMillis(duration),
+						progressLeft, progressY + 8, 0xFFB8C0CA);
+			} else {
+				graphics.drawString(this.font, "preparing...", progressLeft, progressY + 8, 0xFF8B929C);
+			}
+		} else if (hasMainTrack()) {
+			String url = handler.getCurrentlyPlayingUrl();
+			boolean buffering = handler.isPreparingCurrentMusic();
+			boolean audible = handler.getPositionMillis() >= 0L;
+			nonamecrackers2.mobbattlemusic.client.audio.PlaybackHandle handle = WorldPlaybackChannel.handle();
+			String title = buffering ? "buffering..." : describeTrackTitle(url);
+			graphics.drawString(this.font, title, 52, dockY() + 5, 0xFFD6D9DE);
+			String source = describeDockSource(handle);
+			graphics.drawString(this.font, source, 52, dockY() + 18, 0xFF8B929C);
+			graphics.drawString(this.font, "[" + owner + "]", 8, dockY() + 24, ownerColor(owner));
+			// K10-B: the owner badge is the explicit way back to AUTO
+			if (owner != WorldPlaybackChannel.PlaybackOwner.AUTO)
+				graphics.drawString(this.font, "click to return to AUTO", 52, dockY() + 32, 0xFF8B929C);
 
-		// buttons: prev / play-pause / stop / next
+			long duration = handler.getDurationMillis();
+			long position = handler.getPositionMillis();
+			graphics.fill(progressLeft, progressY, progressRight, progressY + 4, 0xFF3A4550);
+			if (duration > 0L && position >= 0L) {
+				// K10-B: while dragging, show the previewed position, not the
+				// live one - the seek commits only on release
+				long displayed = this.dockSeekDragging && this.dockPreviewPosition >= 0L
+						? this.dockPreviewPosition : position;
+				long filledLong = Math.round((progressRight - progressLeft)
+						* Math.min(1.0D, displayed / (double) duration));
+				int filled = (int) Math.min(progressRight - progressLeft, filledLong);
+				graphics.fill(progressLeft, progressY, progressLeft + filled, progressY + 4, 0xFF73D98A);
+				graphics.drawString(this.font, formatMillis(displayed) + " / " + formatMillis(duration),
+						progressLeft, progressY + 8, 0xFFB8C0CA);
+			} else {
+				graphics.drawString(this.font, buffering ? "preparing..." : "position n/a", progressLeft,
+						progressY + 8, 0xFF8B929C);
+			}
+			if (audible && owner == WorldPlaybackChannel.PlaybackOwner.CUE)
+				graphics.drawString(this.font, "locked (CUE)", progressRight - 70, dockY() + 5, 0xFFE06C75);
+		} else {
+			// K16-F: the dock NEVER hides - the transport buttons stay usable
+			// even while nothing is playing
+			graphics.drawString(this.font, "no track", 52, dockY() + 6, 0xFF8B929C);
+			graphics.drawString(this.font, "[AUTO]", 8, dockY() + 24, 0xFF8B929C);
+			graphics.fill(progressLeft, progressY, progressRight, progressY + 4, 0xFF3A4550);
+			graphics.drawString(this.font, "position n/a", progressLeft, progressY + 8, 0xFF8B929C);
+		}
+
+		// K16-F: transport buttons are ALWAYS rendered (visible + clickable)
 		int buttonY = dockY() + 16;
 		int x = this.width - 172;
+		boolean playing = previewActive ? PreviewChannel.isPlaying() : handler.isPlaying();
 		graphics.drawCenteredString(this.font, "\u23ee", x + 16, buttonY, 0xFFD6D9DE);
-		graphics.drawCenteredString(this.font, handler.isPlaying() ? "\u23f8" : "\u25b6", x + 54, buttonY, 0xFFD6D9DE);
+		graphics.drawCenteredString(this.font, playing ? "\u23f8" : "\u25b6", x + 54, buttonY, 0xFFD6D9DE);
 		graphics.drawCenteredString(this.font, "\u23f9", x + 92, buttonY, 0xFFD6D9DE);
 		graphics.drawCenteredString(this.font, "\u23ed", x + 130, buttonY, 0xFFD6D9DE);
 	}
@@ -1648,6 +1674,13 @@ public class MusicPlaylistScreen extends Screen
 				return true;
 			}
 			if (mouseX >= x + 36 && mouseX < x + 76) {
+				// K16-F: while a preview/cover is audible, the play button
+				// stops it (the audible track lives on the preview channel);
+				// otherwise it is the main-channel play/pause with MAN intent
+				if (PreviewChannel.isActive()) {
+					PreviewChannel.stop();
+					return true;
+				}
 				// K11-B: play/pause from the dock always takes MAN ownership
 				// (persistent intent, even when the current track was AUTO)
 				if (handler.isPlaying()) {
@@ -1660,6 +1693,12 @@ public class MusicPlaylistScreen extends Screen
 				return true;
 			}
 			if (mouseX >= x + 76 && mouseX < x + 110) {
+				// K16-F: stop stops whatever is audible - the preview/cover
+				// channel first (which also releases the main-channel cover)
+				if (PreviewChannel.isActive()) {
+					PreviewChannel.stop();
+					return true;
+				}
 				// K11-B: stop takes MAN ownership with an explicit STOPPED
 				// intent - the AUTO engine stays suspended until the user
 				// returns to AUTO (badge) or plays again
