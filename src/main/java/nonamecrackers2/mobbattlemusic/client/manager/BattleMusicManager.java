@@ -288,16 +288,24 @@ public class BattleMusicManager {
 		// hundred ms). Holding the previous winner for a short window keeps
 		// the song playing instead of re-fading every flap; only two non-null
 		// winner changes are debounced (start/stop transitions stay instant).
+		// K16-G-r2: while holding, the idle suppression is NOT refreshed (the
+		// hold is not a real combat win), and when the hold expires the idle
+		// suppression is cleared - combat ended long ago (the old winner has
+		// been canPlay=false for the whole hold), so the idle library must be
+		// allowed to start immediately instead of waiting the full delay.
+		boolean debounced = false;
 		if (priority != this.priorityTrack && this.priorityTrack != null && priority != null) {
 			if (now - this.lastPrioritySwitchAtMillis < SWITCH_DEBOUNCE_MILLIS) {
 				priority = this.priorityTrack;
+				debounced = true;
 			} else {
 				this.lastPrioritySwitchAtMillis = now;
+				this.idleSuppressedUntilMillis = Math.min(this.idleSuppressedUntilMillis, now);
 			}
 		} else if (priority != this.priorityTrack) {
 			this.lastPrioritySwitchAtMillis = now;
 		}
-		if (priority != null && !priority.isIdlePlayback())
+		if (!debounced && priority != null && !priority.isIdlePlayback())
 			this.idleSuppressedUntilMillis = now + MobBattleMusicConfig.CLIENT.idleResumeDelay.get() * 1000L;
 		this.priorityTrack = priority;
 
@@ -433,14 +441,18 @@ public class BattleMusicManager {
 					scheduleIdleNextStart(type);
 					externalTrack = null;
 				}
-				if (externalTrack != null && !externalTrack.getUrl().equals(url)
+				if (allowNewTracks && externalTrack != null && !externalTrack.getUrl().equals(url)
 						&& !ExternalMusicHandler.getInstance().isPreparingCurrentMusic()) {
 					// AUD-46: gated fade-out before switching (same-type switch
 					// durations). AUD-49 #4: on rejection keep the old track;
 					// the switch retries on the next tick. K16-G: while the
 					// player is still preparing/decoding, hold the switch - a
 					// flapping winner must not queue gates against a half-
-					// built source.
+					// built source. K16-G-r2: allowNewTracks gates the whole
+					// same-type switch - a LOSING track (already fading out)
+					// must never queue a gate and stop the SHARED player,
+					// which killed the winner's continued song on combat end
+					// (silence after combat, flicker during flaps).
 					ExternalUrlMusicTrack oldTrack = externalTrack;
 					String newUrl = url;
 					long fadeOut = switchFadeOutMillis(type.isIdlePlayback(), type.isIdlePlayback());
