@@ -1771,11 +1771,28 @@ public class MusicPlaylistScreen extends Screen
 			}
 			if (index < 0)
 				return;
+			// K16-G: dock prev/next follows the playlist's selection mode -
+			// random playlists roll randomly, sequential playlists step in
+			// order (wrapping), first playlists always replay the first entry
+			MusicTracksManager.DynamicPlaylistSettings settings = manager.dynamicSettings(track.configLocation());
+			MusicTracksManager.ExternalSelectionMode mode = settings == null
+					? MusicTracksManager.ExternalSelectionMode.RANDOM : settings.selectionMode();
 			for (int step = 1; step <= entries.size(); step++) {
-				int candidate = Math.floorMod(index + direction * step, entries.size());
+				int candidate;
+				if (mode == MusicTracksManager.ExternalSelectionMode.RANDOM) {
+					if (entries.size() <= 1) {
+						candidate = 0;
+					} else {
+						candidate = java.util.concurrent.ThreadLocalRandom.current().nextInt(entries.size());
+						if (candidate == index)
+							candidate = (candidate + 1) % entries.size();
+					}
+				} else {
+					candidate = Math.floorMod(index + direction * step, entries.size());
+				}
 				MusicTracksManager.ExternalPlaylistEntry entry = entries.get(candidate);
 				String url = entry.url();
-				if (!url.startsWith("sound:")) {
+				if (!url.startsWith("sound:") && manager.isMusicEntryEnabled(track.configLocation(), entry)) {
 					// K11-B: the session handle/source follow the manual
 					// selection (markers and dock source display stay correct)
 					WorldPlaybackChannel.adoptManualSelection(url,
@@ -1791,7 +1808,8 @@ public class MusicPlaylistScreen extends Screen
 	}
 
 	// K16-F: manual prev/next with nothing currently playing - start a
-	// playable entry from the first idle playlist (the shared idle library)
+	// playable entry from the first idle playlist (the shared idle library),
+	// following that playlist's selection mode (K16-G)
 	private boolean playIdleFallback()
 	{
 		MusicTracksManager manager = MusicTracksManager.getInstance();
@@ -1800,7 +1818,14 @@ public class MusicPlaylistScreen extends Screen
 			MusicTracksManager.DynamicBinding binding = manager.editableBinding(track.configLocation());
 			if (binding == null || binding.kind() != MusicTracksManager.DynamicBinding.Kind.IDLE_RULE)
 				continue;
-			for (MusicTracksManager.ExternalPlaylistEntry entry : track.entries()) {
+			MusicTracksManager.DynamicPlaylistSettings settings = manager.dynamicSettings(track.configLocation());
+			boolean random = settings != null
+					&& settings.selectionMode() == MusicTracksManager.ExternalSelectionMode.RANDOM;
+			List<MusicTracksManager.ExternalPlaylistEntry> entries = track.entries();
+			int start = random && entries.size() > 1
+					? java.util.concurrent.ThreadLocalRandom.current().nextInt(entries.size()) : 0;
+			for (int step = 0; step < entries.size(); step++) {
+				MusicTracksManager.ExternalPlaylistEntry entry = entries.get((start + step) % entries.size());
 				if (entry.url().startsWith("sound:") || !manager.isMusicEntryEnabled(track.configLocation(), entry))
 					continue;
 				WorldPlaybackChannel.adoptManualSelection(entry.url(), track.configLocation().toString(),
