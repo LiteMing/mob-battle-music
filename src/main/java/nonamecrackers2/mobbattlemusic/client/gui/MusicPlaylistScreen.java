@@ -1506,8 +1506,9 @@ public class MusicPlaylistScreen extends Screen
 			long position = PreviewChannel.positionMillis();
 			graphics.fill(progressLeft, progressY, progressRight, progressY + 4, 0xFF3A4550);
 			if (duration > 0L && position >= 0L) {
-				long filled = Math.round((progressRight - progressLeft)
+				long filledLong = Math.round((progressRight - progressLeft)
 						* Math.min(1.0D, position / (double) duration));
+				int filled = (int) Math.min(progressRight - progressLeft, filledLong);
 				graphics.fill(progressLeft, progressY, progressLeft + filled, progressY + 4, 0xFF73D98A);
 				graphics.drawString(this.font, formatMillis(position) + " / " + formatMillis(duration),
 						progressLeft, progressY + 8, 0xFFB8C0CA);
