@@ -491,6 +491,13 @@ public class BattleMusicManager {
 							externalTrack = ExternalUrlMusicTrack.adopt(url, type.getFadeTime());
 							WorldPlaybackChannel.setCurrentIntent(url);
 							this.externalTracks.put(type, externalTrack);
+							// K16-E-r2: the forced pin is SINGLE-USE - clear it
+							// right after adopting so the next selection (natural
+							// end / manual next / a later switch) rolls normally.
+							// Without this the playlist stays pinned to the
+							// continued URL forever: the song loops endlessly
+							// (Beginning reappears for the same URL every cycle).
+							tracksManager.clearExternalPlaylistSelection(trackLocation);
 							LOGGER.info("Continuing external URL track across playlist switch: {}", url);
 							return;
 						}
