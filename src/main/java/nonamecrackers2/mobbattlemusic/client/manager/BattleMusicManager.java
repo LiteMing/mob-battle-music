@@ -735,7 +735,15 @@ public class BattleMusicManager {
 			ExternalUrlMusicTrack externalTrack = entry.getValue();
 			if (continuingUrl != null && continuingUrl.equals(externalTrack.getUrl())) {
 				// the song keeps playing - detach the old wrapper only; the
-				// winner adopts the live player next
+				// winner adopts the live player next. MUST wait for any
+				// in-flight gate: a queued gate callback holds this wrapper
+				// reference and would stop the SHARED player after the detach
+				// (audible flicker / restart loop when the same song lives in
+				// several playlists and switches race each other)
+				if (WorldPlaybackChannel.isGatedTransitionActive()) {
+					pending = true;
+					break;
+				}
 				this.externalTracks.remove(otherType);
 				LOGGER.debug("Cross-playlist continuation: detaching {} wrapper for {}", otherType, continuingUrl);
 				continue;
