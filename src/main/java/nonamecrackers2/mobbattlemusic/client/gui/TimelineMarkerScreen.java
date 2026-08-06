@@ -93,6 +93,11 @@ final class TimelineMarkerScreen extends Screen
 		this.markerScroll = state.markerScroll;
 		this.rebuildTracks();
 		selectPreferredTrack();
+		// K16-G-r4: the timeline screen gets the top-level tab bar too (歌单/
+		// 时间轴/滤镜/网易云) - it was the only editor screen without one, so
+		// the user was trapped on the timeline page
+		for (Button tab : PlaylistTabs.create(this.width, PlaylistTabs.Tab.TIMELINE, this::navigateTo))
+			this.addRenderableWidget(tab);
 		if (!compactEditor())
 			this.modeButton = this.addRenderableWidget(Button.builder(modeLabel(), button -> switchMode())
 					.bounds(this.width - 112, 6, 100, 20).build());

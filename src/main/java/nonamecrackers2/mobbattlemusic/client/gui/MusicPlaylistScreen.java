@@ -2137,14 +2137,19 @@ public class MusicPlaylistScreen extends Screen
 		this.kindButton.active = this.kindButton.visible;
 		this.targetBox.visible = binding && this.viewMode == ViewMode.LIBRARY;
 		this.targetBox.active = this.targetBox.visible && !"scene".equals(this.addKind);
+		// K16-G-r4: the standalone conditions inspector only exists on the
+		// CONDITIONS page - it was unconditionally visible and overlapped the
+		// binding-page buttons (Add selected to target group etc.)
+		this.conditionsInspectorButton.visible = conditions && editable;
+		this.conditionsInspectorButton.active = this.conditionsInspectorButton.visible;
 		this.addBindingButton.visible = binding || this.viewMode == ViewMode.NETEASE;
 		this.addBindingButton.active = this.viewMode == ViewMode.NETEASE
 				? this.searchSelected >= 0 && this.searchSelected < this.searchRows.size()
 				: this.multiSelectActive ? !this.selectedRowSet.isEmpty() : hasTrack;
 		// K13-A: batch-mode button label reflects the current mode
 		if (this.addBindingButton != null)
-			this.addBindingButton.setMessage(Component.literal(this.multiSelectActive
-					? "Add checked to target group" : "Add selected to target group"));
+			this.addBindingButton.setMessage(text(this.multiSelectActive
+					? "button.add_bind_checked" : "button.add_bind_selected"));
 		this.multiSelectButton.visible = this.viewMode == ViewMode.LIBRARY && (binding || grouped);
 		this.multiSelectButton.active = this.multiSelectButton.visible;
 		// K13-C: cover-play is available wherever a LIBRARY row is selected
