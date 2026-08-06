@@ -105,6 +105,8 @@ public class MusicPlaylistScreen extends Screen
 	private Button timelineEditorButton;
 	private Button playlistRulesButton;
 	private Button useEditorButton;
+	// K16-D: throttle for the silent-playback actionbar warning
+	private long lastSilentVolumeHintAtMillis;
 	private Button inspectorDetailsButton;
 	private Button inspectorBindingButton;
 	private Button inspectorConditionsButton;
@@ -1786,6 +1788,22 @@ public class MusicPlaylistScreen extends Screen
 			this.selected = this.rows.isEmpty() ? -1 : Math.min(Math.max(this.selected, 0), this.rows.size() - 1);
 			this.loadSelectedSettings(true);
 			this.updateButtonState();
+		}
+		// K16-D: silent-playback warning - the main channel is playing or
+		// switching tracks in the background but the user gain is (near) zero,
+		// so nothing is audible; surface it on the actionbar (throttled) so a
+		// muted Vol panel never looks like a dead mod
+		long now = System.currentTimeMillis();
+		float gain = MobBattleMusicConfig.CLIENT.mbmUserGain.get().floatValue();
+		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
+		boolean rolling = hasMainTrack() || handler.isPreparingCurrentMusic();
+		if (rolling && gain <= 0.05f && now - this.lastSilentVolumeHintAtMillis > 5000L) {
+			this.lastSilentVolumeHintAtMillis = now;
+			int percent = Math.max(0, Math.round(gain * 100.0f));
+			this.minecraft.player.displayClientMessage(
+					Component.literal("[Mob Battle Music] \u00a7c\u76ee\u524d MBM \u5904\u4e8e\u97f3\u91cf " + percent
+							+ "% - \u53f3\u4e0a\u89d2 Vol \u9762\u677f\u53ef\u4ee5\u8c03\u56de\u6765"),
+					true);
 		}
 	}
 
