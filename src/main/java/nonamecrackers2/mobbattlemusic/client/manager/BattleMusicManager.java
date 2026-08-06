@@ -95,10 +95,10 @@ public class BattleMusicManager {
 	private @Nullable LivingEntity panickingFrom;
 	// K8-A: the first-tick adoption reconciliation runs exactly once per level
 	private boolean adoptionChecked;
-	// K16-G: winner-switch debounce - combat canPlay flaps near the combat
-	// edge must not re-fade the song every few hundred ms
-	private static final long SWITCH_DEBOUNCE_MILLIS = 2000L;
-	private long lastPrioritySwitchAtMillis;
+	// K16-G-r3: while the current track is HELD for playout (non-preemptive
+	// semantics), its same-type switch is suppressed so the SONG plays to the
+	// end - the playlist must not roll a new entry mid-hold
+	private boolean holdTrackForPlayout;
 
 	public BattleMusicManager(Minecraft mc, ClientLevel level) {
 		this.minecraft = mc;
@@ -273,39 +273,38 @@ public class BattleMusicManager {
 
 		long now = System.currentTimeMillis();
 		initializeIdleCooldowns(tracks, now);
-		TrackType priority = null;
+		TrackType current = this.priorityTrack;
+		TrackType highest = null;
 		for (TrackType type : tracks) {
 			// K16-B: the playlist-level rule gate joins the bucket canPlay
 			// check - a playlist whose 歌单规则 does not match (e.g. wrong
 			// dimension/biome for a combat playlist) can never win
 			if (type.canPlay(selection) && type.playlistConditionsMatch() && isStartAllowed(type, now)) {
-				priority = type;
+				highest = type;
 				break;
 			}
 		}
-		// K16-G: switch debounce - combat canPlay flaps on the combat-edge
-		// (mobs leaving the threat window flicker the attack group for a few
-		// hundred ms). Holding the previous winner for a short window keeps
-		// the song playing instead of re-fading every flap; only two non-null
-		// winner changes are debounced (start/stop transitions stay instant).
-		// K16-G-r2: while holding, the idle suppression is NOT refreshed (the
-		// hold is not a real combat win), and when the hold expires the idle
-		// suppression is cleared - combat ended long ago (the old winner has
-		// been canPlay=false for the whole hold), so the idle library must be
-		// allowed to start immediately instead of waiting the full delay.
-		boolean debounced = false;
-		if (priority != this.priorityTrack && this.priorityTrack != null && priority != null) {
-			if (now - this.lastPrioritySwitchAtMillis < SWITCH_DEBOUNCE_MILLIS) {
-				priority = this.priorityTrack;
-				debounced = true;
-			} else {
-				this.lastPrioritySwitchAtMillis = now;
-				this.idleSuppressedUntilMillis = Math.min(this.idleSuppressedUntilMillis, now);
-			}
-		} else if (priority != this.priorityTrack) {
-			this.lastPrioritySwitchAtMillis = now;
+		// K16-G-r3: non-preemptive playout with directional preemption - the
+		// 切歌链条 is 日常->威胁->战斗->boss威胁->boss战斗->结算曲: a LATER
+		// (higher-priority) stage may interrupt the current track, but a
+		// former stage re-satisfying its conditions never interrupts the
+		// current one. The current track keeps playing until it finishes
+		// naturally (wrapper stops), then the highest candidate takes over.
+		boolean keepCurrent = current != null && hasActiveExternalWrapper(current);
+		this.holdTrackForPlayout = keepCurrent
+				&& (highest == null || tracks.indexOf(highest) >= tracks.indexOf(current));
+		TrackType priority;
+		if (keepCurrent && highest != null && tracks.indexOf(highest) < tracks.indexOf(current)) {
+			// higher-priority candidate appeared - preempt
+			priority = highest;
+		} else if (keepCurrent) {
+			// combat ended (or the flap is settling): hold the current track
+			// to the end of the song - no fade, no switch
+			priority = current;
+		} else {
+			priority = highest;
 		}
-		if (!debounced && priority != null && !priority.isIdlePlayback())
+		if (priority != current && priority != null && !priority.isIdlePlayback())
 			this.idleSuppressedUntilMillis = now + MobBattleMusicConfig.CLIENT.idleResumeDelay.get() * 1000L;
 		this.priorityTrack = priority;
 
@@ -441,7 +440,8 @@ public class BattleMusicManager {
 					scheduleIdleNextStart(type);
 					externalTrack = null;
 				}
-				if (allowNewTracks && externalTrack != null && !externalTrack.getUrl().equals(url)
+				if (allowNewTracks && !this.holdTrackForPlayout && externalTrack != null
+						&& !externalTrack.getUrl().equals(url)
 						&& !ExternalMusicHandler.getInstance().isPreparingCurrentMusic()) {
 					// AUD-46: gated fade-out before switching (same-type switch
 					// durations). AUD-49 #4: on rejection keep the old track;
@@ -453,6 +453,8 @@ public class BattleMusicManager {
 					// must never queue a gate and stop the SHARED player,
 					// which killed the winner's continued song on combat end
 					// (silence after combat, flicker during flaps).
+					// K16-G-r3: while the track is held for playout, no
+					// same-type switch either - the SONG plays to the end.
 					ExternalUrlMusicTrack oldTrack = externalTrack;
 					String newUrl = url;
 					long fadeOut = switchFadeOutMillis(type.isIdlePlayback(), type.isIdlePlayback());
