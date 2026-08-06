@@ -464,9 +464,36 @@ public class BattleMusicManager {
 						// not run before the early return
 						if (stopOtherExternalTracks(type, tracksManager))
 							return;
+						// K16-E: cross-playlist continuation - the song that is
+						// currently audible through another playlist (song in
+						// both idle and combat playlists) is part of this
+						// playlist too: force-select it and adopt the live
+						// player, so combat transitions never cut the song
+						// short when the playlists share the track
+						boolean continuing = false;
+						ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
+						if (!handler.isPreparingCurrentMusic()) {
+							String currentUrl = handler.getCurrentlyPlayingUrl();
+							if (currentUrl != null) {
+								int currentIndex = tracksManager.playlistIndexOfUrl(trackLocation, currentUrl);
+								if (currentIndex >= 0) {
+									tracksManager.setExternalPlaylistSelection(trackLocation, currentIndex);
+									continuing = true;
+								}
+							}
+						}
 						url = tracksManager.selectExternalUrl(trackLocation);
 						if (url == null)
 							return;
+						if (continuing) {
+							// the winner adopts the still-playing player - no
+							// restart, position kept, no switch notification
+							externalTrack = ExternalUrlMusicTrack.adopt(url, type.getFadeTime());
+							WorldPlaybackChannel.setCurrentIntent(url);
+							this.externalTracks.put(type, externalTrack);
+							LOGGER.info("Continuing external URL track across playlist switch: {}", url);
+							return;
+						}
 						long resumePosition = consumeExternalResume(trackLocation, url);
 						if (resumePosition <= 0L)
 							resumePosition = wrapSynchronizedPosition(url, synchronizedPosition);
@@ -687,15 +714,35 @@ public class BattleMusicManager {
 	 */
 	private boolean stopOtherExternalTracks(TrackType keep, MusicTracksManager tracksManager)
 	{
+		// K16-E: when the SAME song is currently playing through another
+		// playlist and also exists in the winning playlist, it survives the
+		// switch: the old wrapper is detached WITHOUT stopping the shared
+		// audio player, and the winner adopts it (no restart, position kept).
+		// Only wrappers whose URL differs (or is not in the winner) are
+		// gated out.
+		String continuingUrl = null;
+		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
+		if (!handler.isPreparingCurrentMusic()) {
+			String currentUrl = handler.getCurrentlyPlayingUrl();
+			if (currentUrl != null && tracksManager.playlistIndexOfUrl(keep.getTrack(), currentUrl) >= 0)
+				continuingUrl = currentUrl;
+		}
 		boolean pending = false;
 		for (Map.Entry<TrackType, ExternalUrlMusicTrack> entry : List.copyOf(this.externalTracks.entrySet())) {
 			if (entry.getKey() == keep)
 				continue;
+			TrackType otherType = entry.getKey();
+			ExternalUrlMusicTrack externalTrack = entry.getValue();
+			if (continuingUrl != null && continuingUrl.equals(externalTrack.getUrl())) {
+				// the song keeps playing - detach the old wrapper only; the
+				// winner adopts the live player next
+				this.externalTracks.remove(otherType);
+				LOGGER.debug("Cross-playlist continuation: detaching {} wrapper for {}", otherType, continuingUrl);
+				continue;
+			}
 			pending = true;
 			if (WorldPlaybackChannel.isGatedTransitionActive())
 				break;
-			TrackType otherType = entry.getKey();
-			ExternalUrlMusicTrack externalTrack = entry.getValue();
 			long fadeOut = switchFadeOutMillis(otherType.isIdlePlayback(), keep.isIdlePlayback());
 			long fadeIn = switchFadeInMillis(otherType.isIdlePlayback(), keep.isIdlePlayback());
 			boolean queued = WorldPlaybackChannel.gatedTransition(

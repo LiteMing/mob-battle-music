@@ -498,6 +498,24 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		return index < 0 ? null : playlist.entry(index).url();
 	}
 
+	/**
+	 * K16-E: the playlist entry index of the given URL, or -1 when the URL is
+	 * not part of this track's playlist. Used by the selection engine to
+	 * continue the currently playing song across a playlist switch (the same
+	 * song living in both an idle and a combat playlist must survive the
+	 * combat transition without restarting).
+	 */
+	public int playlistIndexOfUrl(ResourceLocation trackLocation, String url) {
+		ExternalPlaylist playlist = this.externalPlaylistsByTrack.get(trackLocation);
+		if (playlist == null || url == null)
+			return -1;
+		for (int i = 0; i < playlist.size(); i++) {
+			if (url.equals(playlist.entry(i).url()))
+				return i;
+		}
+		return -1;
+	}
+
 	public ResourceLocation selectSoundTrack(ResourceLocation location) {
 		ExternalPlaylist playlist = this.soundPlaylistsByTrack.get(location);
 		if (playlist == null)
