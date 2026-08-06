@@ -35,6 +35,7 @@ import nonamecrackers2.mobbattlemusic.client.music.IdleConditionStateClient;
 import nonamecrackers2.mobbattlemusic.client.music.MusicMetadata;
 import nonamecrackers2.mobbattlemusic.client.music.MusicMetadataCache;
 import nonamecrackers2.mobbattlemusic.client.music.NeteaseMusicSearch;
+import nonamecrackers2.mobbattlemusic.client.music.NeteasePlaylistFetcher;
 import nonamecrackers2.mobbattlemusic.client.music.TimelineMarkerStore;
 import nonamecrackers2.mobbattlemusic.client.resource.MusicTracksManager;
 import nonamecrackers2.mobbattlemusic.network.MobBattleMusicNetwork;
@@ -66,11 +67,17 @@ public class MusicPlaylistScreen extends Screen
 	// K15-A: the full unfiltered/unmerged row list (music-first navigation
 	// resolves uses from here even when the visible list is grouped)
 	private final List<Row> allRowsCached = new ArrayList<>();
-	private final List<NeteaseMusicSearch.Song> searchRows = new ArrayList<>();
+	private final List<NeteaseMusicSearch.Item> searchRows = new ArrayList<>();
+	// K16-H: search type (song/album/playlist) and album/playlist detail mode
+	private NeteaseMusicSearch.SearchType searchType = NeteaseMusicSearch.SearchType.SONG;
+	private boolean searchInDetail;
+	private String searchDetailTitle = "";
+	private Button searchTypeButton;
+	private Button searchBackButton;
 	private PlaylistScreenLayout layout;
 	private PlaylistSelectionList<ResourceLocation> playlistList;
 	private PlaylistSelectionList<Row> trackList;
-	private PlaylistSelectionList<NeteaseMusicSearch.Song> searchResultList;
+	private PlaylistSelectionList<NeteaseMusicSearch.Item> searchResultList;
 	private ResourceLocation selectedPlaylist;
 	private InspectorPage inspectorPage = InspectorPage.DETAILS;
 	private boolean draftDirty;
@@ -260,6 +267,22 @@ public class MusicPlaylistScreen extends Screen
 		PlaylistScreenLayout.Rect inspector = this.layout.inspector();
 		this.searchButton = this.addRenderableWidget(Button.builder(text("button.search"), button -> startSearch(0))
 				.bounds(sidebar.innerX(), sidebar.innerY() + 34, sidebar.innerWidth(), 20).build());
+		// K16-H: song/album/playlist search type cycling button
+		this.searchType = state.searchType;
+		this.searchTypeButton = this.addRenderableWidget(Button.builder(searchTypeLabel(), button -> {
+			this.searchType = switch (this.searchType) {
+				case SONG -> NeteaseMusicSearch.SearchType.ALBUM;
+				case ALBUM -> NeteaseMusicSearch.SearchType.PLAYLIST;
+				default -> NeteaseMusicSearch.SearchType.SONG;
+			};
+			state().searchType = this.searchType;
+			this.searchTypeButton.setMessage(searchTypeLabel());
+			startSearch(0);
+		}).bounds(sidebar.innerX(), sidebar.innerY() + 58, sidebar.innerWidth(), 20).build());
+		// K16-H: back button while browsing an album/playlist's tracks
+		this.searchBackButton = this.addRenderableWidget(Button.builder(text("button.search_back"),
+				button -> leaveSearchDetail()).bounds(main.x(), main.y() + 1, main.innerWidth(), 20).build());
+		this.searchBackButton.active = false;
 		this.searchBox = this.addRenderableWidget(new EditBox(this.font, sidebar.innerX(), sidebar.innerY() + 12,
 				sidebar.innerWidth(), 18, text("field.search")));
 		this.searchBox.setMaxLength(160);
@@ -597,10 +620,10 @@ public class MusicPlaylistScreen extends Screen
 		}
 		String selectedKey = selectedRow() == null ? null : selectedRow().playlist() + "#" + selectedRow().index();
 		this.trackList.setItems(trackModels, selectedKey);
-		List<PlaylistSelectionList.Model<NeteaseMusicSearch.Song>> searchModels = new ArrayList<>();
-		for (NeteaseMusicSearch.Song song : this.searchRows)
-			searchModels.add(new PlaylistSelectionList.Model<>(song.id(), song, Component.literal(song.title()),
-					Component.literal(song.artist() + (song.album().isBlank() ? "" : "  /  " + song.album())),
+		List<PlaylistSelectionList.Model<NeteaseMusicSearch.Item>> searchModels = new ArrayList<>();
+		for (NeteaseMusicSearch.Item item : this.searchRows)
+			searchModels.add(new PlaylistSelectionList.Model<>(item.id(), item, Component.literal(item.title()),
+					Component.literal(item.subtitle()),
 					PlaylistSelectionList.Status.MATCHED, false, false));
 		this.searchResultList.setItems(searchModels,
 				this.searchSelected >= 0 && this.searchSelected < this.searchRows.size()
@@ -784,12 +807,76 @@ public class MusicPlaylistScreen extends Screen
 		return text(state().groupByTrack ? "group.by_track" : "group.by_use");
 	}
 
-	private void selectSearchSong(NeteaseMusicSearch.Song song)
+	private void selectSearchSong(NeteaseMusicSearch.Item item)
 	{
-		this.searchSelected = this.searchRows.indexOf(song);
+		this.searchSelected = this.searchRows.indexOf(item);
 		state().searchSelected = this.searchSelected;
-		MusicMetadataCache.getInstance().prepare(song.url());
+		if (item instanceof NeteaseMusicSearch.Song song) {
+			MusicMetadataCache.getInstance().prepare(song.url());
+		} else {
+			// K16-H: clicking an album/playlist result opens its track list
+			openSearchDetail(item);
+		}
 		this.updateButtonState();
+	}
+
+	// K16-H: browse the tracks of an album (fetchAlbumTracks) or a playlist
+	// (reuses the import fetch path); the result list becomes the track list
+	private void openSearchDetail(NeteaseMusicSearch.Item item)
+	{
+		this.searchDetailTitle = item.title();
+		this.searchInDetail = true;
+		this.searchLoading = true;
+		this.searchError = "";
+		this.searchPage = 0;
+		this.searchHasNext = false;
+		this.searchSelected = -1;
+		long generation = ++this.searchGeneration;
+		java.util.concurrent.CompletableFuture<List<NeteaseMusicSearch.Song>> future =
+				item.kind() == NeteaseMusicSearch.SearchType.ALBUM
+						? NeteaseMusicSearch.fetchAlbumTracks(item.id())
+						: NeteasePlaylistFetcher.fetch("https://music.163.com/playlist?id=" + item.id())
+								.thenApply(songs -> songs.stream()
+										.map(s -> new NeteaseMusicSearch.Song(s.id(), s.title(), s.artist(), "", "", 0L))
+										.toList());
+		future.whenComplete((songs, error) -> Minecraft.getInstance().execute(() -> {
+			if (generation != this.searchGeneration)
+				return;
+			this.searchLoading = false;
+			this.searchRows.clear();
+			if (error != null) {
+				Throwable cause = error.getCause() == null ? error : error.getCause();
+				this.searchError = cause.getMessage() == null ? cause.getClass().getSimpleName() : cause.getMessage();
+			} else {
+				this.searchRows.addAll(songs);
+				this.searchSelected = this.searchRows.isEmpty() ? -1 : 0;
+				if (this.searchSelected >= 0 && this.searchRows.get(0) instanceof NeteaseMusicSearch.Song first)
+					MusicMetadataCache.getInstance().prepare(first.url());
+			}
+			this.refreshSelectionLists();
+			this.updateButtonState();
+			this.updateViewState();
+		}));
+		this.refreshSelectionLists();
+		this.updateButtonState();
+		this.updateViewState();
+	}
+
+	private void leaveSearchDetail()
+	{
+		if (!this.searchInDetail)
+			return;
+		this.searchInDetail = false;
+		this.searchDetailTitle = "";
+		this.searchSelected = -1;
+		this.updateViewState();
+		// re-run the last query (keeps the search page) to restore the list
+		startSearch(this.searchPage);
+	}
+
+	private Component searchTypeLabel()
+	{
+		return text("search.type." + this.searchType.name().toLowerCase(java.util.Locale.ROOT));
 	}
 
 	private void toggleTrackRow(Row row)
@@ -917,8 +1004,17 @@ public class MusicPlaylistScreen extends Screen
 		} else {
 			graphics.drawString(this.font, text("field.search"), this.layout.sidebar().innerX(),
 					this.layout.sidebar().innerY() + 1, 0xFF9AA2AD, false);
-			graphics.drawString(this.font, text("section.search_results"), this.layout.main().innerX(),
-					this.layout.main().y() + 7, 0xFFB8C0CA, false);
+			// K16-H: album/playlist detail mode shows the container title on
+			// the main header line and hides the paging hint
+			if (this.searchInDetail) {
+				graphics.drawString(this.font, trimPixels(
+						text("search.detail.title", this.searchDetailTitle).getString(),
+						this.layout.main().innerWidth()), this.layout.main().innerX(),
+						this.layout.main().y() + 7, 0xFFE6C07A, false);
+			} else {
+				graphics.drawString(this.font, text("section.search_results"), this.layout.main().innerX(),
+						this.layout.main().y() + 7, 0xFFB8C0CA, false);
+			}
 			graphics.drawString(this.font, text("search.page", this.searchPage + 1),
 					this.layout.sidebar().innerX(), this.layout.sidebar().y() + 86, 0xFF9AA2AD, false);
 			if (this.searchRows.isEmpty()) {
@@ -968,16 +1064,26 @@ public class MusicPlaylistScreen extends Screen
 				graphics.drawString(this.font, text("search.select"), x, y + 42, 0xFF9AA2AD, false);
 				return;
 			}
-			NeteaseMusicSearch.Song song = this.searchRows.get(this.searchSelected);
-			graphics.drawString(this.font, trimPixels(song.title(), width), x, y, 0xFFF0F1F2, false);
-			graphics.drawString(this.font, trimPixels(song.artist(), width), x, y + 13, 0xFFB8C0CA, false);
-			graphics.drawString(this.font, text("search.detail.album", trimPixels(song.album(), width)), x, y + 31,
-					0xFF9AA2AD, false);
-			graphics.drawString(this.font, text("search.detail.id", song.id()), x, y + 44, 0xFF9AA2AD, false);
-			graphics.drawString(this.font, text("search.detail.duration", formatDuration(song.durationMillis())), x, y + 57,
-					0xFF9AA2AD, false);
-			graphics.drawString(this.font, text("detail.source"), x, y + 73, 0xFF9AA2AD, false);
-			drawWrapped(graphics, song.url(), x, y + 86, width, 0xFFD6D9DE);
+			NeteaseMusicSearch.Item item = this.searchRows.get(this.searchSelected);
+			if (item instanceof NeteaseMusicSearch.Song song) {
+				graphics.drawString(this.font, trimPixels(song.title(), width), x, y, 0xFFF0F1F2, false);
+				graphics.drawString(this.font, trimPixels(song.artist(), width), x, y + 13, 0xFFB8C0CA, false);
+				graphics.drawString(this.font, text("search.detail.album", trimPixels(song.album(), width)), x, y + 31,
+						0xFF9AA2AD, false);
+				graphics.drawString(this.font, text("search.detail.id", song.id()), x, y + 44, 0xFF9AA2AD, false);
+				graphics.drawString(this.font, text("search.detail.duration", formatDuration(song.durationMillis())), x, y + 57,
+						0xFF9AA2AD, false);
+				graphics.drawString(this.font, text("detail.source"), x, y + 73, 0xFF9AA2AD, false);
+				drawWrapped(graphics, song.url(), x, y + 86, width, 0xFFD6D9DE);
+			} else {
+				// K16-H: album/playlist result - summary + enter-detail hint
+				graphics.drawString(this.font, trimPixels(item.title(), width), x, y, 0xFFF0F1F2, false);
+				graphics.drawString(this.font, trimPixels(item.subtitle(), width), x, y + 13, 0xFFB8C0CA, false);
+				graphics.drawString(this.font, text("search.detail.id", item.id()), x, y + 31, 0xFF9AA2AD, false);
+				graphics.drawString(this.font, text("search.detail.open",
+						item.kind() == NeteaseMusicSearch.SearchType.ALBUM ? text("search.kind.album")
+								: text("search.kind.playlist")), x, y + 48, 0xFFE6C07A, false);
+			}
 			return;
 		}
 		Row row = selectedRow();
@@ -1142,8 +1248,11 @@ public class MusicPlaylistScreen extends Screen
 			if (this.searchSelected < 0 || this.searchSelected >= this.searchRows.size())
 				return;
 			stopPreview();
-			NeteaseMusicSearch.Song song = this.searchRows.get(this.searchSelected);
-			PreviewChannel.playUrl(song.url(), 20, song.durationMillis());
+			if (this.searchRows.get(this.searchSelected) instanceof NeteaseMusicSearch.Song song) {
+				PreviewChannel.playUrl(song.url(), 20, song.durationMillis());
+			} else {
+				message(text("search.preview_hint"));
+			}
 			return;
 		}
 		if (this.selected < 0 || this.selected >= this.rows.size())
@@ -2076,6 +2185,16 @@ public class MusicPlaylistScreen extends Screen
 			this.libraryFilterBox.visible = library;
 		if (this.searchButton != null)
 			this.searchButton.visible = !library;
+		if (this.searchTypeButton != null) {
+			// K16-H: type cycling lives on the search page only (hidden while
+			// browsing an album/playlist detail)
+			this.searchTypeButton.visible = !library && !this.searchInDetail;
+			this.searchTypeButton.active = this.searchTypeButton.visible;
+		}
+		if (this.searchBackButton != null) {
+			this.searchBackButton.visible = !library && this.searchInDetail;
+			this.searchBackButton.active = this.searchBackButton.visible;
+		}
 		if (this.refreshButton != null)
 			this.refreshButton.visible = true;
 		if (this.copyUrlButton != null)
@@ -2085,9 +2204,9 @@ public class MusicPlaylistScreen extends Screen
 			this.groupByTrackButton.active = library;
 		}
 		if (this.previousPageButton != null)
-			this.previousPageButton.visible = !library;
+			this.previousPageButton.visible = !library && !this.searchInDetail;
 		if (this.nextPageButton != null)
-			this.nextPageButton.visible = !library;
+			this.nextPageButton.visible = !library && !this.searchInDetail;
 		if (this.playlistList != null)
 			this.playlistList.setVisible(library && !state().groupByTrack);
 		if (this.trackList != null)
@@ -2566,6 +2685,9 @@ public class MusicPlaylistScreen extends Screen
 	{
 		if (this.searchBox == null)
 			return;
+		// K16-H: a fresh search leaves album/playlist detail mode
+		this.searchInDetail = false;
+		this.searchDetailTitle = "";
 		String query = this.searchBox.getValue().trim();
 		if (query.isBlank()) {
 			this.searchRows.clear();
@@ -2585,7 +2707,7 @@ public class MusicPlaylistScreen extends Screen
 		this.searchRows.clear();
 		this.searchSelected = -1;
 		updateButtonState();
-		NeteaseMusicSearch.search(query, requestedPage).whenComplete((result, error) ->
+		NeteaseMusicSearch.search(query, requestedPage, this.searchType).whenComplete((result, error) ->
 				Minecraft.getInstance().execute(() -> {
 					if (generation != this.searchGeneration)
 						return;
@@ -2594,12 +2716,13 @@ public class MusicPlaylistScreen extends Screen
 						Throwable cause = error.getCause() == null ? error : error.getCause();
 						this.searchError = cause.getMessage() == null ? cause.getClass().getSimpleName() : cause.getMessage();
 					} else {
-						this.searchRows.addAll(result.songs());
+						this.searchRows.addAll(result.items());
 						this.searchPage = result.page();
 						this.searchHasNext = result.hasNext();
 						if (!this.searchRows.isEmpty()) {
 							this.searchSelected = 0;
-							MusicMetadataCache.getInstance().prepare(this.searchRows.get(0).url());
+							if (this.searchRows.get(0) instanceof NeteaseMusicSearch.Song first)
+								MusicMetadataCache.getInstance().prepare(first.url());
 						}
 					}
 					EditorState state = state();
@@ -2934,7 +3057,10 @@ public class MusicPlaylistScreen extends Screen
 		if (this.viewMode == ViewMode.NETEASE) {
 			if (this.searchSelected < 0 || this.searchSelected >= this.searchRows.size())
 				return;
-			addBinding(this.searchRows.get(this.searchSelected).url());
+			if (this.searchRows.get(this.searchSelected) instanceof NeteaseMusicSearch.Song song)
+				addBinding(song.url());
+			else
+				message(text("search.add_hint"));
 			return;
 		}
 		if (this.selected < 0 || this.selected >= this.rows.size())
@@ -2992,8 +3118,12 @@ public class MusicPlaylistScreen extends Screen
 		if (this.viewMode != ViewMode.NETEASE || this.searchSelected < 0 ||
 				this.searchSelected >= this.searchRows.size())
 			return;
-		this.minecraft.keyboardHandler.setClipboard(this.searchRows.get(this.searchSelected).url());
-		message(text("message.url_copied"));
+		if (this.searchRows.get(this.searchSelected) instanceof NeteaseMusicSearch.Song song) {
+			this.minecraft.keyboardHandler.setClipboard(song.url());
+			message(text("message.url_copied"));
+		} else {
+			message(text("search.copy_hint"));
+		}
 	}
 
 	private MusicTracksManager.PlaylistControlResult addLocalPlayer(String scene, String target, String music)
@@ -3270,7 +3400,9 @@ public class MusicPlaylistScreen extends Screen
 		private int searchSelected = -1;
 		private int searchPage;
 		private boolean searchHasNext;
-		private List<NeteaseMusicSearch.Song> searchRows = List.of();
+		private List<NeteaseMusicSearch.Item> searchRows = List.of();
+		// K16-H: search type persists across screen reopens
+		private NeteaseMusicSearch.SearchType searchType = NeteaseMusicSearch.SearchType.SONG;
 		// K15-A: music-first grouping - merge same-track rows into one
 		private boolean groupByTrack;
 		// K15-F: per-track record of the concrete use
