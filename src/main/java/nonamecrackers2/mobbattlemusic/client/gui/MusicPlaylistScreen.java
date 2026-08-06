@@ -105,8 +105,9 @@ public class MusicPlaylistScreen extends Screen
 	private Button timelineEditorButton;
 	private Button playlistRulesButton;
 	private Button useEditorButton;
-	// K16-D: throttle for the silent-playback actionbar warning
-	private long lastSilentVolumeHintAtMillis;
+	// K16-D: last main-channel URL - silent-playback warnings fire once per
+	// track transition (start/track-switch/stop), never on a timer
+	private String lastMainUrl;
 	private Button inspectorDetailsButton;
 	private Button inspectorBindingButton;
 	private Button inspectorConditionsButton;
@@ -1789,21 +1790,25 @@ public class MusicPlaylistScreen extends Screen
 			this.loadSelectedSettings(true);
 			this.updateButtonState();
 		}
-		// K16-D: silent-playback warning - the main channel is playing or
-		// switching tracks in the background but the user gain is (near) zero,
-		// so nothing is audible; surface it on the actionbar (throttled) so a
-		// muted Vol panel never looks like a dead mod
-		long now = System.currentTimeMillis();
+		// K16-D: silent-playback warning - fired once per main-channel track
+		// transition (start/track-switch/stop), not on a timer: when a new
+		// song begins or playback ends while the user gain is (near) zero, an
+		// actionbar hint explains why nothing is audible
 		float gain = MobBattleMusicConfig.CLIENT.mbmUserGain.get().floatValue();
-		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
-		boolean rolling = hasMainTrack() || handler.isPreparingCurrentMusic();
-		if (rolling && gain <= 0.05f && now - this.lastSilentVolumeHintAtMillis > 5000L) {
-			this.lastSilentVolumeHintAtMillis = now;
-			int percent = Math.max(0, Math.round(gain * 100.0f));
-			this.minecraft.player.displayClientMessage(
-					Component.literal("[Mob Battle Music] \u00a7c\u76ee\u524d MBM \u5904\u4e8e\u97f3\u91cf " + percent
-							+ "% - \u53f3\u4e0a\u89d2 Vol \u9762\u677f\u53ef\u4ee5\u8c03\u56de\u6765"),
-					true);
+		String mainUrl = ExternalMusicHandler.getInstance().getCurrentlyPlayingUrl();
+		if (!java.util.Objects.equals(mainUrl, this.lastMainUrl)) {
+			boolean started = mainUrl != null;
+			boolean stopped = this.lastMainUrl != null && mainUrl == null;
+			this.lastMainUrl = mainUrl;
+			if (gain <= 0.05f && (started || stopped)) {
+				int percent = Math.max(0, Math.round(gain * 100.0f));
+				this.minecraft.player.displayClientMessage(
+						Component.literal("[Mob Battle Music] \u00a7c"
+								+ (stopped ? "\u64ad\u653e\u5df2\u7ed3\u675f - " : "")
+								+ "\u76ee\u524d MBM \u5904\u4e8e\u97f3\u91cf " + percent
+								+ "% - \u53f3\u4e0a\u89d2 Vol \u9762\u677f\u53ef\u4ee5\u8c03\u56de\u6765"),
+						true);
+			}
 		}
 	}
 
