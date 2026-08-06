@@ -95,6 +95,10 @@ public class BattleMusicManager {
 	private @Nullable LivingEntity panickingFrom;
 	// K8-A: the first-tick adoption reconciliation runs exactly once per level
 	private boolean adoptionChecked;
+	// K16-G: winner-switch debounce - combat canPlay flaps near the combat
+	// edge must not re-fade the song every few hundred ms
+	private static final long SWITCH_DEBOUNCE_MILLIS = 2000L;
+	private long lastPrioritySwitchAtMillis;
 
 	public BattleMusicManager(Minecraft mc, ClientLevel level) {
 		this.minecraft = mc;
@@ -279,6 +283,20 @@ public class BattleMusicManager {
 				break;
 			}
 		}
+		// K16-G: switch debounce - combat canPlay flaps on the combat-edge
+		// (mobs leaving the threat window flicker the attack group for a few
+		// hundred ms). Holding the previous winner for a short window keeps
+		// the song playing instead of re-fading every flap; only two non-null
+		// winner changes are debounced (start/stop transitions stay instant).
+		if (priority != this.priorityTrack && this.priorityTrack != null && priority != null) {
+			if (now - this.lastPrioritySwitchAtMillis < SWITCH_DEBOUNCE_MILLIS) {
+				priority = this.priorityTrack;
+			} else {
+				this.lastPrioritySwitchAtMillis = now;
+			}
+		} else if (priority != this.priorityTrack) {
+			this.lastPrioritySwitchAtMillis = now;
+		}
 		if (priority != null && !priority.isIdlePlayback())
 			this.idleSuppressedUntilMillis = now + MobBattleMusicConfig.CLIENT.idleResumeDelay.get() * 1000L;
 		this.priorityTrack = priority;
@@ -415,10 +433,14 @@ public class BattleMusicManager {
 					scheduleIdleNextStart(type);
 					externalTrack = null;
 				}
-				if (externalTrack != null && !externalTrack.getUrl().equals(url)) {
+				if (externalTrack != null && !externalTrack.getUrl().equals(url)
+						&& !ExternalMusicHandler.getInstance().isPreparingCurrentMusic()) {
 					// AUD-46: gated fade-out before switching (same-type switch
 					// durations). AUD-49 #4: on rejection keep the old track;
-					// the switch retries on the next tick.
+					// the switch retries on the next tick. K16-G: while the
+					// player is still preparing/decoding, hold the switch - a
+					// flapping winner must not queue gates against a half-
+					// built source.
 					ExternalUrlMusicTrack oldTrack = externalTrack;
 					String newUrl = url;
 					long fadeOut = switchFadeOutMillis(type.isIdlePlayback(), type.isIdlePlayback());
