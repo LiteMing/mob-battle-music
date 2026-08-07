@@ -505,10 +505,17 @@ public class BattleMusicManager {
 						// both idle and combat playlists) is part of this
 						// playlist too: force-select it and adopt the live
 						// player, so combat transitions never cut the song
-						// short when the playlists share the track
+						// short when the playlists share the track.
+						// K16-G-r5: continuation requires the player to be
+						// ACTUALLY playing (hasActiveTrack) - getCurrentlyPlayingUrl
+						// lingers after a stop, and adopting a dead player
+						// never calls play(): the wrapper dies next tick,
+						// re-adopts, and loops forever (one log line per tick,
+						// total silence).
 						boolean continuing = false;
 						ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
-						if (!handler.isPreparingCurrentMusic()) {
+						if (!handler.isPreparingCurrentMusic()
+								&& handler.getPlayer().hasActiveTrack()) {
 							String currentUrl = handler.getCurrentlyPlayingUrl();
 							if (currentUrl != null) {
 								int currentIndex = tracksManager.playlistIndexOfUrl(trackLocation, currentUrl);
@@ -523,7 +530,14 @@ public class BattleMusicManager {
 							return;
 						if (continuing) {
 							// the winner adopts the still-playing player - no
-							// restart, position kept, no switch notification
+							// restart, position kept, no switch notification.
+							// K16-G-r5: adopt also pins the session source so
+							// the dock never shows "unknown source"
+							String entryId = tracksManager.playlistEntryIdAt(trackLocation,
+									tracksManager.playlistIndexOfUrl(trackLocation, url));
+							WorldPlaybackChannel.adoptManualSelection(url, trackLocation.toString(),
+									entryId == null ? url : entryId,
+									MusicTracksManager.playlistRevision(trackLocation));
 							externalTrack = ExternalUrlMusicTrack.adopt(url, type.getFadeTime());
 							WorldPlaybackChannel.setCurrentIntent(url);
 							this.externalTracks.put(type, externalTrack);
@@ -765,7 +779,9 @@ public class BattleMusicManager {
 		// gated out.
 		String continuingUrl = null;
 		ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
-		if (!handler.isPreparingCurrentMusic()) {
+		// K16-G-r5: same liveness requirement as the continuation path - a
+		// lingering URL after a stop must not be treated as a continuing song
+		if (!handler.isPreparingCurrentMusic() && handler.getPlayer().hasActiveTrack()) {
 			String currentUrl = handler.getCurrentlyPlayingUrl();
 			if (currentUrl != null && tracksManager.playlistIndexOfUrl(keep.getTrack(), currentUrl) >= 0)
 				continuingUrl = currentUrl;

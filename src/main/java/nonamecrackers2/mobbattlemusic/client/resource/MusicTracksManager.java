@@ -516,6 +516,18 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		return -1;
 	}
 
+	/**
+	 * K16-G-r5: the stable entry id at a playlist position, or null when the
+	 * index is out of range - used by the continuation path to pin the
+	 * session source reference.
+	 */
+	public String playlistEntryIdAt(ResourceLocation trackLocation, int index) {
+		ExternalPlaylist playlist = this.externalPlaylistsByTrack.get(trackLocation);
+		if (playlist == null || index < 0 || index >= playlist.size())
+			return null;
+		return playlist.entry(index).id();
+	}
+
 	public ResourceLocation selectSoundTrack(ResourceLocation location) {
 		ExternalPlaylist playlist = this.soundPlaylistsByTrack.get(location);
 		if (playlist == null)
