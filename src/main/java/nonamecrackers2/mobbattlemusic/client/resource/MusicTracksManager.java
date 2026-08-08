@@ -1762,7 +1762,7 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		this.externalForcedSelections.clear();
 		this.refreshLocalDynamicTracks();
 		this.rebuildTracksWithDynamic();
-		MusicPlaylistScreen.refreshOpenScreen();
+		nonamecrackers2.mobbattlemusic.client.gui.MusicPlaylistScreen.refreshOpenScreen();
 		LOGGER.info("Reloaded local playlist configuration from disk");
 	}
 
