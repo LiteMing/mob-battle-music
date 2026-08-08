@@ -1745,6 +1745,27 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 				ImmutableList.copyOf(resolvedEntries), dynamicTrack.selectionMode()), kind);
 	}
 	
+	/**
+	 * K16-I: re-read the local playlist config files from disk at runtime -
+	 * resets the lazy-load flags, reloads playlists + music enablement,
+	 * clears session/forced selections (entries may have moved/vanished),
+	 * rebuilds the selection engine and the music-first reverse index, and
+	 * refreshes any open GUI. Safe to call any time; playback is left to the
+	 * engine to re-evaluate on the next tick.
+	 */
+	public void reloadLocalConfig() {
+		this.localSceneUrlsLoaded = false;
+		this.loadLocalSceneUrls();
+		this.musicStateLoaded = false;
+		this.loadMusicState();
+		this.externalSessionSelections.clear();
+		this.externalForcedSelections.clear();
+		this.refreshLocalDynamicTracks();
+		this.rebuildTracksWithDynamic();
+		MusicPlaylistScreen.refreshOpenScreen();
+		LOGGER.info("Reloaded local playlist configuration from disk");
+	}
+
 	private void loadLocalSceneUrls() {
 		if (this.localSceneUrlsLoaded)
 			return;

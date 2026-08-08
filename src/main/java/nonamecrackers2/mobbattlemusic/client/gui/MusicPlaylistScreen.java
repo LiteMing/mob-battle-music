@@ -414,6 +414,10 @@ public class MusicPlaylistScreen extends Screen
 		this.stopButton = this.addRenderableWidget(Button.builder(text("button.stop"), button -> stopPreview())
 				.bounds(actions.stopX(), actions.y(), actions.stopWidth(), 20).build());
 		this.refreshButton = this.addRenderableWidget(Button.builder(text("button.refresh"), button -> {
+			// K16-I: refresh now re-reads the local config files from disk
+			// (playlists, conditions, priorities, music state) and rebuilds
+			// the engine - external edits take effect without a restart
+			MusicTracksManager.getInstance().reloadLocalConfig();
 			this.rebuildRows();
 			this.updateButtonState();
 		}).bounds(actions.refreshX(), actions.y(), actions.refreshWidth(), 20).build());
