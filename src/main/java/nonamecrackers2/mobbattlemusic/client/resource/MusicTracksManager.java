@@ -129,8 +129,13 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 		this.disabledMusicEntries = new java.util.HashSet<>();
 	}
 
+	// K16-K: the built-in default combat tracks (AmbientTrack/AggressiveTrack/
+	// PlayerTrack sound events) are REMOVED - the engine only plays what the
+	// player configured (local/server playlists and resource-pack music
+	// tracks). The static TrackType instances remain for API compatibility
+	// but never enter the track list.
 	private static List<TrackType> applyDefaultTrackTypes() {
-		return Lists.newArrayList(TrackType.PLAYER, TrackType.AGGRESSIVE, TrackType.AMBIENT);
+		return List.of();
 	}
 
 	/**
