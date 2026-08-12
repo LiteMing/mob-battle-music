@@ -492,10 +492,33 @@ public class MusicTracksManager extends SimpleJsonResourceReloadListener {
 
 	public String selectExternalUrl(ResourceLocation location) {
 		ExternalPlaylist playlist = this.externalPlaylistsByTrack.get(location);
-		if (playlist == null)
+		if (playlist == null) {
+			// K16-J: diagnostic - a missing selectable playlist explains a
+			// silent selection engine (creation path returns without a song);
+			// throttled because this path may run every tick
+			warnSelectFailure("[MBM] selectExternalUrl: no selectable playlist for " + location);
 			return null;
+		}
 		int index = getExternalPlaylistSelectedIndex(playlist, location, true);
-		return index < 0 ? null : playlist.entry(index).url();
+		if (index < 0) {
+			// K16-J: diagnostic - no playable entry (all disabled / conditions
+			// unmatched / empty playlist) also yields silence
+			warnSelectFailure("[MBM] selectExternalUrl: no playable entry for " + location
+					+ " (size=" + playlist.size() + ", playable=" + playableEntryIndices(playlist).size() + ")");
+			return null;
+		}
+		return playlist.entry(index).url();
+	}
+
+	// K16-J: at most one select-failure warning per 5 seconds
+	private static long lastSelectWarnMillis;
+
+	private static void warnSelectFailure(String message) {
+		long now = System.currentTimeMillis();
+		if (now - MusicTracksManager.lastSelectWarnMillis < 5000L)
+			return;
+		MusicTracksManager.lastSelectWarnMillis = now;
+		LOGGER.warn(message);
 	}
 
 	/**

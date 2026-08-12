@@ -95,6 +95,10 @@ public class BattleMusicManager {
 	private @Nullable LivingEntity panickingFrom;
 	// K8-A: the first-tick adoption reconciliation runs exactly once per level
 	private boolean adoptionChecked;
+	// K16-J: one-shot diagnostic edge log for the held-but-player-gone state
+	private boolean lastSilentHoldLogState;
+	// K16-J: throttle for the 10s hold-state INFO diagnostic
+	private long lastHoldStateLogMillis;
 	// K16-G-r3: while the current track is HELD for playout (non-preemptive
 	// semantics), its same-type switch is suppressed so the SONG plays to the
 	// end - the playlist must not roll a new entry mid-hold
@@ -290,7 +294,27 @@ public class BattleMusicManager {
 		// former stage re-satisfying its conditions never interrupts the
 		// current one. The current track keeps playing until it finishes
 		// naturally (wrapper stops), then the highest candidate takes over.
-		boolean keepCurrent = current != null && hasActiveExternalWrapper(current);
+		// K16-J: keepCurrent additionally cross-checks the UNDERLYING player -
+		// a wrapper whose song has naturally finished (or whose player was
+		// stopped by a non-wrapper path) must not be held: otherwise the
+		// engine silently keeps a finished song forever (no fade, no next).
+		// This is the symmetric guard to K16-G-r5 (which guards the
+		// continuation ENTRY); here the HOLD is guarded.
+		boolean keepCurrent = current != null && hasActiveExternalWrapper(current)
+				&& ExternalMusicHandler.getInstance().getPlayer().hasActiveTrack();
+		// K16-J: diagnostic - a held track whose player went away is the
+		// prime suspect for the post-continuation silence; log once per state
+		// change (throttled by the state itself)
+		if (current != null && hasActiveExternalWrapper(current)
+				&& !ExternalMusicHandler.getInstance().getPlayer().hasActiveTrack()
+				&& !this.lastSilentHoldLogState) {
+			this.lastSilentHoldLogState = true;
+			LOGGER.warn("[MBM] held track {} wrapper alive but player has no active track - releasing hold to re-select",
+					current);
+		} else if (!(current != null && hasActiveExternalWrapper(current)
+				&& !ExternalMusicHandler.getInstance().getPlayer().hasActiveTrack())) {
+			this.lastSilentHoldLogState = false;
+		}
 		this.holdTrackForPlayout = keepCurrent
 				&& (highest == null || tracks.indexOf(highest) >= tracks.indexOf(current));
 		TrackType priority;
@@ -307,6 +331,18 @@ public class BattleMusicManager {
 		if (priority != current && priority != null && !priority.isIdlePlayback())
 			this.idleSuppressedUntilMillis = now + MobBattleMusicConfig.CLIENT.idleResumeDelay.get() * 1000L;
 		this.priorityTrack = priority;
+		// K16-J: hold-state diagnostic - while keeping a track, log the
+		// underlying player state every 10s so a silent hold (player stuck in
+		// "playing" with no audio, or wrapper/URL mismatch) is visible in INFO
+		if (keepCurrent && now - this.lastHoldStateLogMillis > 10_000L) {
+			this.lastHoldStateLogMillis = now;
+			ExternalMusicHandler handler = ExternalMusicHandler.getInstance();
+			ExternalUrlMusicTrack wrapper = this.externalTracks.get(current);
+			LOGGER.info("[MBM] holding {} url={} bottomPlaying={} bottomUrl={} pos={} preparing={}",
+					current, wrapper == null ? "?" : wrapper.getUrl(),
+					handler.getPlayer().hasActiveTrack(), handler.getCurrentlyPlayingUrl(),
+					handler.getPositionMillis(), handler.isPreparingCurrentMusic());
+		}
 
 		for (TrackType type : tracks) {
 			float trackDesiredVolume = shouldStopTracksForModCompat(this.minecraft.getSoundManager()) ? 0.0F

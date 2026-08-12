@@ -1706,8 +1706,14 @@ public class MusicPlaylistScreen extends Screen
 
 	private String describeDockSource(nonamecrackers2.mobbattlemusic.client.audio.PlaybackHandle handle)
 	{
-		if (handle == null || handle.sourceRef() == null)
+		if (handle == null || handle.sourceRef() == null) {
+			// K16-J: diagnostic - "unknown source" on the dock means the
+			// session handle is missing while the main channel is playing
+			org.apache.logging.log4j.LogManager.getLogger("mobbattlemusic/MusicPlaylistScreen")
+					.debug("[MBM] dock source unknown: handle={} (main url={})", handle == null ? "null" : "no-ref",
+							ExternalMusicHandler.getInstance().getCurrentlyPlayingUrl());
 			return "unknown source";
+		}
 		if (handle.sourceRef().isDirect())
 			return "direct";
 		return handle.sourceRef().playlistId() + " @ " + handle.sourceRef().entryKey();
