@@ -112,8 +112,14 @@ public class MobBattleMusicCommands
 												StringArgumentType.getString(context, "selection_mode")))))));
 		root.then(targets);
 		event.getDispatcher().register(root);
+		// K16-K: /mbmplaylist is available to EVERY player - it opens the
+		// client-side (LOCAL) music editor, which is personal client config
+		// and must not require server permission. Server-data editing stays
+		// gated: the SERVER editor inside the GUI requires permission 2, and
+		// all /mobbattlemusic server commands keep the canUsePlaylistCommand
+		// requirement.
 		event.getDispatcher().register(Commands.literal("mbmplaylist")
-				.requires(MobBattleMusicCommands::canUsePlaylistCommand)
+				.requires(source -> source.getEntity() instanceof ServerPlayer)
 				.executes(context -> openGui(context.getSource())));
 	}
 

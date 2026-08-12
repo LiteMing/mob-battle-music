@@ -211,6 +211,15 @@ public class MusicPlaylistScreen extends Screen
 		mc.setScreen(new MusicPlaylistScreen(mc.screen, EditMode.SERVER));
 	}
 
+	// K16-K: opening the GUI defaults to the LOCAL (client-side) editor - any
+	// player may configure their own client music on a server; switching to
+	// the SERVER editor is gated by canEditServer() (permission 2)
+	public static void openLocalEditor()
+	{
+		Minecraft mc = Minecraft.getInstance();
+		mc.setScreen(new MusicPlaylistScreen(mc.screen, EditMode.LOCAL));
+	}
+
 	static void openForIdleRule(Screen parent, EditMode editMode, String ruleId)
 	{
 		EditorState state = STATES.get(editMode);
