@@ -568,10 +568,14 @@ public class BattleMusicManager {
 							// the winner adopts the still-playing player - no
 							// restart, position kept, no switch notification.
 							// K16-G-r5: adopt also pins the session source so
-							// the dock never shows "unknown source"
+							// the dock never shows "unknown source".
+							// K16-K: engine adoption must NOT take MAN
+							// ownership (adoptManualSelection does) - that
+							// suspended the AUTO engine after every continued
+							// song (autoHold silence)
 							String entryId = tracksManager.playlistEntryIdAt(trackLocation,
 									tracksManager.playlistIndexOfUrl(trackLocation, url));
-							WorldPlaybackChannel.adoptManualSelection(url, trackLocation.toString(),
+							WorldPlaybackChannel.adoptEngineSelection(url, trackLocation.toString(),
 									entryId == null ? url : entryId,
 									MusicTracksManager.playlistRevision(trackLocation));
 							externalTrack = ExternalUrlMusicTrack.adopt(url, type.getFadeTime());

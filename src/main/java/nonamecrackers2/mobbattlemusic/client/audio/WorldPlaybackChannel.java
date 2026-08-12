@@ -519,6 +519,25 @@ public final class WorldPlaybackChannel
 		LOGGER.debug("[MBM] manual selection adopted: {} @ {}:{}", url, playlistId, entryKey);
 	}
 
+	/**
+	 * K16-K: engine-internal selection adoption - updates the session handle
+	 * and source reference (dock source display + marker ticking) WITHOUT
+	 * taking MAN ownership. The AUTO engine must NEVER be suspended by a
+	 * playlist switch: K16-G-r5 wrongly reused adoptManualSelection for the
+	 * cross-playlist continuation, which grabbed the MAN owner and put the
+	 * engine into autoHold - silence after every continued song.
+	 */
+	public static void adoptEngineSelection(String url, String playlistId, String entryKey, int revision)
+	{
+		PlaybackHandle created = PlaybackHandle.create(url);
+		created.setSourceRef(new SourceRef(playlistId, entryKey, revision));
+		WorldPlaybackChannel.handle = created;
+		WorldPlaybackChannel.firedThisTrack = 0L;
+		WorldPlaybackChannel.lastMarkerPosition = -1L;
+		WorldPlaybackChannel.setCurrentIntent(url);
+		LOGGER.debug("[MBM] engine selection adopted: {} @ {}:{}", url, playlistId, entryKey);
+	}
+
 	public static long levelGeneration()
 	{
 		return WorldPlaybackChannel.levelGeneration;
