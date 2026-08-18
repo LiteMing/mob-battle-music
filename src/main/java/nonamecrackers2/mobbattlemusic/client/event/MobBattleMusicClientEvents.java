@@ -7,7 +7,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.events.GuiEventListener;
-import net.minecraft.client.gui.screens.PauseScreen;
+import net.minecraft.client.gui.screens.OptionsScreen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.contents.TranslatableContents;
 import net.minecraft.world.entity.player.Player;
@@ -116,40 +116,52 @@ public class MobBattleMusicClientEvents
 		event.defaultButtonWithSingleCharacter('M', 0xFFFF4949);
 	}
 
-	// K16-K: an MBM playlist button in the ESC pause menu, placed right next to
-	// the sound-options ("menu.options") button. It opens the client-side (LOCAL)
-	// music editor - consistent with the bare /mbmplaylist command (K16-K) so any
-	// player (including non-op on a server) can reach their personal client
-	// music from the pause menu.
+	// K16-K-r2: an MBM playlist button in the OPTIONS screen (the screen the
+	// ESC pause menu "Options..." button opens), placed right next to the
+	// "Music & Sound..." ("music.and.sounds") button. It opens the client-side
+	// (LOCAL) music editor - consistent with the bare /mbmplaylist command
+	// (K16-K) so any player can reach their personal client music.
+	// If the vanilla "music.and.sounds" button is not found the button is NOT
+	// added - never guess a position (the earlier PauseScreen fallback landed
+	// on "Open to LAN").
 	@SubscribeEvent
-	public static void onPauseScreenInit(ScreenEvent.Init.Post event)
+	public static void onOptionsScreenInit(ScreenEvent.Init.Post event)
 	{
-		if (!(event.getScreen() instanceof PauseScreen))
+		if (!(event.getScreen() instanceof OptionsScreen))
 			return;
 		AbstractWidget anchor = null;
 		for (GuiEventListener listener : event.getListenersList()) {
 			if (listener instanceof Button button
 					&& button.getMessage().getContents() instanceof TranslatableContents contents
-					&& "menu.options".equals(contents.getKey())) {
+					&& "music.and.sounds".equals(contents.getKey())) {
 				anchor = button;
 				break;
 			}
 		}
+		if (anchor == null)
+			return;
 		int buttonWidth = 24;
 		int buttonHeight = 20;
-		int x;
-		int y;
-		if (anchor != null) {
-			y = anchor.getY();
-			if (anchor.getX() + anchor.getWidth() + buttonWidth + 4 < event.getScreen().width - 4)
-				x = anchor.getX() + anchor.getWidth() + 4;
-			else
-				x = anchor.getX() - buttonWidth - 4;
-		} else {
-			// fallback if the vanilla options button was not found
-			x = event.getScreen().width - buttonWidth - 4;
-			y = event.getScreen().height / 4 + 24;
-		}
+		int x = anchor.getX() + anchor.getWidth() + 4;
+		int y = anchor.getY();
+		// vanilla 1.20.1 has the "Telemetry..." button on the same row right
+		// of "Music & Sound..." - push past any button overlapping the row so
+		// the MBM button never covers an existing one
+		boolean pushed;
+		do {
+			pushed = false;
+			for (GuiEventListener listener : event.getListenersList()) {
+				if (!(listener instanceof AbstractWidget w) || w == anchor)
+					continue;
+				if (Math.abs(w.getY() - y) < buttonHeight && w.getX() > x - buttonWidth
+						&& w.getX() < x + buttonWidth) {
+					x = w.getX() + w.getWidth() + 4;
+					pushed = true;
+				}
+			}
+		} while (pushed);
+		if (x + buttonWidth > event.getScreen().width - 4)
+			x = Math.max(4, event.getScreen().width - buttonWidth - 4);
 		event.addListener(Button.builder(Component.literal("MBM"),
 				button -> MusicPlaylistScreen.openLocalEditor())
 				.bounds(x, y, buttonWidth, buttonHeight).build());
