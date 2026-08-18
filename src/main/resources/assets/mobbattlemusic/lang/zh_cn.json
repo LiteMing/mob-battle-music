@@ -47,6 +47,7 @@
 	"gui.mobbattlemusic.config.showErrorNotifications.description": "是否在游戏内显示外链音乐错误提示",
 	"gui.mobbattlemusic.config.ignoreServerPlaylistRequests.description": "忽略服务器下发的播放列表同步和直接播放请求",
 	"gui.mobbattlemusic.config.showTrackActionbar.description": "Mob Battle Music 切换曲目时，在动作栏显示当前歌曲和战斗场景",
+	"gui.mobbattlemusic.config.open_playlist": "打开音乐编辑器",
 	"gui.mobbattlemusic.config.category.non_aggro.title": "环境战斗音乐",
 	"gui.mobbattlemusic.config.category.aggro.title": "攻击性战斗音乐",
 	"gui.mobbattlemusic.config.category.player.title": "玩家战斗音乐",

@@ -47,6 +47,7 @@
 	"gui.mobbattlemusic.config.showErrorNotifications.description": "Show external music errors as in-game notifications",
 	"gui.mobbattlemusic.config.ignoreServerPlaylistRequests.description": "Ignore server-sent external playlist syncs and direct playback requests",
 	"gui.mobbattlemusic.config.showTrackActionbar.description": "Show the current song and battle context in the actionbar when Mob Battle Music switches tracks",
+	"gui.mobbattlemusic.config.open_playlist": "Open Music Editor",
 	"gui.mobbattlemusic.config.category.non_aggro.title": "Non-Aggressive Music Track",
 	"gui.mobbattlemusic.config.category.aggro.title": "Aggressive Music Track",
 	"gui.mobbattlemusic.config.category.player.title": "Player Music Track",

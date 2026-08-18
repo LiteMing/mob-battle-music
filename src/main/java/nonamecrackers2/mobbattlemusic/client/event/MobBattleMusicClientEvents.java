@@ -4,17 +4,12 @@ import java.util.List;
 
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.Button;
-import net.minecraft.client.gui.components.events.GuiEventListener;
-import net.minecraft.client.gui.screens.OptionsScreen;
 import net.minecraft.network.chat.Component;
-import net.minecraft.network.chat.contents.TranslatableContents;
 import net.minecraft.world.entity.player.Player;
 import net.minecraftforge.client.event.ClientPlayerNetworkEvent;
 import net.minecraftforge.client.event.CustomizeGuiOverlayEvent;
 import net.minecraftforge.client.event.RegisterClientReloadListenersEvent;
-import net.minecraftforge.client.event.ScreenEvent;
 import net.minecraftforge.client.event.sound.SoundEngineLoadEvent;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.EntityLeaveLevelEvent;
@@ -104,10 +99,19 @@ public class MobBattleMusicClientEvents
 		event.enqueueWork(MobBattleMusicClientEvents::installDropCallback);
 	}
 
-	public static void registerConfigScreen(RegisterConfigScreensEvent event)
+public static void registerConfigScreen(RegisterConfigScreensEvent event)
 	{
+		// K16-K-r2: the config home (reachable from the red 'M' config menu
+		// button) gets a button that opens the MBM music editor (LOCAL mode,
+		// like the bare /mbmplaylist command). The button is placed by the
+		// crackerslib grid layout - no manual positioning needed.
 		event.builder(ConfigHomeScreen.builder(ImageTitle.ofMod(MobBattleMusicMod.MODID, 512, 256, 0.5F))
-				.crackersDefault("https://github.com/nonamecrackers2/mob-battle-music/issues").build()
+				.crackersDefault("https://github.com/nonamecrackers2/mob-battle-music/issues")
+				.addExtraButton(() -> Button.builder(
+						Component.translatable("gui.mobbattlemusic.config.open_playlist"),
+						button -> MusicPlaylistScreen.openLocalEditor())
+						.bounds(0, 0, 150, 20).build())
+				.build()
 		).addSpec(ModConfig.Type.CLIENT, MobBattleMusicConfig.CLIENT_SPEC).register();
 	}
 	
@@ -116,57 +120,6 @@ public class MobBattleMusicClientEvents
 		event.defaultButtonWithSingleCharacter('M', 0xFFFF4949);
 	}
 
-	// K16-K-r2: an MBM playlist button in the OPTIONS screen (the screen the
-	// ESC pause menu "Options..." button opens), placed right next to the
-	// "Music & Sound..." ("music.and.sounds") button. It opens the client-side
-	// (LOCAL) music editor - consistent with the bare /mbmplaylist command
-	// (K16-K) so any player can reach their personal client music.
-	// If the vanilla "music.and.sounds" button is not found the button is NOT
-	// added - never guess a position (the earlier PauseScreen fallback landed
-	// on "Open to LAN").
-	@SubscribeEvent
-	public static void onOptionsScreenInit(ScreenEvent.Init.Post event)
-	{
-		if (!(event.getScreen() instanceof OptionsScreen))
-			return;
-		AbstractWidget anchor = null;
-		for (GuiEventListener listener : event.getListenersList()) {
-			if (listener instanceof Button button
-					&& button.getMessage().getContents() instanceof TranslatableContents contents
-					&& "music.and.sounds".equals(contents.getKey())) {
-				anchor = button;
-				break;
-			}
-		}
-		if (anchor == null)
-			return;
-		int buttonWidth = 24;
-		int buttonHeight = 20;
-		int x = anchor.getX() + anchor.getWidth() + 4;
-		int y = anchor.getY();
-		// vanilla 1.20.1 has the "Telemetry..." button on the same row right
-		// of "Music & Sound..." - push past any button overlapping the row so
-		// the MBM button never covers an existing one
-		boolean pushed;
-		do {
-			pushed = false;
-			for (GuiEventListener listener : event.getListenersList()) {
-				if (!(listener instanceof AbstractWidget w) || w == anchor)
-					continue;
-				if (Math.abs(w.getY() - y) < buttonHeight && w.getX() > x - buttonWidth
-						&& w.getX() < x + buttonWidth) {
-					x = w.getX() + w.getWidth() + 4;
-					pushed = true;
-				}
-			}
-		} while (pushed);
-		if (x + buttonWidth > event.getScreen().width - 4)
-			x = Math.max(4, event.getScreen().width - buttonWidth - 4);
-		event.addListener(Button.builder(Component.literal("MBM"),
-				button -> MusicPlaylistScreen.openLocalEditor())
-				.bounds(x, y, buttonWidth, buttonHeight).build());
-	}
-	
 	public static void registerReloadListeners(RegisterClientReloadListenersEvent event)
 	{
 		event.registerReloadListener(MusicTracksManager.getInstance());
