@@ -110,6 +110,13 @@ public class MobBattleMusicNetwork
 				.decoder(CueSessionSyncPacket::decode)
 				.consumerMainThread(MobBattleMusicNetwork::handleCueSessionSync)
 				.add();
+		// K16-K: /mbmplaylist debug probe - the server command forwards the
+		// requested probe action to the client (all probe state is client-local)
+		CHANNEL.messageBuilder(MBMDebugPacket.class, nextId++, NetworkDirection.PLAY_TO_CLIENT)
+				.encoder(MBMDebugPacket::encode)
+				.decoder(MBMDebugPacket::decode)
+				.consumerMainThread(MobBattleMusicNetwork::handleMBMDebug)
+				.add();
 	}
 
 	public static void sendCueSessionSync(ServerPlayer player, CueSessionSyncPacket packet)
@@ -119,7 +126,19 @@ public class MobBattleMusicNetwork
 		CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), packet);
 	}
 
+	public static void sendDebug(ServerPlayer player, MBMDebugPacket packet)
+	{
+		if (!remoteHasChannel(player))
+			return;
+		CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), packet);
+	}
+
 	private static void handleCueSessionSync(CueSessionSyncPacket packet, Supplier<NetworkEvent.Context> context)
+	{
+		packet.handle(context);
+	}
+
+	private static void handleMBMDebug(MBMDebugPacket packet, Supplier<NetworkEvent.Context> context)
 	{
 		packet.handle(context);
 	}

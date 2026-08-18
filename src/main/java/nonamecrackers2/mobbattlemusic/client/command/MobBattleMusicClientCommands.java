@@ -2,14 +2,9 @@ package nonamecrackers2.mobbattlemusic.client.command;
 
 import java.util.Locale;
 
-import com.mojang.brigadier.arguments.DoubleArgumentType;
-import com.mojang.brigadier.builder.LiteralArgumentBuilder;
-
-import net.minecraft.commands.CommandSourceStack;
-import net.minecraft.commands.Commands;
+import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
-import net.minecraftforge.client.event.RegisterClientCommandsEvent;
 import nonamecrackers2.mobbattlemusic.client.audio.AudioFilterManager;
 import nonamecrackers2.mobbattlemusic.client.audio.MarkerClock;
 import nonamecrackers2.mobbattlemusic.client.audio.MbmSessionState;
@@ -22,53 +17,40 @@ import nonamecrackers2.mobbattlemusic.client.music.ExternalMusicHandler;
 import nonamecrackers2.mobbattlemusic.client.music.StreamMusicPlayer;
 import nonamecrackers2.mobbattlemusic.client.music.TimelineMarkerStore;
 import nonamecrackers2.mobbattlemusic.client.resource.MusicTracksManager;
+import nonamecrackers2.mobbattlemusic.network.MBMDebugPacket;
 import nonamecrackers2.mobbattlemusic.playlist.TimelineMarker;
 
 /**
- * AUD-54: client-side probe commands, registered on the client command tree
- * (RegisterClientCommandsEvent). Root literal "mbm" - deliberately different
- * from the server root "mobbattlemusic" to avoid shadowing. No permission
- * predicate: available in every session state, including a paused singleplayer
- * world.
+ * K16-K: the probe actions that used to live under the client-only /mbm debug
+ * subtree. They are now invoked on the client via MBMDebugPacket when the
+ * server-side /mbmplaylist debug command runs - all probe state is client-local
+ * (MarkerClock, ProbeRing, playback channel, session). runProbe runs on the
+ * client main thread and prints its output to the local chat.
  */
 public final class MobBattleMusicClientCommands
 {
 	private MobBattleMusicClientCommands() {}
 
-	public static void register(RegisterClientCommandsEvent event)
+	public static void runProbe(int action, double value)
 	{
-		LiteralArgumentBuilder<CommandSourceStack> root = Commands.literal("mbm");
-		root.then(Commands.literal("debug")
-				.then(Commands.literal("session")
-						.executes(context -> debugSession(context.getSource())))
-				.then(Commands.literal("inject-drift")
-						.then(Commands.argument("seconds", DoubleArgumentType.doubleArg())
-								.executes(context -> injectDrift(context.getSource(),
-										DoubleArgumentType.getDouble(context, "seconds")))))
-				.then(Commands.literal("dump")
-						.executes(context -> dump(context.getSource()))));
-		event.getDispatcher().register(root);
-	}
-
-	private static int debugSession(CommandSourceStack source)
-	{
-		for (String line : buildDebugSessionOutput().split("\n", -1))
-			source.sendSuccess(() -> Component.literal(line), false);
-		return 1;
-	}
-
-	private static int injectDrift(CommandSourceStack source, double seconds)
-	{
-		MarkerClock.injectDrift(seconds);
-		source.sendSuccess(() -> Component.literal("Injected " + seconds + "s of clock drift (S15 test hook)"), false);
-		return 1;
-	}
-
-	private static int dump(CommandSourceStack source)
-	{
-		String path = ProbeRing.dumpToFile();
-		source.sendSuccess(() -> Component.literal("Probe ring dumped to " + path), false);
-		return 1;
+		Minecraft mc = Minecraft.getInstance();
+		if (mc.player == null)
+			return;
+		switch (action) {
+			case MBMDebugPacket.ACTION_SESSION -> {
+				for (String line : buildDebugSessionOutput().split("\n", -1))
+					mc.player.sendSystemMessage(Component.literal(line));
+			}
+			case MBMDebugPacket.ACTION_INJECT_DRIFT -> {
+				MarkerClock.injectDrift(value);
+				mc.player.sendSystemMessage(Component.literal("Injected " + value + "s of clock drift (S15 test hook)"));
+			}
+			case MBMDebugPacket.ACTION_DUMP -> {
+				String path = ProbeRing.dumpToFile();
+				mc.player.sendSystemMessage(Component.literal("Probe ring dumped to " + path));
+			}
+			default -> {}
+		}
 	}
 
 	private static String buildDebugSessionOutput()

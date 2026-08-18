@@ -4,10 +4,17 @@ import java.util.List;
 
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.components.AbstractWidget;
+import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.components.events.GuiEventListener;
+import net.minecraft.client.gui.screens.PauseScreen;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.contents.TranslatableContents;
 import net.minecraft.world.entity.player.Player;
 import net.minecraftforge.client.event.ClientPlayerNetworkEvent;
 import net.minecraftforge.client.event.CustomizeGuiOverlayEvent;
 import net.minecraftforge.client.event.RegisterClientReloadListenersEvent;
+import net.minecraftforge.client.event.ScreenEvent;
 import net.minecraftforge.client.event.sound.SoundEngineLoadEvent;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.EntityLeaveLevelEvent;
@@ -27,6 +34,7 @@ import nonamecrackers2.mobbattlemusic.client.audio.AudioFilterManager;
 import nonamecrackers2.mobbattlemusic.client.audio.GlobalAudioFilterManager;
 import nonamecrackers2.mobbattlemusic.client.init.MobBattleMusicClientCapabilities;
 import nonamecrackers2.mobbattlemusic.client.manager.BattleMusicManager;
+import nonamecrackers2.mobbattlemusic.client.gui.MusicPlaylistScreen;
 import nonamecrackers2.mobbattlemusic.client.music.IdleConditionStateClient;
 import nonamecrackers2.mobbattlemusic.client.resource.MusicTracksManager;
 import nonamecrackers2.mobbattlemusic.client.util.PlayerCombatSessionClient;
@@ -106,6 +114,45 @@ public class MobBattleMusicClientEvents
 	public static void registerConfigMenuButton(ConfigMenuButtonEvent event)
 	{
 		event.defaultButtonWithSingleCharacter('M', 0xFFFF4949);
+	}
+
+	// K16-K: an MBM playlist button in the ESC pause menu, placed right next to
+	// the sound-options ("menu.options") button. It opens the client-side (LOCAL)
+	// music editor - consistent with the bare /mbmplaylist command (K16-K) so any
+	// player (including non-op on a server) can reach their personal client
+	// music from the pause menu.
+	@SubscribeEvent
+	public static void onPauseScreenInit(ScreenEvent.Init.Post event)
+	{
+		if (!(event.getScreen() instanceof PauseScreen))
+			return;
+		AbstractWidget anchor = null;
+		for (GuiEventListener listener : event.getListenersList()) {
+			if (listener instanceof Button button
+					&& button.getMessage().getContents() instanceof TranslatableContents contents
+					&& "menu.options".equals(contents.getKey())) {
+				anchor = button;
+				break;
+			}
+		}
+		int buttonWidth = 24;
+		int buttonHeight = 20;
+		int x;
+		int y;
+		if (anchor != null) {
+			y = anchor.getY();
+			if (anchor.getX() + anchor.getWidth() + buttonWidth + 4 < event.getScreen().width - 4)
+				x = anchor.getX() + anchor.getWidth() + 4;
+			else
+				x = anchor.getX() - buttonWidth - 4;
+		} else {
+			// fallback if the vanilla options button was not found
+			x = event.getScreen().width - buttonWidth - 4;
+			y = event.getScreen().height / 4 + 24;
+		}
+		event.addListener(Button.builder(Component.literal("MBM"),
+				button -> MusicPlaylistScreen.openLocalEditor())
+				.bounds(x, y, buttonWidth, buttonHeight).build());
 	}
 	
 	public static void registerReloadListeners(RegisterClientReloadListenersEvent event)

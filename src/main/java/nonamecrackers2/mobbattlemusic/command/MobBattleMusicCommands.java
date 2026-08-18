@@ -5,6 +5,7 @@ import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
+import com.mojang.brigadier.arguments.DoubleArgumentType;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.LongArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
@@ -29,6 +30,7 @@ import net.minecraftforge.event.RegisterCommandsEvent;
 import net.minecraftforge.registries.ForgeRegistries;
 import nonamecrackers2.mobbattlemusic.MobBattleMusicMod;
 import nonamecrackers2.mobbattlemusic.network.ExternalPlaylistControlPacket;
+import nonamecrackers2.mobbattlemusic.network.MBMDebugPacket;
 import nonamecrackers2.mobbattlemusic.network.MobBattleMusicNetwork;
 import nonamecrackers2.mobbattlemusic.playlist.IdleConditionRegistry;
 
@@ -120,7 +122,22 @@ public class MobBattleMusicCommands
 		// requirement.
 		event.getDispatcher().register(Commands.literal("mbmplaylist")
 				.requires(source -> source.getEntity() instanceof ServerPlayer)
-				.executes(context -> openGui(context.getSource())));
+				.executes(context -> openGui(context.getSource()))
+				// K16-K: /mbmplaylist debug ... - probe actions forwarded to the
+				// client (was the old client-only /mbm debug subtree). Bare
+				// /mbmplaylist still opens the GUI; adding the debug subtree
+				// here keeps a single command tree and avoids a client/server
+				// literal clash.
+				.then(Commands.literal("debug")
+						.then(Commands.literal("session")
+								.executes(ctx -> sendDebug(ctx.getSource(), MBMDebugPacket.ACTION_SESSION, 0.0D)))
+						.then(Commands.literal("inject-drift")
+								.then(Commands.argument("seconds", DoubleArgumentType.doubleArg())
+										.executes(ctx -> sendDebug(ctx.getSource(),
+												MBMDebugPacket.ACTION_INJECT_DRIFT,
+												DoubleArgumentType.getDouble(ctx, "seconds")))))
+						.then(Commands.literal("dump")
+								.executes(ctx -> sendDebug(ctx.getSource(), MBMDebugPacket.ACTION_DUMP, 0.0D)))));
 	}
 
 	private static LiteralArgumentBuilder<CommandSourceStack> timelineMarkerArgument()
@@ -198,6 +215,14 @@ public class MobBattleMusicCommands
 			return 0;
 		}
 		MobBattleMusicNetwork.openPlaylistGui(player);
+		return 1;
+	}
+
+	// K16-K: /mbmplaylist debug - forwards the probe action to the client
+	private static int sendDebug(CommandSourceStack source, int action, double value)
+	{
+		if (source.getEntity() instanceof ServerPlayer player)
+			MobBattleMusicNetwork.sendDebug(player, new MBMDebugPacket(action, value));
 		return 1;
 	}
 	
