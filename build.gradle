@@ -298,3 +298,23 @@ publishing {
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8' // Use the UTF-8 charset for Java compilation
 }
+
+// Exercise the real Forge channel and the probe lifecycle without launching a game.
+tasks.register('networkRegressionTest', JavaExec) {
+    group = 'verification'
+    description = 'Checks MBM packet handling, clock probe windows, and protocol compatibility.'
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'nonamecrackers2.mobbattlemusic.client.audio.NetworkRegressionChecks'
+    workingDir = layout.buildDirectory.dir('network-regression').get().asFile
+    doFirst {
+        workingDir.mkdirs()
+    }
+    javaLauncher = javaToolchains.launcherFor {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+tasks.named('check').configure {
+    dependsOn tasks.named('networkRegressionTest')
+}

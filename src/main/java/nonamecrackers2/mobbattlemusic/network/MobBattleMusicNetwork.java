@@ -13,14 +13,15 @@ import nonamecrackers2.mobbattlemusic.client.audio.ClockOffsetProbeScheduler;
 
 public class MobBattleMusicNetwork
 {
-	private static final String PROTOCOL_VERSION = "16";
+	// Protocol 17 includes MBMDebugPacket; older protocol-16 builds lack it.
+	private static final String PROTOCOL_VERSION = "17";
 	private static int nextId;
 	private static final SimpleChannel CHANNEL = NetworkRegistry.ChannelBuilder
 			.named(MobBattleMusicMod.id("main"))
 			.networkProtocolVersion(() -> PROTOCOL_VERSION)
 			// K14-A: optional channel - a peer WITHOUT MBM connects fine
 			// (mods.toml displayTest already ignores mod version presence);
-			// a peer WITH MBM must match protocol 16 exactly, otherwise the
+			// a peer WITH MBM must match the current protocol exactly, otherwise the
 			// handshake rejects (never fall back to version -> true)
 			.clientAcceptedVersions(NetworkRegistry.acceptMissingOr(PROTOCOL_VERSION::equals))
 			.serverAcceptedVersions(NetworkRegistry.acceptMissingOr(PROTOCOL_VERSION::equals))
@@ -277,6 +278,8 @@ public class MobBattleMusicNetwork
 	{
 		long t2 = System.currentTimeMillis();
 		NetworkEvent.Context ctx = context.get();
+		// Network-thread consumers must acknowledge even an ignored packet.
+		ctx.setPacketHandled(true);
 		ServerPlayer player = ctx.getSender();
 		if (player == null)
 			return;
@@ -295,7 +298,12 @@ public class MobBattleMusicNetwork
 	private static void handleClockOffsetProbeResponse(ClockOffsetProbeResponsePacket packet,
 			Supplier<NetworkEvent.Context> context)
 	{
-		ClockOffsetProbeScheduler.handleProbeResponse(packet);
+		long t4 = System.currentTimeMillis();
+		NetworkEvent.Context ctx = context.get();
+		// Stop vanilla fallback from dispatching this response again on the
+		// render thread and reporting an unknown custom packet identifier.
+		ctx.setPacketHandled(true);
+		ClockOffsetProbeScheduler.handleProbeResponse(packet, ctx.getNetworkManager(), t4);
 	}
 
 	private static void sendClockProbeResponse(ServerPlayer player, ClockOffsetProbeResponsePacket packet)

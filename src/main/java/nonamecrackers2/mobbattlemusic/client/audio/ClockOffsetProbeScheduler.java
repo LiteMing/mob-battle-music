@@ -3,6 +3,7 @@ package nonamecrackers2.mobbattlemusic.client.audio;
 import java.util.concurrent.ThreadLocalRandom;
 
 import net.minecraft.client.Minecraft;
+import net.minecraft.network.Connection;
 import nonamecrackers2.mobbattlemusic.network.ClockOffsetProbeRequestPacket;
 import nonamecrackers2.mobbattlemusic.network.ClockOffsetProbeResponsePacket;
 import nonamecrackers2.mobbattlemusic.network.MobBattleMusicNetwork;
@@ -23,9 +24,18 @@ public final class ClockOffsetProbeScheduler
 	public static final int MAX_PROBES_PER_WINDOW = 5;
 	private static final long[] SEND_SLOTS_MILLIS = { 0L, 100L, 250L, 500L, 1000L };
 
+	// All window state and estimator writes are guarded by LOCK. In
+	// particular, reset cannot run between nonce validation and sampling.
+	private static final Object LOCK = new Object();
+	// Read by prepareBurst (connection changes) and handleProbeResponse
+	// (response provenance); null means no active remote probe window.
+	private static Connection activeConnection;
 	private static long windowStartMillis;
 	private static int probesSentThisWindow;
-	private static long currentNonce;
+	private static long currentNonce = ThreadLocalRandom.current().nextLong();
+
+	// Immutable send reservation: tick consumes it after releasing LOCK.
+	record ProbeBurst(long nonce, int firstSlot, int limit, long windowAgeMillis) {}
 
 	private ClockOffsetProbeScheduler() {}
 
@@ -37,77 +47,91 @@ public final class ClockOffsetProbeScheduler
 	 */
 	public static void tick()
 	{
-		// K7-B fix: without a live connection there is nothing to probe - the
-		// send would NPE on Minecraft.getConnection() == null (main menu). The
-		// window stays closed; world join (WorldPlaybackChannel.reset +
-		// first tick) opens it fresh with a new nonce.
 		Minecraft mc = Minecraft.getInstance();
-		if (mc.getConnection() == null) {
-			ClockOffsetProbeScheduler.windowStartMillis = 0L;
-			ClockOffsetProbeScheduler.probesSentThisWindow = 0;
-			return;
-		}
+		var listener = mc.getConnection();
+		Connection connection = listener == null ? null : listener.getConnection();
 		// K16-A: a local loopback connection (singleplayer world, including
-		// the LAN host's OWN client) shares one JVM clock with its server - a
-		// probe always measures offset 0.0ms and carries zero information.
-		// It also trips Forge's LocalConnection double-dispatch, which logs
-		// "Unknown custom packet identifier" for every S2C payload on this
-		// channel. LAN clients (real network) are NOT local and keep probing
-		// normally; the window stays closed here and opens fresh (new nonce)
-		// on the first tick after connecting to a real server.
-		if (mc.isLocalServer()) {
-			ClockOffsetProbeScheduler.windowStartMillis = 0L;
-			ClockOffsetProbeScheduler.probesSentThisWindow = 0;
+		// the LAN host's own client) shares its server's clock. Remote LAN
+		// clients still probe. Missing MBM peers have no probe window either.
+		if (mc.isLocalServer() || !MobBattleMusicNetwork.channelIsRemotePresent(connection))
+			connection = null;
+		ProbeBurst burst = prepareBurst(connection, System.currentTimeMillis());
+		if (burst == null)
 			return;
-		}
-		long now = System.currentTimeMillis();
-		if (ClockOffsetProbeScheduler.windowStartMillis <= 0L
-				|| now - ClockOffsetProbeScheduler.windowStartMillis >= ClockOffsetProbeScheduler.WINDOW_MILLIS) {
-			// new window - fresh nonce, fresh budget
-			ClockOffsetProbeScheduler.windowStartMillis = now;
-			ClockOffsetProbeScheduler.probesSentThisWindow = 0;
-			ClockOffsetProbeScheduler.currentNonce = ThreadLocalRandom.current().nextLong();
-		}
-		int slotIndex = ClockOffsetProbeScheduler.probesSentThisWindow;
-		while (slotIndex < ClockOffsetProbeScheduler.MAX_PROBES_PER_WINDOW
-				&& now - ClockOffsetProbeScheduler.windowStartMillis >= ClockOffsetProbeScheduler.SEND_SLOTS_MILLIS[slotIndex]) {
+		for (int slotIndex = burst.firstSlot(); slotIndex < burst.limit(); slotIndex++) {
 			// t1 is captured immediately before the actual send
 			long t1 = System.currentTimeMillis();
 			MobBattleMusicNetwork.sendClockProbeRequest(
-					new ClockOffsetProbeRequestPacket(ClockOffsetProbeScheduler.currentNonce, t1));
-			ClockOffsetProbeScheduler.probesSentThisWindow++;
-			slotIndex++;
-			LOGGER.debug("[MBM] clock probe #{} sent (window at {}ms)", slotIndex,
-					now - ClockOffsetProbeScheduler.windowStartMillis);
+					new ClockOffsetProbeRequestPacket(burst.nonce(), t1));
+			LOGGER.debug("[MBM] clock probe #{} sent (window at {}ms)", slotIndex + 1,
+					burst.windowAgeMillis());
 		}
 	}
 
 	/**
-	 * K7-B: consume a probe response (t4 captured by the network-thread
-	 * consumer). The nonce must match the current window - a response from an
-	 * old connection or an old window never reaches the estimator. The
-	 * estimator is thread-safe for direct consumption. NEVER calls any
-	 * MarkerClock.realign*().
+	 * Reserve due slots atomically; networking stays outside the state lock.
+	 * A null connection closes the window. A new connection or window clears
+	 * the estimator before any response with its new nonce can be accepted.
 	 */
-	public static void handleProbeResponse(ClockOffsetProbeResponsePacket packet)
+	static ProbeBurst prepareBurst(Connection connection, long now)
 	{
-		if (packet.probeNonce() != ClockOffsetProbeScheduler.currentNonce) {
-			LOGGER.debug("[MBM] clock probe response dropped (stale nonce)");
-			return;
+		synchronized (LOCK) {
+			if (connection == null) {
+				if (activeConnection != null)
+					reset();
+				return null;
+			}
+			if (activeConnection != connection || windowStartMillis <= 0L
+					|| now - windowStartMillis >= WINDOW_MILLIS) {
+				activeConnection = connection;
+				windowStartMillis = now;
+				probesSentThisWindow = 0;
+				currentNonce++;
+				ClockOffsetEstimator.reset();
+			}
+			int firstSlot = probesSentThisWindow;
+			long age = now - windowStartMillis;
+			while (probesSentThisWindow < MAX_PROBES_PER_WINDOW
+					&& age >= SEND_SLOTS_MILLIS[probesSentThisWindow])
+				probesSentThisWindow++;
+			return firstSlot == probesSentThisWindow ? null
+					: new ProbeBurst(currentNonce, firstSlot, probesSentThisWindow, age);
 		}
-		long t4 = System.currentTimeMillis();
-		ClockOffsetEstimator.sample(packet.clientSendEpochMillis(), packet.serverRecvEpochMillis(),
-				packet.sendServerEpochMillis(), t4);
+	}
+
+	/**
+	 * K7-B: t4 is captured by the network-thread consumer before this lock.
+	 * Connection and nonce validation share the estimator reset/sample lock,
+	 * so an old response cannot repopulate a reset estimator. No main-thread
+	 * queue and no MarkerClock.realign*() calls participate in this path.
+	 */
+	public static void handleProbeResponse(ClockOffsetProbeResponsePacket packet, Connection connection, long t4)
+	{
+		synchronized (LOCK) {
+			if (connection == null || connection != activeConnection || windowStartMillis <= 0L
+					|| packet.probeNonce() != currentNonce || t4 < windowStartMillis
+					|| t4 - windowStartMillis >= WINDOW_MILLIS) {
+				LOGGER.debug("[MBM] clock probe response dropped (inactive connection or stale window)");
+				return;
+			}
+			ClockOffsetEstimator.sample(packet.clientSendEpochMillis(), packet.serverRecvEpochMillis(),
+					packet.sendServerEpochMillis(), t4);
+		}
 		LOGGER.debug("[MBM] clock probe sample fed: rtt={}ms offset={}ms state={}",
-				(packet.sendServerEpochMillis() - packet.clientSendEpochMillis()) - (t4 - packet.serverRecvEpochMillis()),
+				(t4 - packet.clientSendEpochMillis()) - (packet.sendServerEpochMillis() - packet.serverRecvEpochMillis()),
 				ClockOffsetEstimator.offsetMillis(), ClockOffsetEstimator.state());
 	}
 
 	// K7-B: world disconnect / reset - stop the burst, roll the nonce
 	public static void reset()
 	{
-		ClockOffsetProbeScheduler.windowStartMillis = 0L;
-		ClockOffsetProbeScheduler.probesSentThisWindow = 0;
+		synchronized (LOCK) {
+			activeConnection = null;
+			windowStartMillis = 0L;
+			probesSentThisWindow = 0;
+			currentNonce++;
+			ClockOffsetEstimator.reset();
+		}
 	}
 
 	private static final org.apache.logging.log4j.Logger LOGGER =

@@ -434,9 +434,8 @@ public final class WorldPlaybackChannel
 		MarkerClock.clearInjectedDrift();
 		// AUD-48 v1.4: world unload resets the converged watermark
 		StreamMusicPlayer.resetAdaptiveWatermark();
-		// K6-B: world unload resets the connection-level estimator and the
-		// session generation
-		ClockOffsetEstimator.reset();
+		// Reset the probe window and estimator together, so an in-flight
+		// network response cannot refill the estimator after disconnect.
 		ClockOffsetProbeScheduler.reset();
 		WorldPlaybackChannel.playbackSessionGeneration = 0L;
 		// K9-4: a real logout clears the selection owner
