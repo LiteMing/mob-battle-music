@@ -112,7 +112,10 @@ final class PlaylistSelectionList<T> extends ObjectSelectionList<PlaylistSelecti
 				}
 			}
 		}
-		this.setScrollAmount(oldScroll);
+		// Filtering and mode switches can shrink the list below the previous
+		// scroll offset. Clamp it so the refreshed panel never renders an
+		// empty tail below the last row.
+		this.setScrollAmount(Math.min(oldScroll, this.getMaxScroll()));
 	}
 
 	void selectIndex(int index, boolean notify)

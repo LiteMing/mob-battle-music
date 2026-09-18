@@ -84,13 +84,6 @@ public class ExternalMusicHandler {
      */
     public CompletableFuture<Path> prepareMusicFile(String url) {
         MusicMetadataCache.getInstance().prepare(url);
-        // Check if already downloading
-        CompletableFuture<Path> ongoing = ongoingDownloads.get(url);
-        if (ongoing != null) {
-            LOGGER.debug("Download already in progress for: {}", url);
-            return ongoing;
-        }
-        
         // Check cache first
         if (isCached(url)) {
             LOGGER.debug("Using cached file for: {}", url);
@@ -98,8 +91,16 @@ public class ExternalMusicHandler {
             return CompletableFuture.completedFuture(cachedPath);
         }
         
-        // Start new download
-        CompletableFuture<Path> future = CompletableFuture.supplyAsync(() -> {
+        // Reserve the URL before starting work. A get-then-put sequence lets
+        // two GUI clicks start duplicate downloads for the same track.
+        CompletableFuture<Path> future = new CompletableFuture<>();
+        CompletableFuture<Path> ongoing = ongoingDownloads.putIfAbsent(url, future);
+        if (ongoing != null) {
+            LOGGER.debug("Download already in progress for: {}", url);
+            return ongoing;
+        }
+
+        CompletableFuture.runAsync(() -> {
             try {
                 LOGGER.info("Preparing music file from URL: {}", url);
                 
@@ -113,7 +114,7 @@ public class ExternalMusicHandler {
                 Path cachedFile = cache.saveToCache(url, mp3Data);
                 
                 LOGGER.info("Successfully cached music file: {} -> {}", url, cachedFile);
-                return cachedFile;
+                future.complete(cachedFile);
                 
             } catch (Exception e) {
                 LOGGER.error("Failed to prepare music file from URL: {}", url, e);
@@ -123,17 +124,16 @@ public class ExternalMusicHandler {
                     Path cachedFile = cache.getCachedFile(url);
                     if (cachedFile != null) {
                         LOGGER.warn("Using stale cached file for: {}", url);
-                        return cachedFile;
+                        future.complete(cachedFile);
+                        return;
                     }
                 }
                 
-                return null;
+                future.complete(null);
             } finally {
-                ongoingDownloads.remove(url);
+                ongoingDownloads.remove(url, future);
             }
         });
-        
-        ongoingDownloads.put(url, future);
         return future;
     }
     

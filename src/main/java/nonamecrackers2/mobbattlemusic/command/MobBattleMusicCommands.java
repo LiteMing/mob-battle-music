@@ -120,24 +120,147 @@ public class MobBattleMusicCommands
 		// gated: the SERVER editor inside the GUI requires permission 2, and
 		// all /mobbattlemusic server commands keep the canUsePlaylistCommand
 		// requirement.
-		event.getDispatcher().register(Commands.literal("mbmplaylist")
+		// The public command surface is deliberately flat: playlist management,
+		// trigger binding and playback are peers under /mbm. The old command
+		// remains registered above for existing scripts and config workflows.
+		event.getDispatcher().register(mbmCommand());
+		event.getDispatcher().register(guiCommand("mbmplaylist"));
+	}
+
+	private static LiteralArgumentBuilder<CommandSourceStack> mbmCommand()
+	{
+		return Commands.literal("mbm")
 				.requires(source -> source.getEntity() instanceof ServerPlayer)
 				.executes(context -> openGui(context.getSource()))
-				// K16-K: /mbmplaylist debug ... - probe actions forwarded to the
-				// client (was the old client-only /mbm debug subtree). Bare
-				// /mbmplaylist still opens the GUI; adding the debug subtree
-				// here keeps a single command tree and avoids a client/server
-				// literal clash.
-				.then(Commands.literal("debug")
-						.then(Commands.literal("session")
-								.executes(ctx -> sendDebug(ctx.getSource(), MBMDebugPacket.ACTION_SESSION, 0.0D)))
-						.then(Commands.literal("inject-drift")
-								.then(Commands.argument("seconds", DoubleArgumentType.doubleArg())
-										.executes(ctx -> sendDebug(ctx.getSource(),
-												MBMDebugPacket.ACTION_INJECT_DRIFT,
-												DoubleArgumentType.getDouble(ctx, "seconds")))))
-						.then(Commands.literal("dump")
-								.executes(ctx -> sendDebug(ctx.getSource(), MBMDebugPacket.ACTION_DUMP, 0.0D)))));
+				.then(playlistCommand())
+				.then(bindCommand())
+				.then(playCommand())
+				.then(debugCommand());
+	}
+
+	private static LiteralArgumentBuilder<CommandSourceStack> playlistCommand()
+	{
+		LiteralArgumentBuilder<CommandSourceStack> root = Commands.literal("playlist")
+				.requires(MobBattleMusicCommands::canUsePlaylistCommand);
+		RequiredArgumentBuilder<CommandSourceStack, String> playlist =
+				Commands.argument("playlist", StringArgumentType.word())
+						.suggests(MobBattleMusicCommands::suggestScenes);
+		playlist.then(Commands.literal("add").then(Commands.argument("url", StringArgumentType.greedyString())
+				.executes(ctx -> ServerExternalPlaylistStore.add(ctx.getSource(),
+						StringArgumentType.getString(ctx, "playlist"), StringArgumentType.getString(ctx, "url")))));
+		playlist.then(Commands.literal("delete").then(Commands.argument("index", IntegerArgumentType.integer(1))
+				.executes(ctx -> ServerExternalPlaylistStore.delete(ctx.getSource(),
+						StringArgumentType.getString(ctx, "playlist"), IntegerArgumentType.getInteger(ctx, "index") - 1))));
+		playlist.then(Commands.literal("move").then(Commands.argument("from", IntegerArgumentType.integer(1))
+				.then(Commands.argument("to", IntegerArgumentType.integer(1))
+						.executes(ctx -> ServerExternalPlaylistStore.move(ctx.getSource(),
+								StringArgumentType.getString(ctx, "playlist"),
+								IntegerArgumentType.getInteger(ctx, "from") - 1,
+								IntegerArgumentType.getInteger(ctx, "to") - 1)))));
+		playlist.then(Commands.literal("list").executes(ctx -> ServerExternalPlaylistStore.list(ctx.getSource(),
+				StringArgumentType.getString(ctx, "playlist"))));
+		playlist.then(Commands.literal("order").then(selectionModeArgument()
+				.executes(ctx -> ServerExternalPlaylistStore.setSelectionMode(ctx.getSource(),
+						StringArgumentType.getString(ctx, "playlist"), StringArgumentType.getString(ctx, "selection_mode")))));
+		playlist.then(Commands.literal("priority").then(Commands.argument("priority", IntegerArgumentType.integer(-1000, 1000))
+				.executes(ctx -> ServerExternalPlaylistStore.setPriority(ctx.getSource(),
+						StringArgumentType.getString(ctx, "playlist"), IntegerArgumentType.getInteger(ctx, "priority")))));
+		return root.then(playlist);
+	}
+
+	private static LiteralArgumentBuilder<CommandSourceStack> bindCommand()
+	{
+		RequiredArgumentBuilder<CommandSourceStack, String> scene = Commands.argument("scene", StringArgumentType.word())
+				.suggests(MobBattleMusicCommands::suggestScenes);
+		return Commands.literal("bind")
+				.requires(MobBattleMusicCommands::canUsePlaylistCommand)
+				.then(scene.then(Commands.argument("url", StringArgumentType.greedyString())
+						.executes(ctx -> ServerExternalPlaylistStore.add(ctx.getSource(),
+								StringArgumentType.getString(ctx, "scene"),
+								StringArgumentType.getString(ctx, "url")))))
+				.then(Commands.literal("type")
+						.then(Commands.argument("scene", StringArgumentType.word()).suggests(MobBattleMusicCommands::suggestScenes)
+								.then(Commands.argument("entity_type", ResourceLocationArgument.id()).suggests(MobBattleMusicCommands::suggestEntityTypes)
+										.then(Commands.argument("url", StringArgumentType.greedyString())
+												.executes(ctx -> ServerExternalPlaylistStore.addEntityType(ctx.getSource(),
+														StringArgumentType.getString(ctx, "scene"),
+														ResourceLocationArgument.getId(ctx, "entity_type"),
+														StringArgumentType.getString(ctx, "url")))))))
+				.then(Commands.literal("uuid")
+						.then(Commands.argument("scene", StringArgumentType.word()).suggests(MobBattleMusicCommands::suggestScenes)
+								.then(Commands.argument("uuid", StringArgumentType.word())
+										.then(Commands.argument("url", StringArgumentType.greedyString())
+												.executes(ctx -> ServerExternalPlaylistStore.addEntityUuid(ctx.getSource(),
+														StringArgumentType.getString(ctx, "scene"),
+														StringArgumentType.getString(ctx, "uuid"),
+														StringArgumentType.getString(ctx, "url")))))))
+				.then(Commands.literal("player")
+						.then(Commands.argument("scene", StringArgumentType.word()).suggests(MobBattleMusicCommands::suggestScenes)
+								.then(Commands.argument("player", EntityArgument.player())
+										.then(Commands.argument("url", StringArgumentType.greedyString())
+												.executes(ctx -> ServerExternalPlaylistStore.addEntityUuid(ctx.getSource(),
+														StringArgumentType.getString(ctx, "scene"),
+														EntityArgument.getPlayer(ctx, "player").getUUID().toString(),
+														StringArgumentType.getString(ctx, "url")))))));
+	}
+
+	private static LiteralArgumentBuilder<CommandSourceStack> playCommand()
+	{
+		RequiredArgumentBuilder<CommandSourceStack, EntitySelector> targets =
+				Commands.argument("targets", EntityArgument.players());
+		return Commands.literal("play")
+				.requires(MobBattleMusicCommands::canUsePlaylistCommand)
+				.then(targets
+						.then(playlistArgument()
+								.then(Commands.argument("music", StringArgumentType.word())
+										.suggests(ExternalPlaylistCatalogServer::suggestEntries)
+										.executes(ctx -> send(ctx.getSource(), EntityArgument.getPlayers(ctx, "targets"),
+												ResourceLocationArgument.getId(ctx, "playlist"),
+												ExternalPlaylistControlPacket.Action.PLAY_SELECTION,
+												StringArgumentType.getString(ctx, "music")))))
+						.then(Commands.literal("random")
+								.then(playlistArgument().executes(ctx -> sendRandomNext(ctx.getSource(),
+										EntityArgument.getPlayers(ctx, "targets"),
+										ResourceLocationArgument.getId(ctx, "playlist")))))
+						.then(Commands.literal("url")
+								.then(Commands.argument("url", StringArgumentType.greedyString())
+										.executes(ctx -> send(ctx.getSource(), EntityArgument.getPlayers(ctx, "targets"),
+												MobBattleMusicMod.id("direct"),
+												ExternalPlaylistControlPacket.Action.PLAY_URL,
+												StringArgumentType.getString(ctx, "url")))))
+						.then(Commands.literal("stop")
+								.executes(ctx -> send(ctx.getSource(), EntityArgument.getPlayers(ctx, "targets"),
+										MobBattleMusicMod.id("direct"), ExternalPlaylistControlPacket.Action.STOP, "")))
+						.then(Commands.literal("clear")
+								.then(playlistArgument().executes(ctx -> send(ctx.getSource(),
+										EntityArgument.getPlayers(ctx, "targets"),
+										ResourceLocationArgument.getId(ctx, "playlist"),
+										ExternalPlaylistControlPacket.Action.CLEAR, ""))))
+						.then(Commands.literal("list")
+								.executes(ctx -> ExternalPlaylistCatalogServer.list(ctx.getSource(),
+										EntityArgument.getPlayers(ctx, "targets")))));
+	}
+
+	private static LiteralArgumentBuilder<CommandSourceStack> guiCommand(String literal)
+	{
+		return Commands.literal(literal)
+				.requires(source -> source.getEntity() instanceof ServerPlayer)
+				.executes(context -> openGui(context.getSource()))
+				.then(debugCommand());
+	}
+
+	private static LiteralArgumentBuilder<CommandSourceStack> debugCommand()
+	{
+		return Commands.literal("debug")
+				.then(Commands.literal("session")
+						.executes(ctx -> sendDebug(ctx.getSource(), MBMDebugPacket.ACTION_SESSION, 0.0D)))
+				.then(Commands.literal("inject-drift")
+						.then(Commands.argument("seconds", DoubleArgumentType.doubleArg(-86400.0D, 86400.0D))
+								.executes(ctx -> sendDebug(ctx.getSource(),
+										MBMDebugPacket.ACTION_INJECT_DRIFT,
+										DoubleArgumentType.getDouble(ctx, "seconds")))))
+				.then(Commands.literal("dump")
+						.executes(ctx -> sendDebug(ctx.getSource(), MBMDebugPacket.ACTION_DUMP, 0.0D)));
 	}
 
 	private static LiteralArgumentBuilder<CommandSourceStack> timelineMarkerArgument()

@@ -83,6 +83,7 @@ public final class ServerCueSessionManager
 		}
 		CueSession session = new CueSession(++nextSessionId, scope, url, revision, server.getTickCount(),
 				dimension, bossUuid, durationMillis);
+		session.setAudience(audience);
 		SESSIONS.put(scope, session);
 		for (ServerPlayer player : server.getPlayerList().getPlayers()) {
 			if (audience != null && !audience.contains(player))
@@ -217,6 +218,7 @@ public final class ServerCueSessionManager
 		private final @Nullable UUID bossUuid;
 		// K14-C: audience - players that receive this session's sync packets
 		private final Set<UUID> audience;
+		private boolean audienceRestricted;
 		private final long durationMillis;
 		private CueSessionSyncPacket.State state = CueSessionSyncPacket.State.PLAYING;
 		private long logicalPositionMillis;
@@ -239,14 +241,23 @@ public final class ServerCueSessionManager
 			this.audience = new HashSet<>();
 		}
 
+		private void setAudience(@Nullable java.util.Collection<ServerPlayer> players)
+		{
+			this.audienceRestricted = players != null;
+			if (players != null)
+				for (ServerPlayer player : players)
+					this.audience.add(player.getUUID());
+		}
+
 		public void addAudience(ServerPlayer player)
 		{
+			this.audienceRestricted = true;
 			this.audience.add(player.getUUID());
 		}
 
 		public boolean inAudience(ServerPlayer player)
 		{
-			return this.audience.isEmpty() || this.audience.contains(player.getUUID());
+			return !this.audienceRestricted || this.audience.contains(player.getUUID());
 		}
 
 		public UUID sessionId() { return this.sessionId; }
