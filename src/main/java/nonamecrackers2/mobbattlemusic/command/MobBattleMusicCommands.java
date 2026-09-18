@@ -140,11 +140,16 @@ public class MobBattleMusicCommands
 
 	private static LiteralArgumentBuilder<CommandSourceStack> playlistCommand()
 	{
+		// Keep the command surface symmetric with /mbmplaylist: the bare
+		// subcommand opens the client-local editor for every player. Mutating
+		// server playlist data remains permission-gated on the argument branch.
 		LiteralArgumentBuilder<CommandSourceStack> root = Commands.literal("playlist")
-				.requires(MobBattleMusicCommands::canUsePlaylistCommand);
+				.requires(source -> source.getEntity() instanceof ServerPlayer)
+				.executes(context -> openGui(context.getSource()));
 		RequiredArgumentBuilder<CommandSourceStack, String> playlist =
 				Commands.argument("playlist", StringArgumentType.word())
-						.suggests(MobBattleMusicCommands::suggestScenes);
+						.suggests(MobBattleMusicCommands::suggestScenes)
+						.requires(MobBattleMusicCommands::canUsePlaylistCommand);
 		playlist.then(Commands.literal("add").then(Commands.argument("url", StringArgumentType.greedyString())
 				.executes(ctx -> ServerExternalPlaylistStore.add(ctx.getSource(),
 						StringArgumentType.getString(ctx, "playlist"), StringArgumentType.getString(ctx, "url")))));

@@ -48,6 +48,8 @@ final class AudioFilterScreen extends Screen
 	private EditBox gainBox;
 	private EditBox bitDepthBox;
 	private EditBox sampleRateBox;
+	private EditBox pitchBox;
+	private EditBox transitionBox;
 	private EditBox conditionArgumentBox;
 	private int selected;
 	private int selectedCondition;
@@ -148,6 +150,11 @@ final class AudioFilterScreen extends Screen
 				"filters.field.bit_depth", STATE.bitDepth, 2);
 		this.sampleRateBox = numberBox(x + (numberWidth + gap) * 4, numbersY,
 				right - (x + (numberWidth + gap) * 4), "filters.field.sample_rate", STATE.sampleRate, 5);
+		int tuningY = numbersY + 24;
+		int tuningWidth = Math.max(42, (right - x - gap) / 2);
+		this.pitchBox = numberBox(x, tuningY, tuningWidth, "filters.field.pitch", STATE.pitch, 8);
+		this.transitionBox = numberBox(x + tuningWidth + gap, tuningY,
+				right - (x + tuningWidth + gap), "filters.field.transition", STATE.transition, 5);
 
 		int conditionY = this.height - 28;
 		int conditionTypeWidth = compact ? 84 : Math.min(150, Math.max(104, (right - x) / 4));
@@ -184,10 +191,11 @@ final class AudioFilterScreen extends Screen
 				new PlaylistDropdown.Item("global", text("filters.scope.global"))));
 		this.scopeDropdown.setBounds(this.scopeButton.getX(), selectorY + 20, this.scopeButton.getWidth(), this.height - 8);
 		this.typeDropdown.setItems(List.of(
-				typeItem(AudioFilterDefinition.Type.LOW_PASS),
+				 typeItem(AudioFilterDefinition.Type.LOW_PASS),
 				typeItem(AudioFilterDefinition.Type.HIGH_PASS),
 				typeItem(AudioFilterDefinition.Type.PEAK_EQ),
-				typeItem(AudioFilterDefinition.Type.LOFI)));
+				typeItem(AudioFilterDefinition.Type.LOFI),
+				typeItem(AudioFilterDefinition.Type.PITCH_SHIFT)));
 		this.typeDropdown.setBounds(this.typeButton.getX(), selectorY + 20, this.typeButton.getWidth(), this.height - 8);
 		this.conditionTypeDropdown.setItems(IdleConditionStateClient.descriptors().stream()
 				.map(descriptor -> new PlaylistDropdown.Item(descriptor.id().toString(),
@@ -414,6 +422,8 @@ final class AudioFilterScreen extends Screen
 		STATE.gain = formatNumber(definition.gainDb());
 		STATE.bitDepth = String.valueOf(definition.bitDepth());
 		STATE.sampleRate = String.valueOf(definition.sampleRateHz());
+		STATE.pitch = formatNumber(definition.pitchSemitones());
+		STATE.transition = String.valueOf(definition.transitionMillis());
 		this.scope = definition.scope();
 		this.type = definition.type();
 		this.draftConditions.clear();
@@ -429,6 +439,8 @@ final class AudioFilterScreen extends Screen
 		this.gainBox.setValue(STATE.gain);
 		this.bitDepthBox.setValue(STATE.bitDepth);
 		this.sampleRateBox.setValue(STATE.sampleRate);
+		this.pitchBox.setValue(STATE.pitch);
+		this.transitionBox.setValue(STATE.transition);
 		this.scopeButton.setMessage(scopeLabel());
 		this.typeButton.setMessage(typeLabel());
 		this.conditionTypeButton.setMessage(conditionTypeLabel());
@@ -449,6 +461,8 @@ final class AudioFilterScreen extends Screen
 		STATE.gain = "0";
 		STATE.bitDepth = "12";
 		STATE.sampleRate = "22050";
+		STATE.pitch = "0";
+		STATE.transition = "20";
 		this.draftConditions.clear();
 		if (this.idBox != null)
 			this.applyDraftToWidgets();
@@ -462,7 +476,10 @@ final class AudioFilterScreen extends Screen
 		Double gain = parseDouble(this.gainBox.getValue(), -12.0D, 12.0D);
 		Integer bitDepth = parseInteger(this.bitDepthBox.getValue(), 8, 16);
 		Integer sampleRate = parseInteger(this.sampleRateBox.getValue(), 8_000, 48_000);
-		if (id == null || frequency == null || q == null || gain == null || bitDepth == null || sampleRate == null) {
+		Double pitch = parseDouble(this.pitchBox.getValue(), -24.0D, 24.0D);
+		Long transition = parseLong(this.transitionBox.getValue(), 20L, 300L);
+		if (id == null || frequency == null || q == null || gain == null || bitDepth == null || sampleRate == null
+				|| pitch == null || transition == null) {
 			message(text("filters.message.invalid"));
 			return;
 		}
@@ -474,7 +491,7 @@ final class AudioFilterScreen extends Screen
 		Entry selected = selectedEntry();
 		boolean enabled = selected == null || selected.runtime() || selected.definition().enabled();
 		AudioFilterManager.putConfigDefinition(new AudioFilterDefinition(id, enabled, this.scope, this.type, frequency, q, gain,
-				bitDepth, sampleRate, this.draftConditions));
+				bitDepth, sampleRate, pitch, transition, this.draftConditions));
 		activateNow();
 		message(text("filters.message.saved", id));
 		this.rebuildEntries();
@@ -627,11 +644,15 @@ final class AudioFilterScreen extends Screen
 	{
 		boolean editable = !this.selectedRuntime;
 		this.idBox.active = editable;
-		this.frequencyBox.active = editable && this.type != AudioFilterDefinition.Type.LOFI;
-		this.qBox.active = editable && this.type != AudioFilterDefinition.Type.LOFI;
+		this.frequencyBox.active = editable && this.type != AudioFilterDefinition.Type.LOFI
+				&& this.type != AudioFilterDefinition.Type.PITCH_SHIFT;
+		this.qBox.active = editable && this.type != AudioFilterDefinition.Type.LOFI
+				&& this.type != AudioFilterDefinition.Type.PITCH_SHIFT;
 		this.gainBox.active = editable && this.type == AudioFilterDefinition.Type.PEAK_EQ;
 		this.bitDepthBox.active = editable && this.type == AudioFilterDefinition.Type.LOFI;
 		this.sampleRateBox.active = editable && this.type == AudioFilterDefinition.Type.LOFI;
+		this.pitchBox.active = editable && this.type == AudioFilterDefinition.Type.PITCH_SHIFT;
+		this.transitionBox.active = editable;
 		this.scopeButton.active = editable;
 		this.typeButton.active = editable;
 		this.conditionTypeButton.active = editable;
@@ -654,6 +675,8 @@ final class AudioFilterScreen extends Screen
 		STATE.gain = this.gainBox.getValue();
 		STATE.bitDepth = this.bitDepthBox.getValue();
 		STATE.sampleRate = this.sampleRateBox.getValue();
+		STATE.pitch = this.pitchBox.getValue();
+		STATE.transition = this.transitionBox.getValue();
 	}
 
 	private void captureState()
@@ -809,7 +832,7 @@ final class AudioFilterScreen extends Screen
 	private int filterListTop()
 	{
 		int detailWidth = this.width - detailX() - 12;
-		return detailWidth < 338 ? 194 : detailWidth < 420 ? 170 : 146;
+		return detailWidth < 338 ? 222 : detailWidth < 420 ? 198 : 174;
 	}
 
 	private void message(Component message)
@@ -832,6 +855,16 @@ final class AudioFilterScreen extends Screen
 	{
 		try {
 			int value = Integer.parseInt(raw);
+			return value >= min && value <= max ? value : null;
+		} catch (NumberFormatException e) {
+			return null;
+		}
+	}
+
+	private static Long parseLong(String raw, long min, long max)
+	{
+		try {
+			long value = Long.parseLong(raw);
 			return value >= min && value <= max ? value : null;
 		} catch (NumberFormatException e) {
 			return null;
@@ -879,6 +912,8 @@ final class AudioFilterScreen extends Screen
 		private String gain = "0";
 		private String bitDepth = "12";
 		private String sampleRate = "22050";
+		private String pitch = "0";
+		private String transition = "20";
 		private AudioFilterDefinition.Scope scope = AudioFilterDefinition.Scope.MBM;
 		private AudioFilterDefinition.Type type = AudioFilterDefinition.Type.LOW_PASS;
 		private String conditionType = "mobbattlemusic:underwater";

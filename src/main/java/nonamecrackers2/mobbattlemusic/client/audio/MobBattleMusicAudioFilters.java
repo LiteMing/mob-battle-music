@@ -31,6 +31,23 @@ public final class MobBattleMusicAudioFilters
 				bitDepth, sampleRateHz);
 	}
 
+	/** Adds a semitone transposition filter; positive values raise pitch. */
+	public static Builder pitchShift(String id, String scope, double semitones)
+	{
+		return new Builder(id, scope, AudioFilterDefinition.Type.PITCH_SHIFT, 1_000.0D, 0.707D, 0.0D,
+				16, 48_000).pitchSemitones(semitones);
+	}
+
+	public static Builder pitchUp(String id, String scope, double semitones)
+	{
+		return pitchShift(id, scope, Math.abs(semitones));
+	}
+
+	public static Builder pitchDown(String id, String scope, double semitones)
+	{
+		return pitchShift(id, scope, -Math.abs(semitones));
+	}
+
 	public static boolean remove(String id)
 	{
 		return AudioFilterManager.remove(id);
@@ -51,6 +68,8 @@ public final class MobBattleMusicAudioFilters
 		private final double gainDb;
 		private final int bitDepth;
 		private final int sampleRateHz;
+		private double pitchSemitones;
+		private long transitionMillis = 20L;
 		private final List<IdleCondition> conditions = new ArrayList<>();
 
 		private Builder(String id, String scope, AudioFilterDefinition.Type type, double frequencyHz, double q,
@@ -77,10 +96,23 @@ public final class MobBattleMusicAudioFilters
 			return this;
 		}
 
+		public Builder pitchSemitones(double semitones)
+		{
+			this.pitchSemitones = semitones;
+			return this;
+		}
+
+		public Builder transitionMillis(long millis)
+		{
+			this.transitionMillis = millis;
+			return this;
+		}
+
 		public void register()
 		{
 			AudioFilterManager.register(new AudioFilterDefinition(this.id, true, this.scope, this.type,
-					this.frequencyHz, this.q, this.gainDb, this.bitDepth, this.sampleRateHz, this.conditions));
+					this.frequencyHz, this.q, this.gainDb, this.bitDepth, this.sampleRateHz,
+					this.pitchSemitones, this.transitionMillis, this.conditions));
 		}
 	}
 }

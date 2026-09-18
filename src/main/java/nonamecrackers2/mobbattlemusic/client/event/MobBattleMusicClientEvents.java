@@ -5,6 +5,8 @@ import java.util.List;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.screens.PauseScreen;
+import net.minecraftforge.client.event.ScreenEvent;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.player.Player;
 import net.minecraftforge.client.event.ClientPlayerNetworkEvent;
@@ -30,6 +32,7 @@ import nonamecrackers2.mobbattlemusic.client.audio.GlobalAudioFilterManager;
 import nonamecrackers2.mobbattlemusic.client.init.MobBattleMusicClientCapabilities;
 import nonamecrackers2.mobbattlemusic.client.manager.BattleMusicManager;
 import nonamecrackers2.mobbattlemusic.client.gui.MusicPlaylistScreen;
+import nonamecrackers2.mobbattlemusic.client.gui.MusicPlayerScreen;
 import nonamecrackers2.mobbattlemusic.client.music.IdleConditionStateClient;
 import nonamecrackers2.mobbattlemusic.client.resource.MusicTracksManager;
 import nonamecrackers2.mobbattlemusic.client.util.PlayerCombatSessionClient;
@@ -118,6 +121,18 @@ public static void registerConfigScreen(RegisterConfigScreensEvent event)
 	public static void registerConfigMenuButton(ConfigMenuButtonEvent event)
 	{
 		event.defaultButtonWithSingleCharacter('M', 0xFFFF4949);
+	}
+
+	/** Adds a compact player entry to the vanilla ESC screen. */
+	@SubscribeEvent
+	public static void onScreenInit(ScreenEvent.Init.Post event)
+	{
+		if (!(event.getScreen() instanceof PauseScreen screen))
+			return;
+		int y = Math.min(screen.height - 28, screen.height / 4 + 192);
+		event.addListener(Button.builder(Component.translatable("gui.mobbattlemusic.player.open"),
+				button -> MusicPlayerScreen.open())
+				.bounds(screen.width / 2 - 100, y, 200, 20).build());
 	}
 
 	public static void registerReloadListeners(RegisterClientReloadListenersEvent event)

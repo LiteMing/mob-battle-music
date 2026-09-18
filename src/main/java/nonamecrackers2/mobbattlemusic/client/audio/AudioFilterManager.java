@@ -27,7 +27,7 @@ import org.apache.logging.log4j.Logger;
 public final class AudioFilterManager
 {
 	private static final Logger LOGGER = LogManager.getLogger("mobbattlemusic/AudioFilterManager");
-	private static final int PRESET_VERSION = 1;
+	private static final int PRESET_VERSION = 2;
 	private static final int MAX_STACKED_FILTERS = 8;
 	private static final Map<ResourceLocation, AudioFilterDefinition> CONFIG_DEFINITIONS = new LinkedHashMap<>();
 	private static final Map<ResourceLocation, AudioFilterDefinition> RUNTIME_DEFINITIONS = new LinkedHashMap<>();
@@ -248,6 +248,8 @@ public final class AudioFilterManager
 			object.addProperty("gain_db", definition.gainDb());
 			object.addProperty("bit_depth", definition.bitDepth());
 			object.addProperty("sample_rate_hz", definition.sampleRateHz());
+			object.addProperty("pitch_semitones", definition.pitchSemitones());
+			object.addProperty("transition_ms", definition.transitionMillis());
 			JsonArray conditions = new JsonArray();
 			for (IdleCondition condition : definition.conditions()) {
 				JsonObject conditionObject = new JsonObject();
@@ -300,7 +302,9 @@ public final class AudioFilterManager
 					GsonHelper.getAsDouble(object, "q", 0.707D),
 					GsonHelper.getAsDouble(object, "gain_db", 0.0D),
 					GsonHelper.getAsInt(object, "bit_depth", 12),
-					GsonHelper.getAsInt(object, "sample_rate_hz", 22_050), conditions);
+					GsonHelper.getAsInt(object, "sample_rate_hz", 22_050),
+					GsonHelper.getAsDouble(object, "pitch_semitones", 0.0D),
+					GsonHelper.getAsLong(object, "transition_ms", 20L), conditions);
 		} catch (Exception e) {
 			LOGGER.warn("Ignoring invalid audio filter definition: {}", object, e);
 			return null;
@@ -360,6 +364,8 @@ public final class AudioFilterManager
 		filter.addProperty("gain_db", 0.0D);
 		filter.addProperty("bit_depth", bitDepth);
 		filter.addProperty("sample_rate_hz", sampleRate);
+		filter.addProperty("pitch_semitones", 0.0D);
+		filter.addProperty("transition_ms", 20L);
 		JsonObject condition = new JsonObject();
 		condition.addProperty("type", conditionType);
 		condition.addProperty("argument", conditionArgument);

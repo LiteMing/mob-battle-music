@@ -7,7 +7,8 @@ import net.minecraft.resources.ResourceLocation;
 import nonamecrackers2.mobbattlemusic.playlist.IdleCondition;
 
 public record AudioFilterDefinition(ResourceLocation id, boolean enabled, Scope scope, Type type, double frequencyHz, double q,
-		double gainDb, int bitDepth, int sampleRateHz, List<IdleCondition> conditions)
+		double gainDb, int bitDepth, int sampleRateHz, double pitchSemitones, long transitionMillis,
+		List<IdleCondition> conditions)
 {
 	public AudioFilterDefinition
 	{
@@ -16,13 +17,26 @@ public record AudioFilterDefinition(ResourceLocation id, boolean enabled, Scope 
 		gainDb = clamp(gainDb, -12.0D, 12.0D);
 		bitDepth = Math.max(8, Math.min(16, bitDepth));
 		sampleRateHz = Math.max(8_000, Math.min(48_000, sampleRateHz));
+		pitchSemitones = clamp(pitchSemitones, -24.0D, 24.0D);
+		transitionMillis = Math.max(20L, Math.min(300L, transitionMillis));
 		conditions = List.copyOf(conditions);
+	}
+
+	/**
+	 * Backward-compatible constructor for KJS/API callers and old preset code.
+	 * Existing filters keep the fixed anti-click chain transition.
+	 */
+	public AudioFilterDefinition(ResourceLocation id, boolean enabled, Scope scope, Type type, double frequencyHz,
+			double q, double gainDb, int bitDepth, int sampleRateHz, List<IdleCondition> conditions)
+	{
+		this(id, enabled, scope, type, frequencyHz, q, gainDb, bitDepth, sampleRateHz, 0.0D, 20L, conditions);
 	}
 
 	public AudioFilterDefinition withEnabled(boolean enabled)
 	{
 		return new AudioFilterDefinition(this.id, enabled, this.scope, this.type, this.frequencyHz, this.q,
-				this.gainDb, this.bitDepth, this.sampleRateHz, this.conditions);
+				this.gainDb, this.bitDepth, this.sampleRateHz, this.pitchSemitones, this.transitionMillis,
+				this.conditions);
 	}
 
 	private static double clamp(double value, double min, double max)
@@ -56,7 +70,8 @@ public record AudioFilterDefinition(ResourceLocation id, boolean enabled, Scope 
 		LOW_PASS,
 		HIGH_PASS,
 		PEAK_EQ,
-		LOFI;
+		LOFI,
+		PITCH_SHIFT;
 
 		public String getSerializedName()
 		{

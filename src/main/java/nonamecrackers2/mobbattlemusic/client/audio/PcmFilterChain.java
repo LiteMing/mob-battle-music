@@ -16,14 +16,17 @@ public final class PcmFilterChain
 	private final List<Processor> processors;
 	private final int channels;
 	private final int frameSize;
+	private final long transitionDurationMillis;
 	private @Nullable PcmFilterChain transitionFrom;
 	private long transitionStartMillis;
 
-	private PcmFilterChain(List<Processor> processors, AudioFormat format)
+	private PcmFilterChain(List<Processor> processors, AudioFormat format, long transitionDurationMillis)
 	{
 		this.processors = processors;
 		this.channels = format.getChannels();
 		this.frameSize = format.getFrameSize();
+		this.transitionDurationMillis = Math.max(CHAIN_TRANSITION_MILLIS,
+				Math.min(300L, transitionDurationMillis));
 		this.transitionStartMillis = System.currentTimeMillis();
 	}
 
@@ -43,11 +46,13 @@ public final class PcmFilterChain
 	{
 		if (format.isBigEndian() || format.getSampleSizeInBits() != 16 ||
 				!AudioFormat.Encoding.PCM_SIGNED.equals(format.getEncoding()))
-			return new PcmFilterChain(List.of(), format);
+			return new PcmFilterChain(List.of(), format, CHAIN_TRANSITION_MILLIS);
 		List<Processor> processors = new ArrayList<>();
 		boolean preservedAll = previous != null;
+		long transitionMillis = CHAIN_TRANSITION_MILLIS;
 		for (int i = 0; i < definitions.size(); i++) {
 			AudioFilterDefinition definition = definitions.get(i);
+			transitionMillis = Math.max(transitionMillis, definition.transitionMillis());
 			switch (definition.type()) {
 				case LOW_PASS, HIGH_PASS, PEAK_EQ -> {
 					Biquad biquad = new Biquad(definition, format);
@@ -67,9 +72,18 @@ public final class PcmFilterChain
 						preservedAll = false;
 					processors.add(lofi);
 				}
+				case PITCH_SHIFT -> {
+					PitchShift pitchShift = new PitchShift(definition, format);
+					PitchShift old = previous == null ? null : previous.pitchShiftAt(i);
+					if (old != null && old.matches(definition))
+						pitchShift.copyStateFrom(old);
+					else
+						preservedAll = false;
+					processors.add(pitchShift);
+				}
 			}
 		}
-		PcmFilterChain chain = new PcmFilterChain(List.copyOf(processors), format);
+		PcmFilterChain chain = new PcmFilterChain(List.copyOf(processors), format, transitionMillis);
 		// AUD-48 v1.3: state preservation additionally requires equal chain
 		// length - a prefix/suffix rebuild must crossfade
 		preservedAll &= previous == null || previous.processors.size() == processors.size();
@@ -89,7 +103,7 @@ public final class PcmFilterChain
 		PcmFilterChain transition = this.transitionFrom;
 		double transitionProgress = transition == null ? 1.0D
 				: (System.currentTimeMillis() - this.transitionStartMillis)
-						/ (double)CHAIN_TRANSITION_MILLIS;
+						/ (double)this.transitionDurationMillis;
 		for (int offset = 0; offset < alignedLength; offset += this.frameSize) {
 			for (int channel = 0; channel < this.channels; channel++) {
 				int sampleOffset = offset + channel * 2;
@@ -160,6 +174,13 @@ public final class PcmFilterChain
 	{
 		if (index >= 0 && index < this.processors.size() && this.processors.get(index) instanceof Lofi lofi)
 			return lofi;
+		return null;
+	}
+
+	private @Nullable PitchShift pitchShiftAt(int index)
+	{
+		if (index >= 0 && index < this.processors.size() && this.processors.get(index) instanceof PitchShift pitchShift)
+			return pitchShift;
 		return null;
 	}
 
@@ -334,6 +355,73 @@ public final class PcmFilterChain
 			}
 			this.counters[channel]--;
 			return this.held[channel];
+		}
+	}
+
+	/**
+	 * Lightweight streaming pitch shifter. It keeps a short per-channel delay
+	 * window and advances its read head at the requested transposition ratio;
+	 * the bounded grain reset avoids allocating or blocking in the audio loop.
+	 * This is intentionally a filter processor, so chain rebuilds can preserve
+	 * its state and crossfade when the pitch changes.
+	 */
+	private static final class PitchShift implements Processor
+	{
+		private static final int BUFFER_SIZE = 4096;
+		private static final int INITIAL_DELAY = 1024;
+		private final AudioFilterDefinition definition;
+		private final double ratio;
+		private final double[][] ring;
+		private final long[] writeCount;
+		private final double[] readPosition;
+
+		private PitchShift(AudioFilterDefinition definition, AudioFormat format)
+		{
+			this.definition = definition;
+			this.ratio = Math.pow(2.0D, definition.pitchSemitones() / 12.0D);
+			int channelCount = Math.max(1, format.getChannels());
+			this.ring = new double[channelCount][BUFFER_SIZE];
+			this.writeCount = new long[channelCount];
+			this.readPosition = new double[channelCount];
+			for (int channel = 0; channel < channelCount; channel++)
+				this.readPosition[channel] = -INITIAL_DELAY;
+		}
+
+		private boolean matches(AudioFilterDefinition other)
+		{
+			return this.definition.equals(other);
+		}
+
+		private void copyStateFrom(PitchShift other)
+		{
+			for (int channel = 0; channel < this.ring.length; channel++) {
+				if (channel < other.ring.length)
+					System.arraycopy(other.ring[channel], 0, this.ring[channel], 0, BUFFER_SIZE);
+				if (channel < other.writeCount.length) {
+					this.writeCount[channel] = other.writeCount[channel];
+					this.readPosition[channel] = other.readPosition[channel];
+				}
+			}
+		}
+
+		@Override
+		public double process(int channel, double input)
+		{
+			int slot = (int)(this.writeCount[channel] % BUFFER_SIZE);
+			this.ring[channel][slot] = input;
+			long write = this.writeCount[channel];
+			double read = this.readPosition[channel];
+			long oldest = write - BUFFER_SIZE + 1L;
+			if (read < oldest || read > write - 1L)
+				read = write - INITIAL_DELAY;
+			long first = (long)Math.floor(read);
+			double fraction = read - first;
+			double a = this.ring[channel][(int)Math.floorMod(first, BUFFER_SIZE)];
+			double b = this.ring[channel][(int)Math.floorMod(first + 1L, BUFFER_SIZE)];
+			double output = a + (b - a) * fraction;
+			this.writeCount[channel] = write + 1L;
+			this.readPosition[channel] = read + this.ratio;
+			return output;
 		}
 	}
 }

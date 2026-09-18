@@ -32,6 +32,12 @@ public final class GlobalAudioFilterManager
 	private static volatile double mbmHighPassHz;
 	private static volatile double minecraftLowPassHz;
 	private static volatile double minecraftHighPassHz;
+	private static volatile double mbmPitchSemitones;
+	private static volatile double minecraftPitchSemitones;
+	private static volatile double pitchStartSemitones;
+	private static volatile double minecraftPitchStartSemitones;
+	private static volatile long pitchTransitionStartMillis;
+	private static volatile long pitchTransitionMillis = 20L;
 	private static volatile AudioFilterDefinition mbmLofi;
 	private static volatile long revision;
 	private static int configuredFilter;
@@ -55,6 +61,10 @@ public final class GlobalAudioFilterManager
 		double mbmHighPass = 0.0D;
 		double minecraftLowPass = 0.0D;
 		double minecraftHighPass = 0.0D;
+		double mbmPitch = 0.0D;
+		double minecraftPitch = 0.0D;
+		long transitionMillis = 20L;
+		long nextPitchTransitionMillis;
 		AudioFilterDefinition lofi = null;
 		for (AudioFilterDefinition definition : definitions) {
 			if (definition.type() == AudioFilterDefinition.Type.LOW_PASS) {
@@ -77,17 +87,36 @@ public final class GlobalAudioFilterManager
 							definition.bitDepth() == lofi.bitDepth() &&
 							definition.sampleRateHz() < lofi.sampleRateHz())) {
 				lofi = definition;
+			} else if (definition.type() == AudioFilterDefinition.Type.PITCH_SHIFT) {
+				transitionMillis = Math.max(transitionMillis, definition.transitionMillis());
+				if (definition.scope() == AudioFilterDefinition.Scope.GLOBAL) {
+					mbmPitch += definition.pitchSemitones();
+					minecraftPitch += definition.pitchSemitones();
+				} else if (definition.scope() == AudioFilterDefinition.Scope.MBM) {
+					mbmPitch += definition.pitchSemitones();
+				} else {
+					minecraftPitch += definition.pitchSemitones();
+				}
 			}
 		}
+		nextPitchTransitionMillis = Math.max(20L, Math.min(300L, transitionMillis));
 		if (lowPass != lowPassHz || highPass != highPassHz || mbmLowPass != mbmLowPassHz ||
 				mbmHighPass != mbmHighPassHz || minecraftLowPass != minecraftLowPassHz ||
-				minecraftHighPass != minecraftHighPassHz || !Objects.equals(lofi, mbmLofi)) {
+				minecraftHighPass != minecraftHighPassHz || mbmPitch != mbmPitchSemitones ||
+				minecraftPitch != minecraftPitchSemitones || pitchTransitionMillis != nextPitchTransitionMillis
+						|| !Objects.equals(lofi, mbmLofi)) {
+			pitchStartSemitones = mbmPitchSemitones;
+			pitchTransitionStartMillis = System.currentTimeMillis();
+			pitchTransitionMillis = nextPitchTransitionMillis;
+			minecraftPitchStartSemitones = minecraftPitchSemitones;
 			lowPassHz = lowPass;
 			highPassHz = highPass;
 			mbmLowPassHz = mbmLowPass;
 			mbmHighPassHz = mbmHighPass;
 			minecraftLowPassHz = minecraftLowPass;
 			minecraftHighPassHz = minecraftHighPass;
+			mbmPitchSemitones = mbmPitch;
+			minecraftPitchSemitones = minecraftPitch;
 			mbmLofi = lofi;
 			revision++;
 			applyToExistingChannels();
@@ -104,7 +133,7 @@ public final class GlobalAudioFilterManager
 		MBM_APPLIED_REVISIONS.keySet().removeIf(instance -> !channels.containsKey(instance));
 		for (Map.Entry<SoundInstance, ChannelAccess.ChannelHandle> entry : channels.entrySet()) {
 			if (!(entry.getKey() instanceof MobBattleTrack) ||
-					MBM_APPLIED_REVISIONS.getOrDefault(entry.getKey(), -1L) == revision)
+					(MBM_APPLIED_REVISIONS.getOrDefault(entry.getKey(), -1L) == revision && !isPitchRampActive()))
 				continue;
 			entry.getValue().execute(channel -> apply(
 					((MixinChannelAccessor)(Object)channel).mobbattlemusic$getSource(), true));
@@ -121,6 +150,12 @@ public final class GlobalAudioFilterManager
 		configuredLofiEffect = 0;
 		configuredLofiSlot = 0;
 		configuredLofiRevision = -1L;
+		mbmPitchSemitones = 0.0D;
+		minecraftPitchSemitones = 0.0D;
+		pitchStartSemitones = 0.0D;
+		minecraftPitchStartSemitones = 0.0D;
+		pitchTransitionStartMillis = 0L;
+		pitchTransitionMillis = 20L;
 		MBM_APPLIED_REVISIONS.clear();
 		unsupported = false;
 		lofiUnsupported = false;
@@ -129,6 +164,10 @@ public final class GlobalAudioFilterManager
 	private static void apply(int source, boolean mbm)
 	{
 		try {
+			double targetSemitones = mbm ? mbmPitchSemitones : minecraftPitchSemitones;
+			double startSemitones = mbm ? pitchStartSemitones : minecraftPitchStartSemitones;
+			AL10.alSourcef(source, AL10.AL_PITCH,
+					(float)currentPitchRatio(startSemitones, targetSemitones));
 			double lowPass = mbm ? minPositive(lowPassHz, mbmLowPassHz) :
 					minPositive(lowPassHz, minecraftLowPassHz);
 			double highPass = mbm ? Math.max(highPassHz, mbmHighPassHz) :
@@ -150,6 +189,22 @@ public final class GlobalAudioFilterManager
 				LOGGER.warn("OpenAL EFX is unavailable; global MBM filters were disabled", e);
 			unsupported = true;
 		}
+	}
+
+	private static boolean isPitchRampActive()
+	{
+		return pitchTransitionStartMillis != 0L
+				&& System.currentTimeMillis() - pitchTransitionStartMillis < pitchTransitionMillis;
+	}
+
+	private static double currentPitchRatio(double startSemitones, double targetSemitones)
+	{
+		if (!isPitchRampActive())
+			return Math.pow(2.0D, targetSemitones / 12.0D);
+		double progress = (System.currentTimeMillis() - pitchTransitionStartMillis)
+				/ (double)Math.max(20L, pitchTransitionMillis);
+		double semitones = startSemitones + (targetSemitones - startSemitones) * Math.min(1.0D, progress);
+		return Math.pow(2.0D, semitones / 12.0D);
 	}
 
 	private static void applyLofi(int source, AudioFilterDefinition definition)

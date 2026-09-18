@@ -123,6 +123,7 @@ public class MusicPlaylistScreen extends Screen
 	private Button addBindingButton;
 	private Button importButton;
 	private Button volumeButton;
+	private Button playerButton;
 	// K13-A: LIBRARY batch condition management - when multi-select is on,
 	// clicking rows only toggles their membership in selectedRowSet; the
 	// "add selected to target" action (addBindingButton) then adds every
@@ -405,14 +406,14 @@ public class MusicPlaylistScreen extends Screen
 		// "add selected to target" copies every checked track into the target
 		// group chosen by kind/scene/target
 		this.multiSelectButton = this.addRenderableWidget(Button.builder(
-				Component.literal("Batch: off"), button -> toggleMultiSelect())
+				text("button.batch_off"), button -> toggleMultiSelect())
 				.bounds(ix, editY + 106, iw, 20).build());
 		// K13-C: manual song selection - play the selected row through the
 		// preview player while covering the main channel; the server-side
 		// playback process keeps running untouched and the song continues
 		// after this GUI closes
 		this.coverPlayButton = this.addRenderableWidget(Button.builder(
-				Component.literal("Play selected (cover main)"), button -> coverPlaySelected())
+				text("button.cover_play"), button -> coverPlaySelected())
 				.bounds(ix, editY + 130, iw, 20).build());
 		this.copyUrlButton = this.addRenderableWidget(Button.builder(text("button.copy_url"), button -> copySelectedUrl())
 				.bounds(ix, detailActionY, iw, 20).build());
@@ -443,6 +444,11 @@ public class MusicPlaylistScreen extends Screen
 				// K16-G-r4: Vol sits LEFT of the mode button - the old
 				// fixed (width-46) position overlapped it on the title bar
 				.bounds(this.modeButton.getX() - 46, 6, 40, 18).build());
+		this.playerButton = this.addRenderableWidget(Button.builder(Component.literal(">>"),
+				button -> this.minecraft.setScreen(new MusicPlayerScreen(this)))
+				.bounds(this.volumeButton.getX() - 38, 6, 32, 18).build());
+		this.playerButton.setTooltip(net.minecraft.client.gui.components.Tooltip.create(
+				text("button.open_player")));
 		this.previousPageButton = this.addRenderableWidget(Button.builder(text("button.previous"), button -> startSearch(this.searchPage - 1))
 				.bounds(sidebar.innerX(), sidebar.innerY() + 59, Math.max(1, (sidebar.innerWidth() - 4) / 2), 20).build());
 		this.nextPageButton = this.addRenderableWidget(Button.builder(text("button.next"), button -> startSearch(this.searchPage + 1))
@@ -716,7 +722,7 @@ public class MusicPlaylistScreen extends Screen
 		if (!this.multiSelectActive)
 			this.selectedRowSet.clear();
 		if (this.multiSelectButton != null)
-			this.multiSelectButton.setMessage(Component.literal(this.multiSelectActive ? "Batch: on" : "Batch: off"));
+			this.multiSelectButton.setMessage(text(this.multiSelectActive ? "button.batch_on" : "button.batch_off"));
 		this.refreshSelectionLists();
 		this.updateButtonState();
 	}
@@ -1613,7 +1619,7 @@ public class MusicPlaylistScreen extends Screen
 		// K16-F: the dock always reflects what the player ACTUALLY hears -
 		// an active preview/cover (audible) wins over the main channel (which
 		// may be covered/muted or empty)
-		graphics.drawString(this.font, "MAIN", 8, dockY() + 5, 0xFF73D98A);
+		graphics.drawString(this.font, text("dock.main"), 8, dockY() + 5, 0xFF73D98A);
 		int progressLeft = 150;
 		int progressRight = this.width - 220;
 		int progressY = dockY() + 36;
@@ -1623,9 +1629,9 @@ public class MusicPlaylistScreen extends Screen
 			String previewUrl = PreviewChannel.currentTrack();
 			String title = previewUrl == null ? "..." : describeTrackTitle(previewUrl);
 			graphics.drawString(this.font, title, 52, dockY() + 5, 0xFFD6D9DE);
-			graphics.drawString(this.font, PreviewChannel.isCoveringMain() ? "cover main" : "preview",
+			graphics.drawString(this.font, text(PreviewChannel.isCoveringMain() ? "dock.cover" : "dock.preview"),
 					52, dockY() + 18, 0xFF8B929C);
-			graphics.drawString(this.font, "[AUTO]", 8, dockY() + 24, 0xFF8B929C);
+			graphics.drawString(this.font, text("dock.auto"), 8, dockY() + 24, 0xFF8B929C);
 			long duration = PreviewChannel.durationMillis();
 			long position = PreviewChannel.positionMillis();
 			graphics.fill(progressLeft, progressY, progressRight, progressY + 4, 0xFF3A4550);
@@ -1637,21 +1643,21 @@ public class MusicPlaylistScreen extends Screen
 				graphics.drawString(this.font, formatMillis(position) + " / " + formatMillis(duration),
 						progressLeft, progressY + 8, 0xFFB8C0CA);
 			} else {
-				graphics.drawString(this.font, "preparing...", progressLeft, progressY + 8, 0xFF8B929C);
+				graphics.drawString(this.font, text("dock.preparing"), progressLeft, progressY + 8, 0xFF8B929C);
 			}
 		} else if (hasMainTrack()) {
 			String url = handler.getCurrentlyPlayingUrl();
 			boolean buffering = handler.isPreparingCurrentMusic();
 			boolean audible = handler.getPositionMillis() >= 0L;
 			nonamecrackers2.mobbattlemusic.client.audio.PlaybackHandle handle = WorldPlaybackChannel.handle();
-			String title = buffering ? "buffering..." : describeTrackTitle(url);
+			String title = buffering ? text("dock.buffering").getString() : describeTrackTitle(url);
 			graphics.drawString(this.font, title, 52, dockY() + 5, 0xFFD6D9DE);
 			String source = describeDockSource(handle);
 			graphics.drawString(this.font, source, 52, dockY() + 18, 0xFF8B929C);
 			graphics.drawString(this.font, "[" + owner + "]", 8, dockY() + 24, ownerColor(owner));
 			// K10-B: the owner badge is the explicit way back to AUTO
 			if (owner != WorldPlaybackChannel.PlaybackOwner.AUTO)
-				graphics.drawString(this.font, "click to return to AUTO", 52, dockY() + 32, 0xFF8B929C);
+				graphics.drawString(this.font, text("dock.return_auto"), 52, dockY() + 32, 0xFF8B929C);
 
 			long duration = handler.getDurationMillis();
 			long position = handler.getPositionMillis();
@@ -1668,18 +1674,18 @@ public class MusicPlaylistScreen extends Screen
 				graphics.drawString(this.font, formatMillis(displayed) + " / " + formatMillis(duration),
 						progressLeft, progressY + 8, 0xFFB8C0CA);
 			} else {
-				graphics.drawString(this.font, buffering ? "preparing..." : "position n/a", progressLeft,
+				graphics.drawString(this.font, text(buffering ? "dock.preparing" : "dock.position_na"), progressLeft,
 						progressY + 8, 0xFF8B929C);
 			}
 			if (audible && owner == WorldPlaybackChannel.PlaybackOwner.CUE)
-				graphics.drawString(this.font, "locked (CUE)", progressRight - 70, dockY() + 5, 0xFFE06C75);
+				graphics.drawString(this.font, text("dock.locked"), progressRight - 70, dockY() + 5, 0xFFE06C75);
 		} else {
 			// K16-F: the dock NEVER hides - the transport buttons stay usable
 			// even while nothing is playing
-			graphics.drawString(this.font, "no track", 52, dockY() + 6, 0xFF8B929C);
-			graphics.drawString(this.font, "[AUTO]", 8, dockY() + 24, 0xFF8B929C);
+			graphics.drawString(this.font, text("dock.no_track"), 52, dockY() + 6, 0xFF8B929C);
+			graphics.drawString(this.font, text("dock.auto"), 8, dockY() + 24, 0xFF8B929C);
 			graphics.fill(progressLeft, progressY, progressRight, progressY + 4, 0xFF3A4550);
-			graphics.drawString(this.font, "position n/a", progressLeft, progressY + 8, 0xFF8B929C);
+			graphics.drawString(this.font, text("dock.position_na"), progressLeft, progressY + 8, 0xFF8B929C);
 		}
 
 		// K16-F: transport buttons are ALWAYS rendered (visible + clickable)
